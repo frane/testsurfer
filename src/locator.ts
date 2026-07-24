@@ -254,6 +254,10 @@ export class Locator {
     await this.withResolved(
       'click',
       async (n) => {
+        if (this.page.clickVia === 'act') {
+          await this.page.act(n.ref, 'click', undefined, { mode: this.page.inputMode });
+          return;
+        }
         const rects = await this.page.layout([n.ref]);
         const r = rects.get(n.ref);
         if (r && r.visible && r.w > 1 && r.h > 1) {

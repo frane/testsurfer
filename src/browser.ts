@@ -4,7 +4,7 @@
  */
 
 import { WireClient, type ClientOptions } from './client.ts';
-import { Page, DEFAULT_TIMEOUTS, type InputMode, type Timeouts } from './page.ts';
+import { Page, DEFAULT_TIMEOUTS, type ClickVia, type InputMode, type Timeouts } from './page.ts';
 
 export interface LaunchOptions extends ClientOptions {
   timeouts?: Partial<Timeouts>;
@@ -16,6 +16,8 @@ export interface LaunchOptions extends ClientOptions {
    * behind bot detection that scores cursor motion.
    */
   inputMode?: InputMode;
+  /** How click() reaches visible targets. See ClickVia; default `click-at` for the 0.1.28 contract. */
+  clickVia?: ClickVia;
 }
 
 export class Browser {
@@ -23,12 +25,20 @@ export class Browser {
   readonly sessionId: string;
   private readonly timeouts: Timeouts;
   private readonly inputMode: InputMode;
+  private readonly clickVia: ClickVia;
 
-  private constructor(client: WireClient, sessionId: string, timeouts: Timeouts, inputMode: InputMode) {
+  private constructor(
+    client: WireClient,
+    sessionId: string,
+    timeouts: Timeouts,
+    inputMode: InputMode,
+    clickVia: ClickVia,
+  ) {
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
     this.inputMode = inputMode;
+    this.clickVia = clickVia;
   }
 
   /** Connect to the daemon (spawning it if needed) and open a session. */
@@ -42,12 +52,18 @@ export class Browser {
       client.close();
       throw new Error('vs_session_open returned no session id');
     }
-    return new Browser(client, sessionId, { ...DEFAULT_TIMEOUTS, ...options.timeouts }, options.inputMode ?? 'robotic');
+    return new Browser(
+      client,
+      sessionId,
+      { ...DEFAULT_TIMEOUTS, ...options.timeouts },
+      options.inputMode ?? 'robotic',
+      options.clickVia ?? 'click-at',
+    );
   }
 
   /** A new page in this session. Call page.goto(url) to load a URL. */
   newPage(): Page {
-    return new Page(this.client, this.sessionId, this.timeouts, this.inputMode);
+    return new Page(this.client, this.sessionId, this.timeouts, this.inputMode, this.clickVia);
   }
 
   /** Close the session and drop the connection. */

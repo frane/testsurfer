@@ -26,6 +26,15 @@ export interface Timeouts {
  */
 export type InputMode = 'human' | 'careful' | 'robotic';
 
+/**
+ * How Locator.click reaches a visible target. `click-at` resolves the
+ * rect and issues a coordinate click (works against the pinned
+ * vibesurfer 0.1.28, whose vs_act ignores --mode and hardcodes the
+ * slow humanized path). `act` sends vs_act click --mode directly,
+ * one round trip fewer; needs a 0.2+ daemon.
+ */
+export type ClickVia = 'click-at' | 'act';
+
 export interface LayoutRect {
   x: number;
   y: number;
@@ -67,12 +76,20 @@ export class Page {
   private readonly sessionId: string;
   readonly timeouts: Timeouts;
   readonly inputMode: InputMode;
+  readonly clickVia: ClickVia;
 
-  constructor(client: WireClient, sessionId: string, timeouts: Timeouts, inputMode: InputMode = 'robotic') {
+  constructor(
+    client: WireClient,
+    sessionId: string,
+    timeouts: Timeouts,
+    inputMode: InputMode = 'robotic',
+    clickVia: ClickVia = 'click-at',
+  ) {
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
     this.inputMode = inputMode;
+    this.clickVia = clickVia;
   }
 
   private get id(): string {
@@ -148,11 +165,12 @@ export class Page {
    * STALE_TOKEN the cached token is refreshed before rethrowing, so
    * the caller can re-resolve and retry.
    */
-  async act(ref: number, op: string, value?: string): Promise<void> {
+  async act(ref: number, op: string, value?: string, extraFlags?: Record<string, string>): Promise<void> {
     if (this.token === null) await this.view();
     const args = value === undefined ? [this.id, String(ref), op] : [this.id, String(ref), op, value];
     try {
       const resp = await this.client.call('vs_act', args, {
+        ...extraFlags,
         session: this.sessionId,
         token: this.token ?? '',
       });

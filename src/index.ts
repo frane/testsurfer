@@ -12,7 +12,7 @@
  */
 
 export { Browser, type LaunchOptions } from './browser.ts';
-export { Page, type InputMode, type Timeouts } from './page.ts';
+export { Page, type ClickVia, type InputMode, type Timeouts } from './page.ts';
 export { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
 export { expect, LocatorAssertions, PageAssertions, type ExpectOptions } from './expect.ts';
 export { test, configure, type TestFixtures } from './runner.ts';

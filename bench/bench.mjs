@@ -57,12 +57,16 @@ const scenarios = {
 };
 
 function makeTargets() {
+  const tsOnly = process.env.TS_ONLY === '1';
   return [
     {
       name: 'testsurfer',
       expect: tsExpect,
       async setup() {
-        this.browser = await TsBrowser.launch();
+        this.browser = await TsBrowser.launch({
+          ...(process.env.TESTSURFER_SOCKET ? { socketPath: process.env.TESTSURFER_SOCKET } : {}),
+          ...(process.env.TESTSURFER_CLICK_VIA ? { clickVia: process.env.TESTSURFER_CLICK_VIA } : {}),
+        });
       },
       async newPage() {
         const page = this.browser.newPage();
@@ -72,10 +76,13 @@ function makeTargets() {
         await this.browser.close();
       },
     },
-    ...[
-      ['playwright-webkit', webkit],
-      ['playwright-chromium', chromium],
-    ].map(([name, engine]) => ({
+    ...(tsOnly
+      ? []
+      : [
+          ['playwright-webkit', webkit],
+          ['playwright-chromium', chromium],
+        ]
+    ).map(([name, engine]) => ({
       name,
       expect: pwExpect,
       async setup() {
