@@ -18,6 +18,12 @@ export interface WireResponse {
   /** The new state token from the `@<token>` success envelope. */
   token: string;
   body: string[];
+  /**
+   * Extra blank-line-terminated body sections for composite requests
+   * (e.g. `vs_view --layout=...`). Present only when the caller asked
+   * for them; empty otherwise.
+   */
+  sections: string[][];
 }
 
 /** Flag map: `true` is a bare flag, a string is `--name=value`. */

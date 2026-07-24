@@ -43,6 +43,18 @@ interface Pending {
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
   line: string;
+  /** Extra blank-line-terminated sections expected after a success body. */
+  extraSections: number;
+}
+
+export interface CallOptions {
+  timeoutMs?: number;
+  /**
+   * Number of extra blank-line-terminated body sections the daemon
+   * appends on success for this request (composites like
+   * `vs_view --layout=...`). Error envelopes never carry sections.
+   */
+  extraSections?: number;
 }
 
 export function defaultSocketPath(): string {
@@ -94,6 +106,9 @@ export class WireClient {
     warnings: Warning[];
     envelope: ReturnType<typeof parseEnvelope> | null;
     body: string[];
+    sections: string[][];
+    active: string[] | null;
+    sectionsWanted: number;
   } | null = null;
   private closed = false;
 
@@ -180,12 +195,35 @@ export class WireClient {
 
   private onLine(line: string): void {
     if (!this.current) {
-      this.current = { warnings: [], envelope: null, body: [] };
+      this.current = {
+        warnings: [],
+        envelope: null,
+        body: [],
+        sections: [],
+        active: null,
+        sectionsWanted: 0,
+      };
     }
     const cur = this.current;
     if (line === '') {
-      // Blank line before the envelope is noise; after it, the terminator.
-      if (cur.envelope) this.finishResponse();
+      // Blank line before the envelope is noise. After the envelope it
+      // terminates the main body, then each expected extra section.
+      if (!cur.envelope) return;
+      if (cur.active === null) {
+        if (cur.sectionsWanted > 0) {
+          cur.active = [];
+          return;
+        }
+        this.finishResponse();
+        return;
+      }
+      cur.sections.push(cur.active);
+      if (cur.sections.length >= cur.sectionsWanted) {
+        cur.active = null;
+        this.finishResponse();
+      } else {
+        cur.active = [];
+      }
       return;
     }
     if (!cur.envelope) {
@@ -194,9 +232,13 @@ export class WireClient {
         return;
       }
       cur.envelope = parseEnvelope(line);
+      // Sections only follow success envelopes; the request at the
+      // queue head is the one being answered.
+      cur.sectionsWanted = cur.envelope.ok ? (this.queue[0]?.extraSections ?? 0) : 0;
       return;
     }
-    cur.body.push(line);
+    if (cur.active !== null) cur.active.push(line);
+    else cur.body.push(line);
   }
 
   private finishResponse(): void {
@@ -206,7 +248,12 @@ export class WireClient {
     if (!cur?.envelope || !pending) return;
     clearTimeout(pending.timer);
     if (cur.envelope.ok) {
-      pending.resolve({ warnings: cur.warnings, token: cur.envelope.token ?? '', body: cur.body });
+      pending.resolve({
+        warnings: cur.warnings,
+        token: cur.envelope.token ?? '',
+        body: cur.body,
+        sections: cur.sections,
+      });
     } else {
       pending.reject(new WireError(cur.envelope.code ?? 'UNKNOWN', cur.envelope.args ?? []));
     }
@@ -232,20 +279,20 @@ export class WireClient {
     primitive: string,
     args: string[] = [],
     flags: Flags = {},
-    timeoutMs?: number,
+    opts: CallOptions = {},
   ): Promise<WireResponse> {
     await this.ensureConnected();
     const sock = this.sock;
     if (!sock) throw new Error('not connected');
     const line = encodeRequest(primitive, args, flags);
-    const budget = timeoutMs ?? this.opts.requestTimeout ?? 70_000;
+    const budget = opts.timeoutMs ?? this.opts.requestTimeout ?? 70_000;
     return new Promise<WireResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         // A timed-out call desyncs the response order; drop the
         // connection so the next call starts clean.
         this.failAll(new TimeoutError(`no response to ${primitive} within ${budget}ms`));
       }, budget);
-      this.queue.push({ resolve, reject, timer, line });
+      this.queue.push({ resolve, reject, timer, line, extraSections: opts.extraSections ?? 0 });
       sock.write(line);
     });
   }

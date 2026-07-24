@@ -6,6 +6,31 @@
 
 import type { WireClient } from './client.ts';
 import type { WireResponse } from './wire.ts';
+
+/** Parse `<ref> x=.. y=.. w=.. h=.. visible=.. z=..` lines; `!` error lines are skipped. */
+function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
+  const out = new Map<number, LayoutRect>();
+  for (const line of lines) {
+    if (line.startsWith('!')) continue;
+    const tokens = line.trim().split(/\s+/);
+    const ref = Number(tokens[0]);
+    if (!Number.isInteger(ref)) continue;
+    const rect: LayoutRect = { x: 0, y: 0, w: 0, h: 0, visible: false };
+    for (const tok of tokens.slice(1)) {
+      const eq = tok.indexOf('=');
+      if (eq <= 0) continue;
+      const k = tok.slice(0, eq);
+      const v = tok.slice(eq + 1);
+      if (k === 'visible') rect.visible = v === 'true';
+      else if (k === 'x') rect.x = Number(v);
+      else if (k === 'y') rect.y = Number(v);
+      else if (k === 'w') rect.w = Number(v);
+      else if (k === 'h') rect.h = Number(v);
+    }
+    out.set(ref, rect);
+  }
+  return out;
+}
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
 import { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
@@ -170,10 +195,35 @@ export class Page {
    * either way.
    */
   async view(): Promise<Snapshot> {
-    const flags: Record<string, string | true> = { session: this.sessionId };
     const canDelta = this.synced && this.snapshot !== null;
+    const flags: Record<string, string | true> = { session: this.sessionId };
     if (!canDelta) flags['full'] = true;
     const resp = await this.client.call('vs_view', [this.id], flags);
+    return this.applyViewResponse(resp, canDelta);
+  }
+
+  /**
+   * One round trip for view + layout via the `--layout=` composite:
+   * the daemon appends rect lines for the requested refs as an extra
+   * body section. Refs no longer in the tree come back as inline
+   * NOT_FOUND lines and are simply absent from the map.
+   */
+  async viewWithLayout(refs: number[]): Promise<{ snap: Snapshot; rects: Map<number, LayoutRect> }> {
+    if (refs.length === 0) {
+      return { snap: await this.view(), rects: new Map() };
+    }
+    const canDelta = this.synced && this.snapshot !== null;
+    const flags: Record<string, string | true> = {
+      session: this.sessionId,
+      layout: refs.join(','),
+    };
+    if (!canDelta) flags['full'] = true;
+    const resp = await this.client.call('vs_view', [this.id], flags, { extraSections: 1 });
+    const snap = this.applyViewResponse(resp, canDelta);
+    return { snap, rects: parseLayoutLines(resp.sections[0] ?? []) };
+  }
+
+  private applyViewResponse(resp: WireResponse, canDelta: boolean): Snapshot {
     this.token = resp.token;
     const first = resp.body[0];
     if (first === undefined) {
@@ -313,7 +363,7 @@ export class Page {
       'vs_wait',
       args,
       { session: this.sessionId, timeout: String(budget) },
-      budget + 10_000,
+      { timeoutMs: budget + 10_000 },
     );
     if (this.actDeltas) {
       // 0.2 wait advances the baseline without emitting the tree; the
@@ -329,31 +379,12 @@ export class Page {
    * `<ref> x=0 y=0 w=0 h=0 visible=false z=0`.
    */
   async layout(refs: number[]): Promise<Map<number, LayoutRect>> {
-    const out = new Map<number, LayoutRect>();
-    if (refs.length === 0) return out;
+    if (refs.length === 0) return new Map();
     const resp = await this.client.call('vs_layout', [this.id, ...refs.map(String)], {
       session: this.sessionId,
     });
     this.token = resp.token;
-    for (const line of resp.body) {
-      const tokens = line.trim().split(/\s+/);
-      const ref = Number(tokens[0]);
-      if (!Number.isInteger(ref)) continue;
-      const rect: LayoutRect = { x: 0, y: 0, w: 0, h: 0, visible: false };
-      for (const tok of tokens.slice(1)) {
-        const eq = tok.indexOf('=');
-        if (eq <= 0) continue;
-        const k = tok.slice(0, eq);
-        const v = tok.slice(eq + 1);
-        if (k === 'visible') rect.visible = v === 'true';
-        else if (k === 'x') rect.x = Number(v);
-        else if (k === 'y') rect.y = Number(v);
-        else if (k === 'w') rect.w = Number(v);
-        else if (k === 'h') rect.h = Number(v);
-      }
-      out.set(ref, rect);
-    }
-    return out;
+    return parseLayoutLines(resp.body);
   }
 
   /** The document title (the doc node's label). */

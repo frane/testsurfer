@@ -131,6 +131,8 @@ export class Locator {
   private readonly page: Page;
   private readonly query: LocatorQuery;
   private readonly index: number | null;
+  /** Refs from the previous visibility resolve, used as the composite layout hint. */
+  private layoutHint: number[] = [];
 
   constructor(page: Page, query: LocatorQuery, index: number | null = null) {
     this.page = page;
@@ -176,10 +178,19 @@ export class Locator {
    * vs_layout's per-ref visible flag.
    */
   async resolveVisible(): Promise<TreeNode[]> {
-    const snap = await this.page.view();
+    // Polling assertions resolve the same query repeatedly; the ref
+    // set from the previous poll rides along as a --layout composite
+    // hint, making the steady-state poll a single round trip. Refs
+    // that changed since last time are fetched separately.
+    const { snap, rects } = await this.page.viewWithLayout(this.layoutHint);
     const candidates = findMatches(snap, this.query).filter((n) => !isHidden(snap, n));
+    this.layoutHint = candidates.map((n) => n.ref);
     if (candidates.length === 0) return [];
-    const rects = await this.page.layout(candidates.map((n) => n.ref));
+    const missing = candidates.filter((n) => !rects.has(n.ref));
+    if (missing.length > 0) {
+      const more = await this.page.layout(missing.map((n) => n.ref));
+      for (const [ref, rect] of more) rects.set(ref, rect);
+    }
     return candidates.filter((n) => rects.get(n.ref)?.visible === true);
   }
 
