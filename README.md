@@ -66,6 +66,10 @@ await browser.close();
 
 Version 0.1 targets vibesurfer 0.1.28 as its wire contract. Locators, actions, and the assertion set above are implemented. Trusted-input coordinate actions, a11y-tree snapshot assertions, and session/auth fixtures are next.
 
+## Benchmark
+
+[`bench/`](bench) runs identical flows through testsurfer and Playwright (WebKit and Chromium) against the same app and reports the numbers, favorable and not. Summary from the current run: a working testsurfer install is ~6MB against ~300MB+ per Playwright browser and launches in single-digit milliseconds against the resident daemon, while Playwright is ~8x faster per action once its browser is running. The full table, methodology, and the reasons live in the bench README.
+
 ## Example
 
 [`examples/todo`](examples/todo) is a small todo app with a complete e2e suite: locators by role and label, polling assertions, and the `{ page }` fixture. It installs testsurfer as a package dependency, so it also exercises the published module shape.

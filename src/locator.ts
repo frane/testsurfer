@@ -119,7 +119,7 @@ export function findMatches(snap: Snapshot, query: LocatorQuery): TreeNode[] {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const POLL_MS = 100;
+const POLL_MS = 30;
 
 /** Drop hid-marked matches when at least one unmarked match exists. */
 function preferVisible(snap: Snapshot, all: TreeNode[]): TreeNode[] {
