@@ -35,16 +35,16 @@ Playwright's very first WebKit launch on a fresh machine also paid an 8.7s one-t
 
 ## vibesurfer 0.2 branch preview
 
-The four engine fixes filed from this benchmark (act returns its delta inline, wait tokens valid, dirty-flag snapshot caching, robotic click fast path) are landed on the vibesurfer 0.2 branch. Same machine, sandboxed 0.2 daemon built from `8c7a54d`, testsurfer with `clickVia: 'act'` and `protocol: { actDeltas: true }`:
+The engine fixes filed from this benchmark are landed on the vibesurfer 0.2 branch: act returns its delta inline, wait tokens valid, dirty-flag snapshot caching, robotic click fast path, and the console-error read folded into the snapshot hop (found via this harness: every view after the second paid a hidden ~125ms engine eval). Same machine, sandboxed 0.2 daemon built from `04b5d76`, testsurfer with `clickVia: 'act'` and `protocol: { actDeltas: true }`:
 
 | scenario           | testsurfer @0.2 | (was @0.1.27) | playwright-webkit | playwright-chromium |
 | ------------------ | --------------- | ------------- | ----------------- | ------------------- |
-| add two todos      | 479ms           | 840ms         | 97ms              | 82ms                |
-| complete and clear | 527ms           | 1396ms        | 158ms             | 114ms               |
-| delete a todo      | 417ms           | 791ms         | 92ms              | 81ms                |
-| suite total        | 1523ms          | 3127ms        | 372ms             | 298ms               |
+| add two todos      | 327ms           | 840ms         | 99ms              | 81ms                |
+| complete and clear | 402ms           | 1396ms        | 164ms             | 113ms               |
+| delete a todo      | 239ms           | 791ms         | 89ms              | 81ms                |
+| suite total        | 1085ms          | 3127ms        | 380ms             | 296ms               |
 
-2.1x faster than the pinned 0.1.x contract; the remaining ~4-5x gap to Playwright is dominated by page open cost (~100ms per goto) and per-mutation engine work. These numbers become the primary table when 0.2 ships as the pinned release.
+2.9x faster than the pinned 0.1.x contract; the remaining ~3x gap to Playwright is the ~100ms page-open floor per goto (nav-in-place is next upstream) and the ~50ms evaluateJavaScript dispatch floor per engine hop (main-thread-free NoChange reads after that). These numbers become the primary table when 0.2 ships as the pinned release.
 
 ## Honest reading
 
