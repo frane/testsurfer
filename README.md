@@ -40,6 +40,8 @@ Locators resolve lazily at action time, against a fresh view:
 
 Actions auto-wait for their element and retry when the page changes underneath them: `click()`, `fill(value)`, `type(text)` (trusted native keystrokes, macOS today), `press(key)`, `hover()`, `focus()`, `textContent()`.
 
+Clicks and keystrokes dispatch as native OS input. The cadence is configurable per browser: the default `inputMode: 'robotic'` is instant, which is what tests want; `'human'` moves the cursor along a humanized path with realistic timing for flows that score input behavior.
+
 Assertions poll until they pass or time out:
 
 - `expect(locator).toBeVisible()` / `.toBeHidden()`

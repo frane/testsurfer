@@ -4,23 +4,31 @@
  */
 
 import { WireClient, type ClientOptions } from './client.ts';
-import { Page, DEFAULT_TIMEOUTS, type Timeouts } from './page.ts';
+import { Page, DEFAULT_TIMEOUTS, type InputMode, type Timeouts } from './page.ts';
 
 export interface LaunchOptions extends ClientOptions {
   timeouts?: Partial<Timeouts>;
   /** vs policy name passed to session-open. */
   policy?: string;
+  /**
+   * Cursor and keyboard cadence for trusted input. Defaults to
+   * `robotic` (instant, right for tests). Set `human` when a flow sits
+   * behind bot detection that scores cursor motion.
+   */
+  inputMode?: InputMode;
 }
 
 export class Browser {
   private readonly client: WireClient;
   readonly sessionId: string;
   private readonly timeouts: Timeouts;
+  private readonly inputMode: InputMode;
 
-  private constructor(client: WireClient, sessionId: string, timeouts: Timeouts) {
+  private constructor(client: WireClient, sessionId: string, timeouts: Timeouts, inputMode: InputMode) {
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
+    this.inputMode = inputMode;
   }
 
   /** Connect to the daemon (spawning it if needed) and open a session. */
@@ -34,12 +42,12 @@ export class Browser {
       client.close();
       throw new Error('vs_session_open returned no session id');
     }
-    return new Browser(client, sessionId, { ...DEFAULT_TIMEOUTS, ...options.timeouts });
+    return new Browser(client, sessionId, { ...DEFAULT_TIMEOUTS, ...options.timeouts }, options.inputMode ?? 'robotic');
   }
 
   /** A new page in this session. Call page.goto(url) to load a URL. */
   newPage(): Page {
-    return new Page(this.client, this.sessionId, this.timeouts);
+    return new Page(this.client, this.sessionId, this.timeouts, this.inputMode);
   }
 
   /** Close the session and drop the connection. */

@@ -121,6 +121,12 @@ export function findMatches(snap: Snapshot, query: LocatorQuery): TreeNode[] {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const POLL_MS = 100;
 
+/** Drop hid-marked matches when at least one unmarked match exists. */
+function preferVisible(snap: Snapshot, all: TreeNode[]): TreeNode[] {
+  const visible = all.filter((n) => !isHidden(snap, n));
+  return visible.length > 0 ? visible : all;
+}
+
 export class Locator {
   private readonly page: Page;
   private readonly query: LocatorQuery;
@@ -154,42 +160,31 @@ export class Locator {
 
   /**
    * All current matches against a fresh view. Visible matches are
-   * preferred: hidden ones are dropped when at least one visible match
-   * exists (sites keep hidden duplicates of buttons; prefer the one a
-   * user could hit).
+   * preferred, judged from the tree alone (hid=1 on self or ancestor):
+   * hidden duplicates of interactive elements are dropped when a
+   * visible one exists. No layout round trip.
    */
   async resolveAll(): Promise<TreeNode[]> {
     const snap = await this.page.view();
-    const all = findMatches(snap, this.query);
-    const visible = await this.filterVisible(snap, all);
-    return visible.length > 0 ? visible : all;
-  }
-
-  /** Matches that are currently visible. */
-  async resolveVisible(): Promise<TreeNode[]> {
-    const snap = await this.page.view();
-    return this.filterVisible(snap, findMatches(snap, this.query));
+    return preferVisible(snap, findMatches(snap, this.query));
   }
 
   /**
-   * Visibility needs two sources: interactive refs carry hid=1 in the
-   * tree, but hidden non-interactive elements (a heading inside a
-   * `hidden` container) do not, so the rest are checked against
+   * Matches that are currently visible. Interactive refs carry hid=1
+   * in the tree, but hidden non-interactive elements (a heading inside
+   * a `hidden` container) do not, so survivors are verified against
    * vs_layout's per-ref visible flag.
    */
-  private async filterVisible(snap: Snapshot, nodes: TreeNode[]): Promise<TreeNode[]> {
-    const candidates = nodes.filter((n) => !isHidden(snap, n));
+  async resolveVisible(): Promise<TreeNode[]> {
+    const snap = await this.page.view();
+    const candidates = findMatches(snap, this.query).filter((n) => !isHidden(snap, n));
     if (candidates.length === 0) return [];
     const rects = await this.page.layout(candidates.map((n) => n.ref));
     return candidates.filter((n) => rects.get(n.ref)?.visible === true);
   }
 
-  /**
-   * Resolve to exactly one node, or null when nothing matches yet.
-   * Throws StrictModeError on multiple matches unless nth() was used.
-   */
-  private async resolveOnce(): Promise<TreeNode | null> {
-    const matches = await this.resolveAll();
+  /** Strict-mode selection: exactly one node, nth() overrides, null when none. */
+  private pickOne(matches: TreeNode[]): TreeNode | null {
     if (this.index !== null) return matches[this.index] ?? null;
     if (matches.length === 0) return null;
     if (matches.length > 1) {
@@ -204,6 +199,17 @@ export class Locator {
     return matches[0] ?? null;
   }
 
+  /**
+   * Resolve an action target against the cached snapshot when it is
+   * still baseline-synced. Optimistic concurrency covers the race: if
+   * the page changed since, the act fails with STALE_TOKEN, the retry
+   * loop refreshes, and we re-resolve.
+   */
+  private async resolveForAction(): Promise<TreeNode | null> {
+    const snap = await this.page.actionSnapshot();
+    return this.pickOne(preferVisible(snap, findMatches(snap, this.query)));
+  }
+
   /** Wait until the locator resolves to one node, then run the action, retrying on staleness. */
   private async withResolved<T>(
     actionName: string,
@@ -214,12 +220,14 @@ export class Locator {
     const deadline = Date.now() + budget;
     let lastNote = 'no matching element';
     for (;;) {
+      let stale = false;
       try {
-        const node = await this.resolveOnce();
+        const node = await this.resolveForAction();
         if (node) return await action(node);
       } catch (e) {
         if (e instanceof WireError && (e.code === 'STALE_TOKEN' || e.code === 'NOT_FOUND')) {
           lastNote = `retrying after ${e.code}`;
+          stale = true;
         } else {
           throw e;
         }
@@ -227,12 +235,35 @@ export class Locator {
       if (Date.now() >= deadline) {
         throw new TimeoutError(`${actionName} on ${this.toString()} timed out after ${budget}ms (${lastNote})`);
       }
-      await sleep(POLL_MS);
+      // A staleness rejection means the page just changed; retry
+      // immediately against a fresh view. Only a missing element earns
+      // a poll-tick sleep.
+      if (!stale) await sleep(POLL_MS);
     }
   }
 
+  /**
+   * Click the element. Visible targets get a trusted native click at
+   * their rect center via vs_click_at, which honors the page's input
+   * mode (robotic by default; the humanized path behind plain
+   * `vs_act click` costs seconds per click). Zero-size or hidden
+   * targets cannot be hit by coordinates and fall back to vs_act,
+   * whose JS path dispatches regardless of geometry.
+   */
   async click(options?: { timeout?: number }): Promise<void> {
-    await this.withResolved('click', (n) => this.page.act(n.ref, 'click'), options?.timeout);
+    await this.withResolved(
+      'click',
+      async (n) => {
+        const rects = await this.page.layout([n.ref]);
+        const r = rects.get(n.ref);
+        if (r && r.visible && r.w > 1 && r.h > 1) {
+          await this.page.clickAt(r.x + r.w / 2, r.y + r.h / 2);
+        } else {
+          await this.page.act(n.ref, 'click');
+        }
+      },
+      options?.timeout,
+    );
   }
 
   /** Replace the field's text via the engine's fill path. */

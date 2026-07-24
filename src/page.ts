@@ -6,7 +6,7 @@
 
 import type { WireClient } from './client.ts';
 import { WireError } from './errors.ts';
-import { parseFullTree, walk, type Snapshot } from './tree.ts';
+import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
 import { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
 
 export interface Timeouts {
@@ -17,6 +17,14 @@ export interface Timeouts {
   /** Budget for goto(). */
   navigation: number;
 }
+
+/**
+ * Cursor and keyboard cadence for trusted input. `robotic` teleports
+ * (fast, right for tests); `human` synthesizes a Bezier path with
+ * human arrival timing (slow, right for anti-bot flows); `careful` is
+ * a single-shot move in between.
+ */
+export type InputMode = 'human' | 'careful' | 'robotic';
 
 export interface LayoutRect {
   x: number;
@@ -35,15 +43,36 @@ export const DEFAULT_TIMEOUTS: Timeouts = {
 export class Page {
   private pageId: string | null = null;
   private token: string | null = null;
+  /** Last known tree, kept in sync via full views and deltas. */
+  private snapshot: Snapshot | null = null;
+  /**
+   * True while `snapshot` equals the daemon's delta baseline (our last
+   * applied view, with no act in between). The daemon advances its
+   * baseline on every act and discards that delta, so after an act the
+   * next view must be requested `--full`; between plain views, deltas
+   * are sound. Cursor ops (click-at) do not touch the baseline, so
+   * they leave this flag alone.
+   */
+  private synced = false;
+  /**
+   * True while `snapshot` also reflects current page reality, so an
+   * action can resolve against it without a read. Any mutation clears
+   * it. Distinct from `synced`: a click-at leaves the baseline (and
+   * the daemon's last token) untouched, so the token check would not
+   * catch acting on the pre-click tree; this flag forces the re-read.
+   */
+  private fresh = false;
 
   private readonly client: WireClient;
   private readonly sessionId: string;
   readonly timeouts: Timeouts;
+  readonly inputMode: InputMode;
 
-  constructor(client: WireClient, sessionId: string, timeouts: Timeouts) {
+  constructor(client: WireClient, sessionId: string, timeouts: Timeouts, inputMode: InputMode = 'robotic') {
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
+    this.inputMode = inputMode;
   }
 
   private get id(): string {
@@ -53,8 +82,7 @@ export class Page {
 
   /**
    * Navigate to a URL. vibesurfer models navigation as opening a page,
-   * so a second goto closes the old page and opens a new one. Waits
-   * for the a11y tree to settle before returning.
+   * so a second goto closes the old page and opens a new one.
    */
   async goto(url: string): Promise<void> {
     if (this.pageId) {
@@ -62,26 +90,57 @@ export class Page {
         .call('vs_close', [this.pageId], { session: this.sessionId })
         .catch(() => {});
       this.pageId = null;
-      this.token = null;
     }
+    this.token = null;
+    this.snapshot = null;
+    this.synced = false;
+    this.fresh = false;
     const resp = await this.client.call('vs_open', [url], { session: this.sessionId });
     const id = resp.body[0];
     if (!id) throw new Error(`vs_open returned no page id for ${url}`);
     this.pageId = id;
     this.token = resp.token;
-    await this.waitFor('stable', undefined, this.timeouts.navigation).catch(() => {
-      // A tree that never settles is not fatal; assertions will poll.
-    });
+    // No settle wait here: locators auto-wait and assertions poll, so
+    // a still-loading tree just resolves a poll tick later.
   }
 
-  /** Fresh full view of the page. Updates the cached token. */
+  /**
+   * Refresh the snapshot from the daemon and return it. Sends a plain
+   * (delta) view when our snapshot matches the daemon's baseline and a
+   * `--full` view otherwise; the body shape decides how it is applied,
+   * so a surprise full tree (navigation, daemon restart) is handled
+   * either way.
+   */
   async view(): Promise<Snapshot> {
-    const resp = await this.client.call('vs_view', [this.id], {
-      session: this.sessionId,
-      full: true,
-    });
+    const flags: Record<string, string | true> = { session: this.sessionId };
+    const canDelta = this.synced && this.snapshot !== null;
+    if (!canDelta) flags['full'] = true;
+    const resp = await this.client.call('vs_view', [this.id], flags);
     this.token = resp.token;
-    return parseFullTree(resp.body);
+    const first = resp.body[0];
+    if (first === undefined) {
+      // No change since our baseline (or a genuinely empty page).
+      this.snapshot ??= { nodes: new Map(), roots: [] };
+    } else if (canDelta && this.snapshot && isDeltaBody(first)) {
+      applyDelta(this.snapshot, resp.body);
+    } else {
+      this.snapshot = parseFullTree(resp.body);
+    }
+    this.synced = true;
+    this.fresh = true;
+    return this.snapshot;
+  }
+
+  /**
+   * Snapshot for resolving an action target: the cached tree when it
+   * is still baseline-synced, otherwise a fresh view. Acting on a
+   * cached tree is safe because every mutation carries our token; if
+   * the page moved on, the daemon answers STALE_TOKEN and the action
+   * loop re-resolves against a fresh view.
+   */
+  async actionSnapshot(): Promise<Snapshot> {
+    if (this.fresh && this.snapshot) return this.snapshot;
+    return this.view();
   }
 
   /**
@@ -103,6 +162,30 @@ export class Page {
         this.token = e.args[0];
       }
       throw e;
+    } finally {
+      // The act advanced the daemon's delta baseline without showing
+      // us the delta; the cached tree can no longer be patched.
+      this.synced = false;
+      this.fresh = false;
+    }
+  }
+
+  /**
+   * Trusted native click at viewport coordinates via vs_click_at. The
+   * cursor op leaves the daemon's delta baseline and last token
+   * untouched, so `synced` survives (the next delta view picks up the
+   * click's effects) but `fresh` does not.
+   */
+  async clickAt(x: number, y: number, mode?: InputMode): Promise<void> {
+    if (this.token === null) await this.view();
+    try {
+      await this.client.call(
+        'vs_click_at',
+        [this.id, String(Math.round(x)), String(Math.round(y))],
+        { session: this.sessionId, token: this.token ?? '', mode: mode ?? this.inputMode },
+      );
+    } finally {
+      this.fresh = false;
     }
   }
 
@@ -116,14 +199,28 @@ export class Page {
   }
 
   /** Trusted per-character typing into the focused element (macOS today). */
-  async typeTrusted(text: string, options?: { secret?: boolean }): Promise<void> {
-    const flags: Record<string, string | true> = { session: this.sessionId, token: this.token ?? '' };
+  async typeTrusted(text: string, options?: { secret?: boolean; mode?: InputMode }): Promise<void> {
+    const flags: Record<string, string | true> = {
+      session: this.sessionId,
+      token: this.token ?? '',
+      mode: options?.mode ?? this.inputMode,
+    };
     if (options?.secret) flags['secret'] = true;
-    const resp = await this.client.call('vs_type', [this.id, text], flags);
-    this.token = resp.token;
+    try {
+      const resp = await this.client.call('vs_type', [this.id, text], flags);
+      this.token = resp.token;
+    } finally {
+      this.synced = false;
+      this.fresh = false;
+    }
   }
 
-  /** Block until a daemon-side wait condition holds. */
+  /**
+   * Block until a daemon-side wait condition holds. The returned wait
+   * token is deliberately not cached: vs_wait computes it from a raw
+   * engine snapshot without advancing the page's last-emitted token,
+   * so it is not valid as an act pre-image.
+   */
   async waitFor(
     cond: 'stable' | 'net-idle' | 'token-change' | 'text' | 'ref' | 'gone',
     value?: string,
@@ -131,13 +228,12 @@ export class Page {
   ): Promise<void> {
     const args = value === undefined ? [this.id, cond] : [this.id, cond, value];
     const budget = timeoutMs ?? this.timeouts.navigation;
-    const resp = await this.client.call(
+    await this.client.call(
       'vs_wait',
       args,
       { session: this.sessionId, timeout: String(budget) },
       budget + 10_000,
     );
-    this.token = resp.token;
   }
 
   /**
@@ -200,5 +296,8 @@ export class Page {
       .catch(() => {});
     this.pageId = null;
     this.token = null;
+    this.snapshot = null;
+    this.synced = false;
+    this.fresh = false;
   }
 }

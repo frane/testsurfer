@@ -111,6 +111,138 @@ export function parseFullTree(lines: string[]): Snapshot {
   return { nodes, roots };
 }
 
+/** True if a view body is a delta (ops start with a sigil; full trees start with a ref). */
+export function isDeltaBody(firstLine: string): boolean {
+  return /^[+\-~>*]/.test(firstLine.trimStart());
+}
+
+/** Parse `<ref>@<parent>[:<pos>]` from an add/move op head. */
+function parseRefAt(s: string): { ref: number; parent: number; pos: number | null } | null {
+  const at = s.indexOf('@');
+  if (at < 0) return null;
+  const ref = Number(s.slice(0, at));
+  const rest = s.slice(at + 1);
+  const colon = rest.indexOf(':');
+  const parent = Number(colon < 0 ? rest : rest.slice(0, colon));
+  const pos = colon < 0 ? null : Number(rest.slice(colon + 1));
+  if (!Number.isInteger(ref) || !Number.isInteger(parent)) return null;
+  return { ref, parent, pos: pos !== null && Number.isInteger(pos) ? pos : null };
+}
+
+function removeSubtree(snap: Snapshot, ref: number): void {
+  const node = snap.nodes.get(ref);
+  if (!node) return;
+  for (const c of [...node.children]) removeSubtree(snap, c);
+  if (node.parent === null) {
+    snap.roots = snap.roots.filter((r) => r !== ref);
+  } else {
+    const parent = snap.nodes.get(node.parent);
+    if (parent) parent.children = parent.children.filter((r) => r !== ref);
+  }
+  snap.nodes.delete(ref);
+}
+
+/** Attach `ref` under `parent` (0 = root level) at `pos` (null = append). */
+function attach(snap: Snapshot, ref: number, parent: number, pos: number | null): void {
+  const node = snap.nodes.get(ref);
+  if (!node) return;
+  const siblings = parent === 0 ? snap.roots : snap.nodes.get(parent)?.children;
+  if (!siblings) return;
+  node.parent = parent === 0 ? null : parent;
+  if (pos === null || pos >= siblings.length) siblings.push(ref);
+  else siblings.splice(pos, 0, ref);
+}
+
+function detach(snap: Snapshot, ref: number): void {
+  const node = snap.nodes.get(ref);
+  if (!node) return;
+  if (node.parent === null) {
+    snap.roots = snap.roots.filter((r) => r !== ref);
+  } else {
+    const parent = snap.nodes.get(node.parent);
+    if (parent) parent.children = parent.children.filter((r) => r !== ref);
+  }
+}
+
+/**
+ * Apply a delta view body to a snapshot in place. Five ops per the
+ * protocol: `+<ref>@<parent>[:<pos>] ...` add, `-<ref>` remove,
+ * `~<ref> k=v ...` attribute-map replace, `><ref>@<parent>[:<pos>]`
+ * move, `*<ref>` plus indented subtree replace.
+ */
+export function applyDelta(snap: Snapshot, lines: string[]): void {
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i] ?? '';
+    if (raw.trim() === '') {
+      i++;
+      continue;
+    }
+    const line = raw.trimStart();
+    const sigil = line[0];
+    if (sigil === '+') {
+      const sp = line.search(/[ \t]/);
+      const head = sp < 0 ? line.slice(1) : line.slice(1, sp);
+      const rest = sp < 0 ? '' : line.slice(sp + 1);
+      const target = parseRefAt(head);
+      if (target) {
+        const node = parseTreeLine(`${target.ref} ${rest}`, 0);
+        if (node) {
+          snap.nodes.set(node.ref, node);
+          attach(snap, node.ref, target.parent, target.pos);
+        }
+      }
+      i++;
+    } else if (sigil === '-') {
+      removeSubtree(snap, Number(line.slice(1).trim()));
+      i++;
+    } else if (sigil === '~') {
+      const tokens = tokenizeTreeLine(line);
+      const ref = Number(tokens[0]?.slice(1));
+      const node = snap.nodes.get(ref);
+      if (node) {
+        const attrs: Record<string, string> = {};
+        for (const tok of tokens.slice(1)) {
+          const eq = tok.indexOf('=');
+          if (eq > 0) attrs[tok.slice(0, eq)] = stripQuotes(tok.slice(eq + 1));
+        }
+        node.attrs = attrs;
+      }
+      i++;
+    } else if (sigil === '>') {
+      const target = parseRefAt(line.slice(1));
+      if (target && snap.nodes.has(target.ref)) {
+        detach(snap, target.ref);
+        attach(snap, target.ref, target.parent, target.pos);
+      }
+      i++;
+    } else if (sigil === '*') {
+      const ref = Number(line.slice(1).trim());
+      const subLines: string[] = [];
+      i++;
+      while (i < lines.length && /^[ \t]/.test(lines[i] ?? '')) {
+        subLines.push(lines[i] ?? '');
+        i++;
+      }
+      const old = snap.nodes.get(ref);
+      if (!old) continue;
+      const parent = old.parent;
+      const siblings = parent === null ? snap.roots : (snap.nodes.get(parent)?.children ?? []);
+      const position = siblings.indexOf(ref);
+      removeSubtree(snap, ref);
+      const indent = (subLines[0] ?? '').length - (subLines[0] ?? '').trimStart().length;
+      const sub = parseFullTree(subLines.map((l) => l.slice(indent)));
+      for (const node of sub.nodes.values()) snap.nodes.set(node.ref, node);
+      for (const root of sub.roots) {
+        attach(snap, root, parent ?? 0, position < 0 ? null : position);
+      }
+    } else {
+      // Unknown line in a delta body; skip rather than corrupt state.
+      i++;
+    }
+  }
+}
+
 /** Depth-first iteration over a snapshot's nodes. */
 export function* walk(snap: Snapshot): Generator<TreeNode> {
   const visit = function* (ref: number): Generator<TreeNode> {
