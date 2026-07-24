@@ -20,20 +20,30 @@ type TestFn = (fixtures: TestFixtures) => Promise<void> | void;
 
 let shared: Promise<Browser> | null = null;
 let launchOptions: LaunchOptions = {};
+let teardownRegistered = false;
 
 /** Override launch options for the shared browser. Call before the first test runs. */
 export function configure(options: LaunchOptions): void {
   launchOptions = options;
 }
 
+/**
+ * Register the session teardown as a root-level after() hook. This
+ * must happen at test registration time (when the user's test file
+ * calls test() at module scope), not during a test run: a hook
+ * registered mid-test attaches to that test and would close the
+ * shared browser after the first test finishes.
+ */
+function ensureTeardown(): void {
+  if (teardownRegistered) return;
+  teardownRegistered = true;
+  after(async () => {
+    if (shared) await (await shared).close();
+  });
+}
+
 function sharedBrowser(): Promise<Browser> {
-  if (!shared) {
-    shared = Browser.launch(launchOptions);
-    after(async () => {
-      const b = await shared;
-      await b?.close();
-    });
-  }
+  shared ??= Browser.launch(launchOptions);
   return shared;
 }
 
@@ -48,13 +58,16 @@ async function withPage(fn: TestFn): Promise<void> {
 }
 
 export function test(name: string, fn: TestFn): void {
+  ensureTeardown();
   nodeTest(name, () => withPage(fn));
 }
 
 test.only = (name: string, fn: TestFn): void => {
+  ensureTeardown();
   nodeTest(name, { only: true }, () => withPage(fn));
 };
 
 test.skip = (name: string, fn: TestFn): void => {
+  ensureTeardown();
   nodeTest(name, { skip: true }, () => withPage(fn));
 };

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>surf todos</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 3rem auto; padding: 0 1rem; }
+    form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    input[type="text"] { flex: 1; padding: 0.5rem; }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; }
+    li span { flex: 1; }
+    li.done span { text-decoration: line-through; opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>surf todos</h1>
+    <form id="add">
+      <input type="text" aria-label="New todo" placeholder="What needs doing?">
+      <button type="submit">Add</button>
+    </form>
+    <p id="count" hidden>0 items left</p>
+    <ul id="list"></ul>
+    <p id="empty">All clear. Add your first todo.</p>
+    <button id="clear" type="button" hidden>Clear completed</button>
+  </main>
+  <script>
+    const form = document.getElementById('add');
+    const input = form.querySelector('input');
+    const list = document.getElementById('list');
+    const count = document.getElementById('count');
+    const empty = document.getElementById('empty');
+    const clear = document.getElementById('clear');
+
+    function render() {
+      const items = [...list.querySelectorAll('li')];
+      const left = items.filter((li) => !li.querySelector('input').checked).length;
+      count.textContent = left === 1 ? '1 item left' : left + ' items left';
+      count.hidden = items.length === 0;
+      empty.hidden = items.length > 0;
+      clear.hidden = !items.some((li) => li.querySelector('input').checked);
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      const li = document.createElement('li');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.setAttribute('aria-label', 'Mark ' + text + ' done');
+      cb.addEventListener('change', () => {
+        li.classList.toggle('done', cb.checked);
+        render();
+      });
+      const span = document.createElement('span');
+      span.textContent = text;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', 'Delete ' + text);
+      del.addEventListener('click', () => {
+        li.remove();
+        render();
+      });
+      li.append(cb, span, del);
+      list.append(li);
+      input.value = '';
+      render();
+    });
+
+    clear.addEventListener('click', () => {
+      list.querySelectorAll('li').forEach((li) => {
+        if (li.querySelector('input').checked) li.remove();
+      });
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>

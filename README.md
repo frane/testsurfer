@@ -64,6 +64,10 @@ await browser.close();
 
 Version 0.1 targets vibesurfer 0.1.28 as its wire contract. Locators, actions, and the assertion set above are implemented. Trusted-input coordinate actions, a11y-tree snapshot assertions, and session/auth fixtures are next.
 
+## Example
+
+[`examples/todo`](examples/todo) is a small todo app with a complete e2e suite: locators by role and label, polling assertions, and the `{ page }` fixture. It installs testsurfer as a package dependency, so it also exercises the published module shape.
+
 ## Development
 
 ```sh

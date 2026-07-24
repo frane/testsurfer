@@ -21,3 +21,10 @@ jobs:
         env:
           TESTSURFER_VS: npx -y vibesurfer@0.1.28
         run: npm run test:e2e
+      - name: example project
+        env:
+          TESTSURFER_VS: npx -y vibesurfer@0.1.28
+        working-directory: examples/todo
+        run: |
+          npm install
+          npm test
