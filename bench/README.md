@@ -33,6 +33,19 @@ Disk footprint for a working install:
 
 Playwright's very first WebKit launch on a fresh machine also paid an 8.7s one-time cost (macOS verifying the downloaded binary); steady state is the 283ms shown. The vibesurfer daemon's own one-time spawn is not measured here because this machine keeps it running; it is amortized across every run and every tool on the machine.
 
+## vibesurfer 0.2 branch preview
+
+The four engine fixes filed from this benchmark (act returns its delta inline, wait tokens valid, dirty-flag snapshot caching, robotic click fast path) are landed on the vibesurfer 0.2 branch. Same machine, sandboxed 0.2 daemon built from `8c7a54d`, testsurfer with `clickVia: 'act'` and `protocol: { actDeltas: true }`:
+
+| scenario           | testsurfer @0.2 | (was @0.1.27) | playwright-webkit | playwright-chromium |
+| ------------------ | --------------- | ------------- | ----------------- | ------------------- |
+| add two todos      | 479ms           | 840ms         | 97ms              | 82ms                |
+| complete and clear | 527ms           | 1396ms        | 158ms             | 114ms               |
+| delete a todo      | 417ms           | 791ms         | 92ms              | 81ms                |
+| suite total        | 1523ms          | 3127ms        | 372ms             | 298ms               |
+
+2.1x faster than the pinned 0.1.x contract; the remaining ~4-5x gap to Playwright is dominated by page open cost (~100ms per goto) and per-mutation engine work. These numbers become the primary table when 0.2 ships as the pinned release.
+
 ## Honest reading
 
 Playwright is roughly 8x faster per scenario once its browser is up. That is structural today: Playwright drives the browser over a wire protocol with cheap per-action calls, while every vibesurfer mutation takes a full accessibility snapshot on the engine main thread, dispatches input through native OS events, and writes an audit row. Two upstream fixes already agreed with the vibesurfer maintainer (a fast mode for `vs_act` click, and act returning its tree delta instead of discarding it) will narrow this, but a CDP-style call will stay cheaper than a snapshot for the foreseeable future.

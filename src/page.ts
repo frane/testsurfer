@@ -5,6 +5,7 @@
  */
 
 import type { WireClient } from './client.ts';
+import type { WireResponse } from './wire.ts';
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
 import { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
@@ -34,6 +35,18 @@ export type InputMode = 'human' | 'careful' | 'robotic';
  * one round trip fewer; needs a 0.2+ daemon.
  */
 export type ClickVia = 'click-at' | 'act';
+
+/** Options for how the page tracks daemon state across mutations. */
+export interface ProtocolOptions {
+  /**
+   * vibesurfer 0.2+ returns each mutation's tree delta inline (act and
+   * cursor ops advance the delta baseline and emit their ViewForm).
+   * When enabled the page applies those bodies and skips the re-read
+   * after actions. Leave off against the pinned 0.1.28 contract, whose
+   * mutations advance the baseline silently.
+   */
+  actDeltas?: boolean;
+}
 
 export interface LayoutRect {
   x: number;
@@ -77,6 +90,7 @@ export class Page {
   readonly timeouts: Timeouts;
   readonly inputMode: InputMode;
   readonly clickVia: ClickVia;
+  readonly actDeltas: boolean;
 
   constructor(
     client: WireClient,
@@ -84,12 +98,39 @@ export class Page {
     timeouts: Timeouts,
     inputMode: InputMode = 'robotic',
     clickVia: ClickVia = 'click-at',
+    protocol: ProtocolOptions = {},
   ) {
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
     this.inputMode = inputMode;
     this.clickVia = clickVia;
+    this.actDeltas = protocol.actDeltas ?? false;
+  }
+
+  /**
+   * Fold a 0.2 mutation response body (the ViewForm the daemon emitted
+   * while advancing its baseline) into the snapshot. Empty body means
+   * NoChange; a full tree replaces; a delta applies when we hold the
+   * pre-mutation baseline, otherwise the snapshot is unusable until
+   * the next full view.
+   */
+  private applyMutationBody(resp: WireResponse): void {
+    const first = resp.body[0];
+    if (first === undefined) return;
+    if (!isDeltaBody(first)) {
+      this.snapshot = parseFullTree(resp.body);
+      this.synced = true;
+      this.fresh = true;
+      return;
+    }
+    if (this.synced && this.snapshot) {
+      applyDelta(this.snapshot, resp.body);
+      this.fresh = true;
+    } else {
+      this.synced = false;
+      this.fresh = false;
+    }
   }
 
   private get id(): string {
@@ -175,16 +216,21 @@ export class Page {
         token: this.token ?? '',
       });
       this.token = resp.token;
+      if (this.actDeltas) {
+        this.applyMutationBody(resp);
+      } else {
+        // 0.1.x: the act advanced the daemon's delta baseline without
+        // showing us the delta; the cached tree cannot be patched.
+        this.synced = false;
+        this.fresh = false;
+      }
     } catch (e) {
       if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
         this.token = e.args[0];
       }
-      throw e;
-    } finally {
-      // The act advanced the daemon's delta baseline without showing
-      // us the delta; the cached tree can no longer be patched.
       this.synced = false;
       this.fresh = false;
+      throw e;
     }
   }
 
@@ -197,13 +243,26 @@ export class Page {
   async clickAt(x: number, y: number, mode?: InputMode): Promise<void> {
     if (this.token === null) await this.view();
     try {
-      await this.client.call(
+      const resp = await this.client.call(
         'vs_click_at',
         [this.id, String(Math.round(x)), String(Math.round(y))],
         { session: this.sessionId, token: this.token ?? '', mode: mode ?? this.inputMode },
       );
-    } finally {
+      this.token = resp.token;
+      if (this.actDeltas) {
+        this.applyMutationBody(resp);
+      } else {
+        // 0.1.x cursor ops leave the baseline (and token) untouched;
+        // the snapshot just needs a re-read before the next action.
+        this.fresh = false;
+      }
+    } catch (e) {
+      if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
+        this.token = e.args[0];
+      }
+      this.synced = false;
       this.fresh = false;
+      throw e;
     }
   }
 
@@ -227,9 +286,13 @@ export class Page {
     try {
       const resp = await this.client.call('vs_type', [this.id, text], flags);
       this.token = resp.token;
-    } finally {
+      // vs_type advances neither baseline nor token on any released
+      // engine; the snapshot stays delta-patchable but not fresh.
+      this.fresh = false;
+    } catch (e) {
       this.synced = false;
       this.fresh = false;
+      throw e;
     }
   }
 
@@ -246,12 +309,19 @@ export class Page {
   ): Promise<void> {
     const args = value === undefined ? [this.id, cond] : [this.id, cond, value];
     const budget = timeoutMs ?? this.timeouts.navigation;
-    await this.client.call(
+    const resp = await this.client.call(
       'vs_wait',
       args,
       { session: this.sessionId, timeout: String(budget) },
       budget + 10_000,
     );
+    if (this.actDeltas) {
+      // 0.2 wait advances the baseline without emitting the tree; the
+      // token is a valid pre-image but the snapshot must be re-read.
+      this.token = resp.token;
+      this.synced = false;
+      this.fresh = false;
+    }
   }
 
   /**

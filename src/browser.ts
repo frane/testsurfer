@@ -4,7 +4,14 @@
  */
 
 import { WireClient, type ClientOptions } from './client.ts';
-import { Page, DEFAULT_TIMEOUTS, type ClickVia, type InputMode, type Timeouts } from './page.ts';
+import {
+  Page,
+  DEFAULT_TIMEOUTS,
+  type ClickVia,
+  type InputMode,
+  type ProtocolOptions,
+  type Timeouts,
+} from './page.ts';
 
 export interface LaunchOptions extends ClientOptions {
   timeouts?: Partial<Timeouts>;
@@ -18,6 +25,8 @@ export interface LaunchOptions extends ClientOptions {
   inputMode?: InputMode;
   /** How click() reaches visible targets. See ClickVia; default `click-at` for the 0.1.28 contract. */
   clickVia?: ClickVia;
+  /** Wire-semantics options for newer daemons. See ProtocolOptions. */
+  protocol?: ProtocolOptions;
 }
 
 export class Browser {
@@ -26,6 +35,7 @@ export class Browser {
   private readonly timeouts: Timeouts;
   private readonly inputMode: InputMode;
   private readonly clickVia: ClickVia;
+  private readonly protocol: ProtocolOptions;
 
   private constructor(
     client: WireClient,
@@ -33,12 +43,14 @@ export class Browser {
     timeouts: Timeouts,
     inputMode: InputMode,
     clickVia: ClickVia,
+    protocol: ProtocolOptions,
   ) {
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
     this.inputMode = inputMode;
     this.clickVia = clickVia;
+    this.protocol = protocol;
   }
 
   /** Connect to the daemon (spawning it if needed) and open a session. */
@@ -58,12 +70,13 @@ export class Browser {
       { ...DEFAULT_TIMEOUTS, ...options.timeouts },
       options.inputMode ?? 'robotic',
       options.clickVia ?? 'click-at',
+      options.protocol ?? {},
     );
   }
 
   /** A new page in this session. Call page.goto(url) to load a URL. */
   newPage(): Page {
-    return new Page(this.client, this.sessionId, this.timeouts, this.inputMode, this.clickVia);
+    return new Page(this.client, this.sessionId, this.timeouts, this.inputMode, this.clickVia, this.protocol);
   }
 
   /** Close the session and drop the connection. */

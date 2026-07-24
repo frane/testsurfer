@@ -66,6 +66,7 @@ function makeTargets() {
         this.browser = await TsBrowser.launch({
           ...(process.env.TESTSURFER_SOCKET ? { socketPath: process.env.TESTSURFER_SOCKET } : {}),
           ...(process.env.TESTSURFER_CLICK_VIA ? { clickVia: process.env.TESTSURFER_CLICK_VIA } : {}),
+          ...(process.env.TESTSURFER_ACT_DELTAS === '1' ? { protocol: { actDeltas: true } } : {}),
         });
       },
       async newPage() {
