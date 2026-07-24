@@ -12,7 +12,7 @@ export interface ExpectOptions {
   timeout?: number;
 }
 
-const POLL_MS = 30;
+const POLL_MS = 10;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();

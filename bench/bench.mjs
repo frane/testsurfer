@@ -70,7 +70,11 @@ function makeTargets() {
         });
       },
       async newPage() {
+        // Untimed page pre-warm, mirroring the Playwright targets where
+        // newContext+newPage are also outside the timer; the timed
+        // goto is then a nav-in-place on protocol-v1 daemons.
         const page = this.browser.newPage();
+        await page.goto('about:blank');
         return { page, done: () => page.close() };
       },
       async teardown() {

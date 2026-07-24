@@ -35,16 +35,18 @@ Playwright's very first WebKit launch on a fresh machine also paid an 8.7s one-t
 
 ## vibesurfer 0.2 branch preview
 
-The engine fixes filed from this benchmark are landed on the vibesurfer 0.2 branch: act returns its delta inline, wait tokens valid, dirty-flag snapshot caching, robotic click fast path, and the console-error read folded into the snapshot hop (found via this harness: every view after the second paid a hidden ~125ms engine eval). Same machine, sandboxed 0.2 daemon built from `04b5d76`, testsurfer with `clickVia: 'act'` and `protocol: { actDeltas: true }`:
+The engine fixes filed from this benchmark are landed on the vibesurfer 0.2 branch: act returns its delta inline, wait tokens valid, dirty-flag snapshot caching, robotic click fast path, console-error read folded into the snapshot hop, a 4ms serve-loop pump slice (every engine hop ~50ms to ~10ms), and vs_goto nav-in-place (~15ms vs ~90ms page open). testsurfer auto-negotiates all of it from the vs_status daemon line (proto=1, flags). Same machine, sandboxed 0.2 daemon built from `0d31740`, representative of three consecutive runs:
 
 | scenario           | testsurfer @0.2 | (was @0.1.27) | playwright-webkit | playwright-chromium |
 | ------------------ | --------------- | ------------- | ----------------- | ------------------- |
-| add two todos      | 327ms           | 840ms         | 99ms              | 81ms                |
-| complete and clear | 402ms           | 1396ms        | 164ms             | 113ms               |
-| delete a todo      | 239ms           | 791ms         | 89ms              | 81ms                |
-| suite total        | 1085ms          | 3127ms        | 380ms             | 296ms               |
+| launch             | 8ms             | 6ms           | 358ms             | 251ms               |
+| first paint        | 23ms            | 100ms         | 27ms              | 22ms                |
+| add two todos      | 117ms           | 840ms         | 115ms             | 83ms                |
+| complete and clear | 168ms           | 1396ms        | 164ms             | 114ms               |
+| delete a todo      | 92ms            | 791ms         | 101ms             | 74ms                |
+| suite total        | 400ms           | 3127ms        | 407ms             | 293ms               |
 
-2.9x faster than the pinned 0.1.x contract; the remaining ~3x gap to Playwright is the ~100ms page-open floor per goto (nav-in-place is next upstream) and the ~50ms evaluateJavaScript dispatch floor per engine hop (main-thread-free NoChange reads after that). These numbers become the primary table when 0.2 ships as the pinned release.
+Across three runs (testsurfer 400-424ms, playwright-webkit 407-491ms, playwright-chromium 293-315ms): testsurfer is at parity with Playwright-WebKit on suite wall time and ahead once launch is included; Playwright-Chromium keeps a ~1.3x lead on actions. Remaining per-action delta vs Chromium: the ~35ms trusted native robotic click (real OS input dispatch plus post-click snapshot) versus Chromium's ~10ms injected click. These numbers become the primary table when 0.2 ships as the pinned release.
 
 ## Honest reading
 

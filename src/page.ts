@@ -71,6 +71,12 @@ export interface ProtocolOptions {
    * mutations advance the baseline silently.
    */
   actDeltas?: boolean;
+  /**
+   * Navigate an existing page in place via vs_goto (protocol v1),
+   * reusing the engine web view instead of paying page creation on
+   * every goto. Falls back to close+open when the daemon rejects it.
+   */
+  navInPlace?: boolean;
 }
 
 export interface LayoutRect {
@@ -116,6 +122,7 @@ export class Page {
   readonly inputMode: InputMode;
   readonly clickVia: ClickVia;
   readonly actDeltas: boolean;
+  readonly navInPlace: boolean;
 
   constructor(
     client: WireClient,
@@ -131,6 +138,7 @@ export class Page {
     this.inputMode = inputMode;
     this.clickVia = clickVia;
     this.actDeltas = protocol.actDeltas ?? false;
+    this.navInPlace = protocol.navInPlace ?? false;
   }
 
   /**
@@ -168,6 +176,20 @@ export class Page {
    * so a second goto closes the old page and opens a new one.
    */
   async goto(url: string): Promise<void> {
+    if (this.pageId && this.navInPlace) {
+      try {
+        const resp = await this.client.call('vs_goto', [this.pageId, url], {
+          session: this.sessionId,
+        });
+        this.token = resp.token;
+        this.snapshot = null;
+        this.synced = false;
+        this.fresh = false;
+        return;
+      } catch {
+        // Old daemon or dead page; fall through to close+open.
+      }
+    }
     if (this.pageId) {
       await this.client
         .call('vs_close', [this.pageId], { session: this.sessionId })

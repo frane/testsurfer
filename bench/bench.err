@@ -1,0 +1,12 @@
+file:///Users/frane/workspace/testsurfer/dist/client.js:105
+        throw new Error(`cannot reach vibesurfer daemon at ${this.socketPath()}: ${String(lastErr)}`);
+              ^
+
+Error: cannot reach vibesurfer daemon at /tmp/tsbench/daemon.sock: Error: connect ENOENT /tmp/tsbench/daemon.sock
+    at WireClient.ensureConnected (file:///Users/frane/workspace/testsurfer/dist/client.js:105:15)
+    at async WireClient.connect (file:///Users/frane/workspace/testsurfer/dist/client.js:74:9)
+    at async Browser.launch (file:///Users/frane/workspace/testsurfer/dist/browser.js:56:24)
+    at async Object.setup (file:///Users/frane/workspace/testsurfer/bench/bench.mjs:66:24)
+    at async file:///Users/frane/workspace/testsurfer/bench/bench.mjs:116:3
+
+Node.js v24.14.1

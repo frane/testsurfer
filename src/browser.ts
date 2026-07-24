@@ -4,6 +4,27 @@
  */
 
 import { WireClient, type ClientOptions } from './client.ts';
+
+/** Parse the vs_status daemon line into negotiated capabilities. */
+async function negotiate(client: WireClient): Promise<{ proto: number; flags: Set<string> }> {
+  const caps = { proto: 0, flags: new Set<string>() };
+  try {
+    const status = await client.call('vs_status');
+    const line = status.body.find((l) => l.startsWith('daemon'));
+    if (!line) return caps;
+    for (const field of line.split('\t').slice(1)) {
+      const eq = field.indexOf('=');
+      if (eq <= 0) continue;
+      const key = field.slice(0, eq);
+      const value = field.slice(eq + 1);
+      if (key === 'proto') caps.proto = Number(value) || 0;
+      if (key === 'flags') for (const f of value.split(',')) caps.flags.add(f.trim());
+    }
+  } catch {
+    // Status shape unknown; stay on pinned-contract defaults.
+  }
+  return caps;
+}
 import {
   Page,
   DEFAULT_TIMEOUTS,
@@ -53,9 +74,16 @@ export class Browser {
     this.protocol = protocol;
   }
 
-  /** Connect to the daemon (spawning it if needed) and open a session. */
+  /**
+   * Connect to the daemon (spawning it if needed) and open a session.
+   * Wire capabilities are negotiated from the vs_status daemon line
+   * (`daemon version=... proto=N flags=a,b`): protocol-v1 daemons get
+   * inline act deltas, act-mode clicks, and nav-in-place goto
+   * automatically. Explicit options always win over negotiation.
+   */
   static async launch(options: LaunchOptions = {}): Promise<Browser> {
     const client = await WireClient.connect(options);
+    const caps = await negotiate(client);
     const flags: Record<string, string> = {};
     if (options.policy) flags['policy'] = options.policy;
     const resp = await client.call('vs_session_open', [], flags);
@@ -69,8 +97,11 @@ export class Browser {
       sessionId,
       { ...DEFAULT_TIMEOUTS, ...options.timeouts },
       options.inputMode ?? 'robotic',
-      options.clickVia ?? 'click-at',
-      options.protocol ?? {},
+      options.clickVia ?? (caps.flags.has('clickVia') ? 'act' : 'click-at'),
+      {
+        actDeltas: options.protocol?.actDeltas ?? caps.flags.has('actDeltas'),
+        navInPlace: options.protocol?.navInPlace ?? caps.proto >= 1,
+      },
     );
   }
 
