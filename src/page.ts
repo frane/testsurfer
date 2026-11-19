@@ -34,6 +34,7 @@ function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
 import { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
+import { renderSnapshot } from './aria.ts';
 
 export interface Timeouts {
   /** Budget for actions (click, fill, ...) including auto-waiting. */
@@ -53,11 +54,11 @@ export interface Timeouts {
 export type InputMode = 'human' | 'careful' | 'robotic';
 
 /**
- * How Locator.click reaches a visible target. `click-at` resolves the
- * rect and issues a coordinate click (works against the pinned
- * vibesurfer 0.1.28, whose vs_act ignores --mode and hardcodes the
- * slow humanized path). `act` sends vs_act click --mode directly,
- * one round trip fewer; needs a 0.2+ daemon.
+ * How Locator.click reaches a visible target. `act` sends vs_act click
+ * --mode directly (vibesurfer 0.2+, negotiated from the clickVia
+ * flag). `click-at` resolves the rect and issues a coordinate click,
+ * for 0.1.x daemons whose vs_act ignores --mode and always takes the
+ * slow humanized path.
  */
 export type ClickVia = 'click-at' | 'act';
 
@@ -67,8 +68,8 @@ export interface ProtocolOptions {
    * vibesurfer 0.2+ returns each mutation's tree delta inline (act and
    * cursor ops advance the delta baseline and emit their ViewForm).
    * When enabled the page applies those bodies and skips the re-read
-   * after actions. Leave off against the pinned 0.1.28 contract, whose
-   * mutations advance the baseline silently.
+   * after actions. Negotiated from the actDeltas flag; 0.1.x daemons
+   * advance the baseline silently and must leave it off.
    */
   actDeltas?: boolean;
   /**
@@ -123,6 +124,7 @@ export class Page {
   readonly clickVia: ClickVia;
   readonly actDeltas: boolean;
   readonly navInPlace: boolean;
+  readonly baseURL: string | undefined;
 
   constructor(
     client: WireClient,
@@ -131,7 +133,9 @@ export class Page {
     inputMode: InputMode = 'robotic',
     clickVia: ClickVia = 'click-at',
     protocol: ProtocolOptions = {},
+    baseURL?: string,
   ) {
+    this.baseURL = baseURL;
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
@@ -172,10 +176,12 @@ export class Page {
   }
 
   /**
-   * Navigate to a URL. vibesurfer models navigation as opening a page,
-   * so a second goto closes the old page and opens a new one.
+   * Navigate to a URL, relative to the baseURL launch option when set.
+   * Navigates in place on protocol-v1 daemons; older ones close the
+   * page and open a new one.
    */
-  async goto(url: string): Promise<void> {
+  async goto(target: string): Promise<void> {
+    const url = this.baseURL ? new URL(target, this.baseURL).href : target;
     if (this.pageId && this.navInPlace) {
       try {
         const resp = await this.client.call('vs_goto', [this.pageId, url], {
@@ -338,16 +344,22 @@ export class Page {
     }
   }
 
-  /** Full text of one ref via vs_read. */
+  /**
+   * Text of one ref and its subtree via vs_read. The body renders each
+   * node as `[ref] role: label`, indented; the labels are the text.
+   */
   async readRef(ref: number): Promise<string> {
     const resp = await this.client.call('vs_read', [this.id, String(ref)], {
       session: this.sessionId,
     });
     this.token = resp.token;
-    return resp.body.join('\n');
+    return resp.body
+      .map((l) => l.replace(/^\s*\[\d+\] [^:]*: ?/, ''))
+      .filter((l) => l.trim() !== '')
+      .join(' ');
   }
 
-  /** Trusted per-character typing into the focused element (macOS today). */
+  /** Trusted per-character typing into the focused element. */
   async typeTrusted(text: string, options?: { secret?: boolean; mode?: InputMode }): Promise<void> {
     const flags: Record<string, string | true> = {
       session: this.sessionId,
@@ -407,6 +419,122 @@ export class Page {
     });
     this.token = resp.token;
     return parseLayoutLines(resp.body);
+  }
+
+  /**
+   * Evaluate a JavaScript expression or function in the page and
+   * return its JSON-serializable result. A function is called with no
+   * arguments. Runs through vs_inspect eval, which reads the page
+   * without mutating the daemon's state token.
+   */
+  async evaluate<T = unknown>(fnOrExpr: string | (() => unknown)): Promise<T> {
+    const src = typeof fnOrExpr === 'function' ? `(${fnOrExpr.toString()})()` : `(${fnOrExpr})`;
+    const resp = await this.client.call(
+      'vs_inspect',
+      ['eval', this.id, `JSON.stringify(${src}) ?? "null"`],
+      { session: this.sessionId, full: true },
+    );
+    const line = resp.body.find((l) => l.startsWith('result='));
+    if (line === undefined) {
+      throw new Error(`evaluate failed: ${resp.body.join(' ').slice(0, 300)}`);
+    }
+    return JSON.parse(line.slice('result='.length)) as T;
+  }
+
+  /** The page's current URL. */
+  async url(): Promise<string> {
+    return this.evaluate<string>('location.href');
+  }
+
+  /**
+   * Save a PNG of the viewport (or the whole page with `fullPage`).
+   * Returns the file path; with `path`, the file is copied there.
+   */
+  async screenshot(options: { path?: string; fullPage?: boolean } = {}): Promise<string> {
+    const flags: Record<string, string | true> = { session: this.sessionId };
+    if (options.fullPage) flags['full-page'] = true;
+    const resp = await this.client.call('vs_capture', [this.id], flags);
+    const saved = (resp.body[0] ?? '').trim();
+    if (!saved) throw new Error('vs_capture returned no path');
+    if (!options.path) return saved;
+    const fs = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    await fs.mkdir(nodePath.dirname(options.path), { recursive: true });
+    await fs.copyFile(saved, options.path);
+    return options.path;
+  }
+
+  /**
+   * Save this page's login state (cookies, local and session storage,
+   * IndexedDB) under `name`, encrypted at rest by the daemon. Load it
+   * in a later run with loadAuth(name) to skip the login flow.
+   */
+  async saveAuth(name: string): Promise<void> {
+    await this.client.call('vs_auth', ['save', this.id, name], { session: this.sessionId });
+  }
+
+  /**
+   * Restore login state saved with saveAuth(name). Storage is per
+   * origin, so goto() a page on the site first, then load, then goto()
+   * the page under test.
+   */
+  async loadAuth(name: string): Promise<void> {
+    // The reply carries the zero token, not a page state; re-read later.
+    await this.client.call('vs_auth', ['load', this.id, name], { session: this.sessionId });
+    this.token = null;
+    this.synced = false;
+    this.fresh = false;
+  }
+
+  /** Delete login state saved under `name`. */
+  async clearAuth(name: string): Promise<void> {
+    await this.client.call('vs_auth', ['clear', name], { session: this.sessionId });
+  }
+
+  /**
+   * Trusted native pointer input at viewport coordinates (CSS px).
+   * Every event reaches the page with isTrusted=true, so canvas apps,
+   * sliders and drag-and-drop work. Cadence follows the page's input
+   * mode unless a call overrides it.
+   */
+  readonly mouse = {
+    move: (x: number, y: number, options?: { mode?: InputMode }): Promise<void> =>
+      this.cursorOp('vs_move_to', [x, y], options?.mode, false),
+    click: (x: number, y: number, options?: { mode?: InputMode }): Promise<void> =>
+      this.clickAt(x, y, options?.mode),
+    /** Press at (x1, y1), move along a path, release at (x2, y2). Fires the HTML5 drag events too. */
+    drag: (
+      x1: number,
+      y1: number,
+      x2: number,
+      y2: number,
+      options?: { mode?: InputMode },
+    ): Promise<void> => this.cursorOp('vs_drag', [x1, y1, x2, y2], options?.mode, true),
+  };
+
+  private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
+    if (this.token === null) await this.view();
+    const flags: Record<string, string> = { session: this.sessionId, mode: mode ?? this.inputMode };
+    if (mutates) flags['token'] = this.token ?? '';
+    try {
+      const resp = await this.client.call(op, [this.id, ...coords.map((c) => String(Math.round(c)))], flags);
+      if (resp.token && !/^0+$/.test(resp.token)) this.token = resp.token;
+      if (mutates && this.actDeltas) this.applyMutationBody(resp);
+      else this.fresh = false;
+    } catch (e) {
+      if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
+        this.token = e.args[0];
+      }
+      this.synced = false;
+      this.fresh = false;
+      throw e;
+    }
+  }
+
+  /** The whole page as template text (see toMatchAriaSnapshot). */
+  async ariaSnapshot(): Promise<string> {
+    const snap = await this.view();
+    return renderSnapshot(snap, snap.roots);
   }
 
   /** The document title (the doc node's label). */

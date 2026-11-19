@@ -19,11 +19,11 @@ jobs:
       - run: npm run test:unit
       - name: e2e against the pinned vibesurfer binary
         env:
-          TESTSURFER_VS: npx -y vibesurfer@0.1.28
+          TESTSURFER_VS: npx -y vibesurfer@0.2.12
         run: npm run test:e2e
       - name: example project
         env:
-          TESTSURFER_VS: npx -y vibesurfer@0.1.28
+          TESTSURFER_VS: npx -y vibesurfer@0.2.12
         working-directory: examples/todo
         run: |
           npm install

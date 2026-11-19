@@ -21,8 +21,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "node --test test/wire.test.ts test/tree.test.ts test/locator.test.ts",
-    "test:e2e": "node --test test/e2e.test.ts"
+    "test:unit": "node --test test/wire.test.ts test/tree.test.ts test/locator.test.ts test/aria.test.ts",
+    "test:e2e": "node --test test/e2e.test.ts test/features.test.ts"
   },
   "engines": {
     "node": ">=22.18"

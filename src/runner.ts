@@ -8,7 +8,8 @@
  * yourself with `Browser.launch()`.
  */
 
-import { test as nodeTest, after } from 'node:test';
+import { test as nodeTest, describe as nodeDescribe, after } from 'node:test';
+import * as path from 'node:path';
 import { Browser, type LaunchOptions } from './browser.ts';
 import type { Page } from './page.ts';
 
@@ -16,15 +17,33 @@ export interface TestFixtures {
   page: Page;
 }
 
+export interface RunnerOptions extends LaunchOptions {
+  /**
+   * Start every test's page logged in: open `url` (any page on the
+   * site), restore the login saved under `name` with page.saveAuth(),
+   * and hand the test the page. Storage is per origin, which is why a
+   * URL on the site is needed.
+   */
+  auth?: { name: string; url: string };
+  /** Save a PNG of the page when a test fails. Default `off`. */
+  screenshot?: 'off' | 'only-on-failure';
+  /** Directory for failure screenshots. Default `test-results`. */
+  outputDir?: string;
+}
+
 type TestFn = (fixtures: TestFixtures) => Promise<void> | void;
+type HookFn = (fixtures: TestFixtures) => Promise<void> | void;
 
 let shared: Promise<Browser> | null = null;
-let launchOptions: LaunchOptions = {};
+let options: RunnerOptions = {};
 let teardownRegistered = false;
 
-/** Override launch options for the shared browser. Call before the first test runs. */
-export function configure(options: LaunchOptions): void {
-  launchOptions = options;
+/** Hooks registered at each describe depth, innermost last. */
+const hookStack: { before: HookFn[]; after: HookFn[] }[] = [{ before: [], after: [] }];
+
+/** Override options for the shared browser. Call before the first test runs. */
+export function configure(next: RunnerOptions): void {
+  options = next;
 }
 
 /**
@@ -43,31 +62,82 @@ function ensureTeardown(): void {
 }
 
 function sharedBrowser(): Promise<Browser> {
-  shared ??= Browser.launch(launchOptions);
+  shared ??= Browser.launch(options);
   return shared;
 }
 
-async function withPage(fn: TestFn): Promise<void> {
-  const browser = await sharedBrowser();
-  const page = browser.newPage();
-  try {
-    await fn({ page });
-  } finally {
-    await page.close().catch(() => {});
-  }
+function safeName(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-|-$/g, '').slice(0, 120) || 'test';
+}
+
+function runWith(name: string, fn: TestFn): () => Promise<void> {
+  // Capture the scopes now, at registration (a describe block pops its
+  // scope once its body has run), but read their hooks at run time so
+  // a hook declared after a test in the same scope still applies.
+  const scopes = [...hookStack];
+  return async () => {
+    const befores = scopes.flatMap((h) => h.before);
+    const afters = scopes.flatMap((h) => h.after).reverse();
+    const browser = await sharedBrowser();
+    const page = browser.newPage();
+    try {
+      if (options.auth) {
+        await page.goto(options.auth.url);
+        await page.loadAuth(options.auth.name);
+      }
+      try {
+        for (const h of befores) await h({ page });
+        await fn({ page });
+      } catch (e) {
+        if (options.screenshot === 'only-on-failure') {
+          const file = path.join(options.outputDir ?? 'test-results', `${safeName(name)}.png`);
+          const saved = await page.screenshot({ path: file }).catch(() => null);
+          if (saved && e instanceof Error) e.message += `\n  screenshot: ${saved}`;
+        }
+        throw e;
+      } finally {
+        for (const h of afters) await h({ page });
+      }
+    } finally {
+      await page.close().catch(() => {});
+    }
+  };
 }
 
 export function test(name: string, fn: TestFn): void {
   ensureTeardown();
-  nodeTest(name, () => withPage(fn));
+  nodeTest(name, runWith(name, fn));
 }
 
 test.only = (name: string, fn: TestFn): void => {
   ensureTeardown();
-  nodeTest(name, { only: true }, () => withPage(fn));
+  nodeTest(name, { only: true }, runWith(name, fn));
 };
 
 test.skip = (name: string, fn: TestFn): void => {
   ensureTeardown();
-  nodeTest(name, { skip: true }, () => withPage(fn));
+  nodeTest(name, { skip: true }, runWith(name, fn));
+};
+
+/** Group tests. Hooks registered inside apply to the group's tests only. */
+test.describe = (name: string, body: () => void): void => {
+  ensureTeardown();
+  nodeDescribe(name, () => {
+    hookStack.push({ before: [], after: [] });
+    try {
+      body();
+    } finally {
+      hookStack.pop();
+    }
+  });
+};
+
+/** Run before each test in the current scope, with the test's page. */
+test.beforeEach = (fn: HookFn): void => {
+  hookStack[hookStack.length - 1]!.before.push(fn);
+};
+
+/** Run after each test in the current scope, pass or fail. */
+test.afterEach = (fn: HookFn): void => {
+  hookStack[hookStack.length - 1]!.after.push(fn);
 };

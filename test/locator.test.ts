@@ -54,3 +54,16 @@ test('getByLabel targets form fields', () => {
   const heading: LocatorQuery = { kind: 'label', text: 'Sign in to continue', options: {} };
   assert.equal(findMatches(snap, heading).length, 0);
 });
+
+test('getByLabel and role names see the <label> text of a field (lbl=)', () => {
+  const s = parseFullTree([
+    '1 doc ""',
+    '  2 tf "a@b.com" fill,focus lbl="Work email"',
+    '  3 chk on click,focus lbl="Accept terms"',
+    '  4 mn ""',
+  ]);
+  assert.deepEqual(findMatches(s, { kind: 'label', text: 'work email', options: {} }).map((n) => n.ref), [2]);
+  assert.deepEqual(findMatches(s, byRole('checkbox', 'Accept terms')).map((n) => n.ref), [3]);
+  assert.deepEqual(findMatches(s, byRole('textbox', 'a@b.com')).map((n) => n.ref), [2]);
+  assert.deepEqual(findMatches(s, byRole('main')).map((n) => n.ref), [4]);
+});

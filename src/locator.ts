@@ -9,37 +9,9 @@
 
 import { StrictModeError, TimeoutError, WireError } from './errors.ts';
 import { isHidden, walk, type Snapshot, type TreeNode } from './tree.ts';
-import type { Page } from './page.ts';
-
-/** ARIA role names accepted by getByRole, mapped to wire role codes. */
-const ROLE_TO_CODES: Record<string, string[]> = {
-  document: ['doc'],
-  button: ['btn'],
-  link: ['lnk'],
-  textbox: ['tf', 'ta'],
-  combobox: ['sel'],
-  checkbox: ['chk'],
-  radio: ['rad'],
-  img: ['img'],
-  image: ['img'],
-  heading: ['hd'],
-  paragraph: ['p'],
-  listitem: ['li'],
-  list: ['lst'],
-  table: ['tbl'],
-  row: ['row'],
-  cell: ['cell'],
-  columnheader: ['hdr'],
-  navigation: ['nav'],
-  form: ['frm'],
-  dialog: ['dlg'],
-  menuitem: ['itm'],
-  tab: ['itm'],
-  option: ['itm'],
-  region: ['sec'],
-  article: ['art'],
-  menu: ['mn'],
-};
+import { renderSnapshot } from './aria.ts';
+import { ROLE_TO_CODES } from './roles.ts';
+import type { LayoutRect, Page } from './page.ts';
 
 const FIELD_CODES = new Set(['tf', 'ta', 'sel', 'chk', 'rad']);
 
@@ -77,6 +49,12 @@ function matchesText(label: string, expected: string | RegExp, exact: boolean): 
   return exact ? norm === want : norm.toLowerCase().includes(want.toLowerCase());
 }
 
+/** A node's label plus, for a labelled form field, its <label> text. */
+function names(node: TreeNode): string[] {
+  const lbl = node.attrs['lbl'];
+  return lbl ? [node.label, lbl] : [node.label];
+}
+
 function matchesQuery(node: TreeNode, query: LocatorQuery): boolean {
   switch (query.kind) {
     case 'role': {
@@ -84,16 +62,18 @@ function matchesQuery(node: TreeNode, query: LocatorQuery): boolean {
       if (!codes.includes(node.role)) return false;
       const { name, exact = false, level } = query.options;
       if (level !== undefined && node.attrs['level'] !== String(level)) return false;
-      if (name !== undefined && !matchesName(node.label, name, exact)) return false;
+      if (name !== undefined && !names(node).some((n) => matchesName(n, name, exact))) return false;
       return true;
     }
     case 'text':
       return node.label !== '' && matchesText(node.label, query.text, query.options.exact ?? false);
-    case 'label':
-      return (
-        FIELD_CODES.has(node.role) &&
-        matchesText(node.label, query.text, query.options.exact ?? false)
-      );
+    case 'label': {
+      // The field's <label> text (lbl=, vibesurfer 0.2.12+) is the
+      // label; aria-label lands in the node label itself.
+      if (!FIELD_CODES.has(node.role)) return false;
+      const exact = query.options.exact ?? false;
+      return names(node).some((n) => matchesText(n, query.text, exact));
+    }
   }
 }
 
@@ -288,9 +268,8 @@ export class Locator {
 
   /**
    * Focus the element, then send real per-character key events
-   * (isTrusted=true). Needs vibesurfer's trusted typing support (macOS
-   * today); rejects with ENGINE_UNSUPPORTED elsewhere. Use fill() for
-   * plain inputs.
+   * (isTrusted=true), for rich-text editors and inputs that ignore a
+   * programmatic fill. Use fill() for plain inputs.
    */
   async type(text: string, options?: { timeout?: number }): Promise<void> {
     await this.withResolved(
@@ -324,5 +303,75 @@ export class Locator {
   /** Number of current matches (no waiting). */
   async count(): Promise<number> {
     return (await this.resolveAll()).length;
+  }
+
+  /** True if the locator has a visible match right now (no waiting). */
+  async isVisible(): Promise<boolean> {
+    const visible = await this.resolveVisible();
+    return this.index === null ? visible.length > 0 : visible[this.index] !== undefined;
+  }
+
+  /** Checked state of a checkbox or radio, from the tree (vibesurfer 0.2.12+). */
+  async isChecked(options?: { timeout?: number }): Promise<boolean> {
+    return this.withResolved('isChecked', async (n) => n.attrs['checked'] === '1', options?.timeout);
+  }
+
+  /** Click a checkbox or radio unless it is already checked. */
+  async check(options?: { timeout?: number }): Promise<void> {
+    if (!(await this.isChecked(options))) await this.click(options);
+  }
+
+  /** Click a checkbox unless it is already unchecked. */
+  async uncheck(options?: { timeout?: number }): Promise<void> {
+    if (await this.isChecked(options)) await this.click(options);
+  }
+
+  /**
+   * Current value of a text field or select. The tree labels a field
+   * with its value; a password field reads `***` once filled.
+   */
+  async inputValue(options?: { timeout?: number }): Promise<string> {
+    return this.withResolved('inputValue', async (n) => n.label, options?.timeout);
+  }
+
+  /** Viewport rect in CSS px, or null when the element is not rendered. */
+  async boundingBox(options?: { timeout?: number }): Promise<LayoutRect | null> {
+    return this.withResolved(
+      'boundingBox',
+      async (n) => {
+        const r = (await this.page.layout([n.ref])).get(n.ref);
+        return r && r.w > 0 && r.h > 0 ? r : null;
+      },
+      options?.timeout,
+    );
+  }
+
+  /**
+   * Drag this element onto `target` with a trusted press, move and
+   * release from center to center. vibesurfer also fires the HTML5
+   * drag events, so native draggable and react-dnd lists see the drop.
+   */
+  async dragTo(target: Locator, options?: { timeout?: number }): Promise<void> {
+    const from = await this.boundingBox(options);
+    if (!from) throw new TimeoutError(`dragTo: ${this.toString()} is not rendered`);
+    const to = await target.boundingBox(options);
+    if (!to) throw new TimeoutError(`dragTo: ${target.toString()} is not rendered`);
+    await this.page.mouse.drag(from.x + from.w / 2, from.y + from.h / 2, to.x + to.w / 2, to.y + to.h / 2);
+  }
+
+  /** The matched element's subtree as template text (see toMatchAriaSnapshot). */
+  async ariaSnapshot(options?: { timeout?: number }): Promise<string> {
+    return this.withResolved(
+      'ariaSnapshot',
+      async (n) => renderSnapshot(await this.page.actionSnapshot(), [n.ref]),
+      options?.timeout,
+    );
+  }
+
+  /** Refs of the strict-mode match, for scoping a snapshot match. */
+  async resolveScope(): Promise<{ snap: Snapshot; refs: number[] }> {
+    const snap = await this.page.view();
+    const node = this.pickOne(preferVisible(snap, findMatches(snap, this.query)));
+    return { snap, refs: node ? [node.ref] : [] };
   }
 }

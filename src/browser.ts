@@ -44,10 +44,12 @@ export interface LaunchOptions extends ClientOptions {
    * behind bot detection that scores cursor motion.
    */
   inputMode?: InputMode;
-  /** How click() reaches visible targets. See ClickVia; default `click-at` for the 0.1.28 contract. */
+  /** How click() reaches visible targets. See ClickVia; negotiated from the daemon by default. */
   clickVia?: ClickVia;
   /** Wire-semantics options for newer daemons. See ProtocolOptions. */
   protocol?: ProtocolOptions;
+  /** Resolve relative goto() URLs against this, e.g. `http://localhost:3000`. */
+  baseURL?: string;
 }
 
 export class Browser {
@@ -57,6 +59,7 @@ export class Browser {
   private readonly inputMode: InputMode;
   private readonly clickVia: ClickVia;
   private readonly protocol: ProtocolOptions;
+  private readonly baseURL: string | undefined;
 
   private constructor(
     client: WireClient,
@@ -65,7 +68,9 @@ export class Browser {
     inputMode: InputMode,
     clickVia: ClickVia,
     protocol: ProtocolOptions,
+    baseURL: string | undefined,
   ) {
+    this.baseURL = baseURL;
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
@@ -102,12 +107,21 @@ export class Browser {
         actDeltas: options.protocol?.actDeltas ?? caps.flags.has('actDeltas'),
         navInPlace: options.protocol?.navInPlace ?? caps.proto >= 1,
       },
+      options.baseURL,
     );
   }
 
   /** A new page in this session. Call page.goto(url) to load a URL. */
   newPage(): Page {
-    return new Page(this.client, this.sessionId, this.timeouts, this.inputMode, this.clickVia, this.protocol);
+    return new Page(
+      this.client,
+      this.sessionId,
+      this.timeouts,
+      this.inputMode,
+      this.clickVia,
+      this.protocol,
+      this.baseURL,
+    );
   }
 
   /** Close the session and drop the connection. */

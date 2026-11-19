@@ -1,0 +1,33 @@
+/** Role vocabulary shared by locators and tree snapshots. */
+
+/** ARIA role names accepted by getByRole, mapped to wire role codes. */
+export const ROLE_TO_CODES: Record<string, string[]> = {
+  document: ['doc'],
+  button: ['btn'],
+  link: ['lnk'],
+  textbox: ['tf', 'ta'],
+  combobox: ['sel'],
+  checkbox: ['chk'],
+  radio: ['rad'],
+  img: ['img'],
+  image: ['img'],
+  heading: ['hd'],
+  paragraph: ['p'],
+  listitem: ['li'],
+  list: ['lst'],
+  table: ['tbl'],
+  row: ['row'],
+  cell: ['cell'],
+  columnheader: ['hdr'],
+  navigation: ['nav'],
+  form: ['frm'],
+  dialog: ['dlg'],
+  menuitem: ['itm'],
+  tab: ['itm'],
+  option: ['itm'],
+  region: ['sec'],
+  article: ['art'],
+  main: ['mn'],
+  iframe: ['ifr'],
+  generic: ['el'],
+};
