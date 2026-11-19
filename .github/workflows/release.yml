@@ -1,0 +1,38 @@
+name: release
+
+# Tag-driven npm release. Push a `v*` tag whose version matches
+# package.json and this job publishes it with npm trusted publishing
+# (OIDC, no token) and a provenance attestation. The trusted publisher
+# is configured on npmjs.com for this repo and workflow file.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  npm:
+    name: npm publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Check the tag matches package.json
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "${pkg}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package.json ${pkg}"
+            exit 1
+          fi
+      - run: npm ci
+      - name: Publish
+        run: |
+          # Trusted publishing needs npm >= 11.5.
+          npm install -g npm@latest
+          npm publish --access public --provenance
