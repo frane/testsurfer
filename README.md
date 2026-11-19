@@ -70,7 +70,7 @@ await expect(page.getByRole('main')).toMatchAriaSnapshot(`
 `);
 ```
 
-Template siblings must appear in that order, and a child can sit at any depth under its parent, so wrapper elements do not break a template. Nodes the template does not mention are ignored. A name in quotes matches the whole name; `/regex/flags` is tested as written; no name matches any. `[level=N]` and `[checked]` constrain headings and checkboxes. `await locator.ariaSnapshot()` (or `page.ariaSnapshot()`) prints the current tree in this format, ready to paste in and trim.
+Template siblings must appear in that order, and a child can sit at any depth under its parent, so wrapper elements do not break a template. Nodes the template does not mention are ignored. A name in quotes matches the whole name; `/regex/flags` is tested as written; no name matches any. `[level=N]` and `[checked]` constrain headings and checkboxes. A form field is printed under its `<label>` text when it has one; in a template, either that text or the field's current value names it. `await locator.ariaSnapshot()` (or `page.ariaSnapshot()`) prints the current tree in this format, ready to paste in and trim.
 
 ## The page
 
