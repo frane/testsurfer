@@ -162,9 +162,27 @@ export class WireClient {
         return;
       } catch (e) {
         lastErr = e;
+        // node --test runs test files in parallel, so another process
+        // may be spawning the daemon right now and won the race (its
+        // npx install or socket bind made ours fail). Use its daemon.
+        if (await this.socketUp()) return;
       }
     }
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (await this.socketUp()) return;
+      await sleep(250);
+    }
     throw new Error(`could not start the vibesurfer daemon (tried vs, npx): ${String(lastErr)}`);
+  }
+
+  private async socketUp(): Promise<boolean> {
+    try {
+      (await connectOnce(this.socketPath())).destroy();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private attach(sock: net.Socket): void {
