@@ -1,0 +1,44 @@
+name: bench
+
+# testsurfer vs Playwright on the same flows (bench/bench.mjs), on a
+# clean GitHub macOS runner. Run by hand; the table lands in the job
+# summary.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build testsurfer
+        run: |
+          npm ci
+          npm run build
+      - name: Install bench deps and Playwright browsers
+        working-directory: bench
+        run: |
+          npm ci
+          npx playwright install webkit chromium
+      - name: Start the pinned vibesurfer daemon
+        run: |
+          pinned=$(sed -n "s/^export const PINNED_VIBESURFER = '\(.*\)';/\1/p" src/client.ts)
+          echo "pinned=${pinned}"
+          npx -y "vibesurfer@${pinned}" status
+          echo "VS_VERSION=$(npx -y "vibesurfer@${pinned}" --version)" >> "$GITHUB_ENV"
+      - name: Run the benchmark
+        working-directory: bench
+        run: |
+          node bench.mjs > table.md
+          cat table.md
+          {
+            echo "## testsurfer vs Playwright"
+            echo
+            echo "$(sw_vers -productName) $(sw_vers -productVersion) $(uname -m), ${VS_VERSION}, playwright $(npx playwright --version | awk '{print $2}'), $(date -u +%Y-%m-%d). Median of 5 iterations, fresh page per iteration, steady state."
+            echo
+            cat table.md
+          } >> "$GITHUB_STEP_SUMMARY"
