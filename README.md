@@ -141,7 +141,7 @@ Version 0.1 pins vibesurfer 0.2.13 and speaks its frozen wire protocol (v1). Old
 
 ## Benchmark
 
-[`bench/`](bench) runs identical flows through testsurfer and Playwright (WebKit and Chromium) against the same app and reports the numbers, favorable and not. Summary from the July runs against vibesurfer 0.1.x: a working testsurfer install is ~6MB against ~300MB+ per Playwright browser and launches in single-digit milliseconds against the resident daemon, while Playwright is ~8x faster per action once its browser is running. The full table, methodology, and the reasons live in the bench README.
+[`bench/`](bench) runs identical flows through testsurfer and Playwright (WebKit and Chromium) against the same app and reports the numbers, favorable and not. On a GitHub macOS runner with vibesurfer 0.2.13: testsurfer launches in 4ms against Playwright's 0.6-2s, and runs the four-flow suite in 1437ms against 845ms for Playwright-WebKit and 494ms for Playwright-Chromium. A working install is ~6MB against ~300MB+ per Playwright browser. The full table, methodology and history are in the bench README; the `bench` workflow reproduces them.
 
 ## Example
 
