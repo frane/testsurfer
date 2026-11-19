@@ -30,7 +30,7 @@ Node 22.18 or newer runs the `.ts` test files directly.
 
 vibesurfer is a daemon that owns one real WebKit engine and speaks a line protocol over a Unix socket. testsurfer is a TypeScript client for that protocol. It opens a session, resolves your locators against the live accessibility tree, and handles the daemon's optimistic-concurrency tokens internally. You never see a token, a ref, or a retry.
 
-The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.12` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
+The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.13` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
 
 ## API
 
@@ -137,7 +137,7 @@ await browser.close();
 
 ## Status
 
-Version 0.1 pins vibesurfer 0.2.12 and speaks its frozen wire protocol (v1). Older daemons work for everything except `level`, `checked` and `<label>` lookups, which need the tree attributes 0.2.12 added. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
+Version 0.1 pins vibesurfer 0.2.13 and speaks its frozen wire protocol (v1). Older daemons work for everything except `level`, `checked` and `<label>` lookups, which need the tree attributes 0.2.12 added. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
 
 ## Benchmark
 
