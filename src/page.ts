@@ -318,6 +318,34 @@ export class Page {
   /** goto() already waits for the load; kept for Playwright compatibility. */
   async waitForLoadState(_state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void> {}
 
+  /**
+   * Replace the document with `html`; its scripts run. On an http(s)
+   * page the document is rewritten in place, so it keeps that origin
+   * and relative URLs resolve against it. Otherwise the page loads the
+   * HTML as a data: URL (an opaque origin, no storage): WebKit drops
+   * native clicks on a rewritten about:blank.
+   */
+  async setContent(html: string): Promise<void> {
+    const here = this.pageId ? await this.url().catch(() => '') : '';
+    if (!/^https?:/.test(here)) {
+      await this.goto(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      return;
+    }
+    await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
+    this.snapshot = null;
+    this.synced = false;
+    this.fresh = false;
+  }
+
+  /** The document's HTML, without the ref markers vibesurfer adds. */
+  async content(): Promise<string> {
+    return this.evaluate<string>(
+      `(function(){var c=document.documentElement.cloneNode(true);c.removeAttribute('data-vs-ref');` +
+        `c.querySelectorAll('[data-vs-ref]').forEach(function(e){e.removeAttribute('data-vs-ref');});` +
+        `return '<!DOCTYPE html>'+c.outerHTML;})()`,
+    );
+  }
+
   /** Load the current URL again. */
   async reload(): Promise<void> {
     await this.goto(await this.url());

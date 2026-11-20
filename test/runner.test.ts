@@ -114,3 +114,12 @@ test('several pages and contexts', async ({ page, context, browser }) => {
   await expect(third.getByRole('heading')).toHaveText('/two');
   await other.close();
 });
+
+test('setContent loads HTML whose scripts run; content() returns it', async ({ page }) => {
+  await page.setContent('<h1>Inline</h1><button onclick="this.textContent=\'pressed\'">Press</button>');
+  await expect(page.getByRole('heading')).toHaveText('Inline');
+  await page.getByRole('button').click();
+  await expect(page.getByRole('button')).toHaveText('pressed');
+  assert.match(await page.content(), /<h1>Inline<\/h1>/);
+  assert.doesNotMatch(await page.content(), /data-vs-ref/);
+});
