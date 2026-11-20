@@ -136,11 +136,14 @@ export class Browser {
 
   /**
    * A new context: its own vibesurfer session, closed with the context.
-   * The engine has one cookie and storage jar for all sessions, so
-   * contexts are not isolated from each other the way Playwright's are.
+   * By default the session is isolated (vibesurfer 0.2.16+): its own
+   * in-memory cookie and storage jar, discarded on close, as a
+   * Playwright context is. `{ isolated: false }` shares the engine's
+   * persistent jar (logins survive across runs).
    */
-  async newContext(): Promise<BrowserContext> {
-    const resp = await this.client.call('vs_session_open', [], {});
+  async newContext(options: { isolated?: boolean } = {}): Promise<BrowserContext> {
+    const flags: Record<string, true> = options.isolated === false ? {} : { isolated: true };
+    const resp = await this.client.call('vs_session_open', [], flags);
     const id = resp.body[0];
     if (!id) throw new Error('vs_session_open returned no session id');
     const ctx = new BrowserContext(this, id, true);

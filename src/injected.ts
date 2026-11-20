@@ -313,8 +313,20 @@ export function installEngine(SER) {
     'tooltip', 'treeitem', 'listitem', 'term', 'definition',
   ]);
 
+  /** CSS generated content (::before / ::after), which accessible names include. */
+  function pseudoText(e, which) {
+    try {
+      const c = (e.ownerDocument.defaultView || window).getComputedStyle(e, which).content;
+      if (!c || c === 'none' || c === 'normal') return '';
+      const m = /^(["'])([\s\S]*)\1$/.exec(c);
+      return m ? m[2] : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   function contentName(e, skip, visited) {
-    let out = '';
+    let out = pseudoText(e, '::before');
     const add = (s) => {
       out += s;
     };
@@ -333,6 +345,7 @@ export function installEngine(SER) {
       } else add(textAlternative(c, skip, visited, true));
       if (block) add(' ');
     }
+    out += pseudoText(e, '::after');
     return out;
   }
 
@@ -1140,9 +1153,12 @@ export function installEngine(SER) {
     for (let i = 1; i <= count; i++) {
       o.detail = i;
       mouseEvent(e, 'pointerdown', x, y, o);
-      if (mouseEvent(e, 'mousedown', x, y, o) && i === 1 && typeof e.focus === 'function') {
-        const f = e.closest('a,button,input,select,textarea,[tabindex],[contenteditable]');
-        if (f) f.focus();
+      if (mouseEvent(e, 'mousedown', x, y, o) && i === 1) {
+        // The default action of a press: focus the nearest focusable ancestor, or clear focus.
+        const f = e.closest('a[href],button,input,select,textarea,iframe,summary,[tabindex],[contenteditable]');
+        const act = deepActive(e.ownerDocument);
+        if (f && !isDisabled(f)) f.focus();
+        else if (act && act !== e.ownerDocument.body && !contains(act, e) && typeof act.blur === 'function') act.blur();
       }
       o.buttons = 0;
       mouseEvent(e, 'pointerup', x, y, o);
@@ -1318,7 +1334,36 @@ export function installEngine(SER) {
       }
     }
     const t = topRect(e);
+    // Remembered so settleFocus can tell whether the click moved focus.
+    focusMoved = false;
+    const d = e.ownerDocument;
+    if (!d.__tsFocusWatch) {
+      const mark = () => {
+        focusMoved = true;
+      };
+      d.addEventListener('focusin', mark, true);
+      d.addEventListener('focusout', mark, true);
+      Object.defineProperty(d, '__tsFocusWatch', { value: true });
+    }
     return { x: t.x + (first.left - r.left) + lx, y: t.y + (first.top - r.top) + ly };
+  }
+
+  let focusMoved = true;
+
+  /**
+   * After a native click: a press on content moves focus to its nearest
+   * focusable ancestor, or clears it. The headless view does not always
+   * do that itself, and apps that save on blur depend on it.
+   */
+  function settleFocus(e) {
+    const act = deepActive(e.ownerDocument);
+    if (focusMoved || !act || act === e.ownerDocument.body) return true;
+    focusMoved = true;
+    if (contains(e, act) || contains(act, e)) return true;
+    const f = e.closest('a[href],area[href],button,input,select,textarea,iframe,summary,[tabindex],[contenteditable=""],[contenteditable="true"]');
+    if (f && !isDisabled(f)) f.focus();
+    else if (typeof act.blur === 'function') act.blur();
+    return true;
   }
 
   const OPS = {
@@ -1368,6 +1413,7 @@ export function installEngine(SER) {
     },
     eval: (e, a) => a.fnc(e, SER.des(a.arg)),
     clickPoint: (e, a) => clickPoint(e, a),
+    settleFocus: (e) => settleFocus(e),
     synthClick: (e, a) => {
       if (typeof e.scrollIntoViewIfNeeded === 'function') e.scrollIntoViewIfNeeded(true);
       synthClick(e, a);

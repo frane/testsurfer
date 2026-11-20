@@ -128,8 +128,9 @@ test.describe('network', () => {
     if (res.status() !== 200) throw new Error(`status ${res.status()}`);
     if (!seen.includes('GET /api/items')) throw new Error(`requests: ${seen.join(';')}`);
 
+    const errP = page.waitForEvent<Error>('pageerror');
     await page.getByRole('button', { name: 'Boom' }).click();
-    const err = await page.waitForEvent<Error>('pageerror');
+    const err = await errP;
     if (!err.message.includes('kaboom')) throw new Error(`pageerror: ${err.message}`);
     if (!console.some((m) => m.type() === 'warning' && m.text() === 'about to fail')) {
       throw new Error(`console: ${console.map((m) => `${m.type()}:${m.text()}`).join(';')}`);

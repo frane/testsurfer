@@ -46,6 +46,12 @@ export interface RunnerOptions extends LaunchOptions {
    * writes. TESTSURFER_UPDATE_SNAPSHOTS=1 means `all`.
    */
   updateSnapshots?: UpdateSnapshots;
+  /**
+   * Give every test its own cookie and storage jar (default true, as
+   * Playwright does). false runs all tests in the browser's session,
+   * sharing the engine's persistent jar.
+   */
+  isolate?: boolean;
 }
 
 type Fixtures = Record<string, unknown>;
@@ -313,7 +319,8 @@ async function runTest(
   const befores = chain.flatMap((s) => s.beforeEach);
   const afters = chain.flatMap((s) => s.afterEach).reverse();
   const browser = await sharedBrowser();
-  const context = browser.sharedContext();
+  // Each test gets a fresh, isolated context unless the suite opts out.
+  const context = options.isolate === false ? browser.sharedContext() : await browser.newContext();
   const page = await context.newPage();
   try {
     if (options.auth) {

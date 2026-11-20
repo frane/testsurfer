@@ -529,12 +529,12 @@ export class Locator {
     const synthetic =
       (options.button && options.button !== 'left') ||
       (options.modifiers && options.modifiers.length > 0) ||
-      (options.clickCount ?? 1) > 1 ||
-      this.owner.clickVia === 'act';
+      (options.clickCount ?? 1) > 1;
     if (synthetic) {
       await this.waitOne('locator.click', 'synthClick', options, options.timeout);
     } else {
       await this.owner.clickAt(pt.x, pt.y);
+      await this.run('settleFocus', {}, { first: true }).catch(() => {});
     }
   }
 

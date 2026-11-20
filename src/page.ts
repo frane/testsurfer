@@ -703,7 +703,7 @@ export class Page {
     try {
       const resp = await this.client.call(
         'vs_click_at',
-        [this.id, String(Math.round(x)), String(Math.round(y))],
+        [this.id, String(Math.round(x * 100) / 100), String(Math.round(y * 100) / 100)],
         { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode },
       );
       this.token = resp.token;
