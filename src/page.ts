@@ -451,6 +451,7 @@ export class Page {
     const id = resp.body[0];
     if (!id) throw new Error('vs_open returned no page id for about:blank');
     this.pageId = id;
+    await this.applyViewport();
     this.token = resp.token;
     for (const src of this.initScripts) {
       await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
@@ -498,6 +499,7 @@ export class Page {
     const id = resp.body[0];
     if (!id) throw new Error(`vs_open returned no page id for ${url}`);
     this.pageId = id;
+    await this.applyViewport();
     this.token = resp.token;
     if (first !== url) {
       for (const src of this.initScripts) {
@@ -976,6 +978,36 @@ export class Page {
       await this.engineCall(`E.insertText(${JSON.stringify(text)})`);
     },
   };
+
+  private viewport: { width: number; height: number } | null = null;
+  private dpr = 1;
+
+  /** @internal Size every new web view of this page gets. */
+  initialViewport(size: { width: number; height: number } | null, dpr: number): void {
+    this.viewport = size;
+    this.dpr = dpr;
+  }
+
+  private async applyViewport(): Promise<void> {
+    if (!this.viewport || !this.pageId) return;
+    await this.client.call('vs_viewport', [this.pageId, `${this.viewport.width}x${this.viewport.height}`], {
+      session: this.sessionId,
+      dpr: String(this.dpr),
+    });
+    this.snapshot = null;
+    this.synced = false;
+    this.fresh = false;
+  }
+
+  /** Resize the page (CSS px). */
+  async setViewportSize(size: { width: number; height: number }): Promise<void> {
+    this.viewport = { width: size.width, height: size.height };
+    await this.applyViewport();
+  }
+
+  viewportSize(): { width: number; height: number } | null {
+    return this.viewport ? { ...this.viewport } : null;
+  }
 
   /** Viewport crop of the page around `box` (CSS px), as PNG bytes; written to `path` when given. */
   async screenshotClip(box: BoundingBox, path?: string): Promise<Buffer> {

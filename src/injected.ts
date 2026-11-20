@@ -110,7 +110,9 @@ export function installEngine(SER) {
   /** Playwright's text engine: the smallest elements whose text matches. */
   function textQuery(root, m) {
     const ok = matcher(m);
-    return allUnder(root).filter((e) => {
+    // A text query chained off an element can match that element itself.
+    const pool = root.nodeType === 1 ? [root, ...allUnder(root)] : allUnder(root);
+    return pool.filter((e) => {
       if (SKIP_TEXT[e.nodeName]) return false;
       if (!ok(elementText(e))) return false;
       for (let c = e.firstElementChild; c; c = c.nextElementSibling) if (ok(elementText(c))) return false;
@@ -137,6 +139,8 @@ export function installEngine(SER) {
       return false;
     }
     if (st.visibility !== 'visible') return false;
+    // Catches content inside a closed <details> and content-visibility.
+    if (typeof e.checkVisibility === 'function' && !e.checkVisibility()) return false;
     const r = e.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -648,7 +652,9 @@ export function installEngine(SER) {
     }
     if (/^Key[A-Z]$/.test(k)) return keyInfo(k.slice(3).toLowerCase(), shift);
     if (/^Digit[0-9]$/.test(k)) return keyInfo(k.slice(5), shift);
-    return { key: k, code: k, keyCode: 0 };
+    if (/^F([1-9]|1[0-2])$/.test(k)) return { key: k, code: k, keyCode: 111 + Number(k.slice(1)) };
+    if (/^(CapsLock|NumLock|ScrollLock|Pause|ContextMenu|PrintScreen|AltGraph|Hyper|Super|Fn)$/.test(k)) return { key: k, code: k, keyCode: 0 };
+    throw new Error(`Error: Unknown key: "${k}"`);
   }
 
   function splitChord(chord) {

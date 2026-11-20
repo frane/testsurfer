@@ -53,6 +53,10 @@ export interface LaunchOptions extends ClientOptions {
   baseURL?: string;
   /** Attribute getByTestId matches. Default `data-testid`. */
   testIdAttribute?: string;
+  /** Page size in CSS px. Default 1280x720, as Playwright; null keeps the engine's own size. */
+  viewport?: { width: number; height: number } | null;
+  /** Device pixel ratio for screenshots. Default 1. */
+  deviceScaleFactor?: number;
 }
 
 export class Browser {
@@ -64,6 +68,8 @@ export class Browser {
   private readonly protocol: ProtocolOptions;
   private readonly baseURL: string | undefined;
   private testIdAttribute = 'data-testid';
+  private viewport: { width: number; height: number } | null = { width: 1280, height: 720 };
+  private deviceScaleFactor = 1;
 
   private constructor(
     client: WireClient,
@@ -114,6 +120,8 @@ export class Browser {
       options.baseURL,
     );
     if (options.testIdAttribute) browser.testIdAttribute = options.testIdAttribute;
+    if (options.viewport !== undefined) browser.viewport = options.viewport;
+    if (options.deviceScaleFactor !== undefined) browser.deviceScaleFactor = options.deviceScaleFactor;
     return browser;
   }
 
@@ -178,6 +186,7 @@ export class Browser {
       this.baseURL,
     );
     page.testIdAttribute = this.testIdAttribute;
+    page.initialViewport(this.viewport, this.deviceScaleFactor);
     return page;
   }
 
