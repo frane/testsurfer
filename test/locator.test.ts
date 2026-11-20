@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseFullTree } from '../src/tree.ts';
-import { findMatches, type LocatorQuery } from '../src/locator.ts';
+import { findMatches, type TreeQuery as LocatorQuery } from '../src/locator.ts';
 
 const snap = parseFullTree([
   '1 doc "Login"',

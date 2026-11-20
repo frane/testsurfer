@@ -1,10 +1,19 @@
 /**
  * Locators: lazy, re-resolving element handles over the a11y tree.
  *
- * A locator stores a query (role + name, text, or label), not a ref.
- * Every action and assertion re-resolves the query against a fresh
- * view, so locators survive re-renders and navigation. Actions retry
- * on STALE_TOKEN and NOT_FOUND until the action timeout elapses.
+ * A locator stores a chain of queries, not a ref. Every action and
+ * assertion re-resolves the chain against a fresh view, so locators
+ * survive re-renders and navigation. Actions retry on STALE_TOKEN and
+ * NOT_FOUND until the action timeout elapses.
+ *
+ * Role, text and label queries match the tree directly. CSS and
+ * attribute queries (locator(), getByTestId, getByPlaceholder,
+ * getByAltText, getByTitle) run in the page and map each element to
+ * its tree node through the `data-vs-ref` attribute vibesurfer puts on
+ * every element it reports. An element the tree does not report
+ * resolves to the first reported element inside it (a wrapper div),
+ * or, with nothing reported inside, to its nearest reported ancestor
+ * (a span whose text the tree folded into its parent).
  */
 
 import { StrictModeError, TimeoutError, WireError } from './errors.ts';
@@ -28,10 +37,34 @@ export interface ByTextOptions {
   exact?: boolean;
 }
 
+export interface FilterOptions {
+  /** Keep matches whose subtree text contains this (substring, case-insensitive) or matches the RegExp. */
+  hasText?: string | RegExp;
+  /** Drop matches whose subtree text contains this. */
+  hasNotText?: string | RegExp;
+  /** Keep matches that contain an element matching this locator. */
+  has?: Locator;
+  /** Drop matches that contain an element matching this locator. */
+  hasNot?: Locator;
+  /** Keep only visible (true) or only hidden (false) matches. */
+  visible?: boolean;
+}
+
 export type LocatorQuery =
   | { kind: 'role'; role: string; options: ByRoleOptions }
   | { kind: 'text'; text: string | RegExp; options: ByTextOptions }
-  | { kind: 'label'; text: string | RegExp; options: ByTextOptions };
+  | { kind: 'label'; text: string | RegExp; options: ByTextOptions }
+  | { kind: 'css'; selector: string }
+  | { kind: 'attr'; method: string; attr: string; value: string | RegExp; exact: boolean }
+  | { kind: 'and' | 'or'; left: Locator; right: Locator };
+
+/** One link of a chain: a query, its filters, and an optional index. */
+interface Step {
+  query: LocatorQuery;
+  filters: FilterOptions[];
+  /** nth() index; negative counts from the end (last() is -1). */
+  index: number | null;
+}
 
 const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
 
@@ -55,7 +88,9 @@ function names(node: TreeNode): string[] {
   return lbl ? [node.label, lbl] : [node.label];
 }
 
-function matchesQuery(node: TreeNode, query: LocatorQuery): boolean {
+export type TreeQuery = Extract<LocatorQuery, { kind: 'role' | 'text' | 'label' }>;
+
+function matchesQuery(node: TreeNode, query: TreeQuery): boolean {
   switch (query.kind) {
     case 'role': {
       const codes = ROLE_TO_CODES[query.role] ?? [query.role];
@@ -77,25 +112,102 @@ function matchesQuery(node: TreeNode, query: LocatorQuery): boolean {
   }
 }
 
+const str = (v: string | RegExp) => (v instanceof RegExp ? String(v) : JSON.stringify(v));
+
 export function describeQuery(query: LocatorQuery): string {
   switch (query.kind) {
     case 'role':
       return `getByRole(${JSON.stringify(query.role)}${
-        query.options.name !== undefined ? `, { name: ${String(query.options.name)} }` : ''
+        query.options.name !== undefined ? `, { name: ${str(query.options.name)} }` : ''
       })`;
     case 'text':
-      return `getByText(${String(query.text)})`;
+      return `getByText(${str(query.text)})`;
     case 'label':
-      return `getByLabel(${String(query.text)})`;
+      return `getByLabel(${str(query.text)})`;
+    case 'css':
+      return `locator(${JSON.stringify(query.selector)})`;
+    case 'attr':
+      return `${query.method}(${str(query.value)})`;
+    case 'and':
+    case 'or':
+      return `${query.left.toString()}.${query.kind}(${query.right.toString()})`;
   }
 }
 
-export function findMatches(snap: Snapshot, query: LocatorQuery): TreeNode[] {
+function describeFilter(f: FilterOptions): string {
+  const parts: string[] = [];
+  if (f.hasText !== undefined) parts.push(`hasText: ${str(f.hasText)}`);
+  if (f.hasNotText !== undefined) parts.push(`hasNotText: ${str(f.hasNotText)}`);
+  if (f.has) parts.push(`has: ${f.has.toString()}`);
+  if (f.hasNot) parts.push(`hasNot: ${f.hasNot.toString()}`);
+  if (f.visible !== undefined) parts.push(`visible: ${f.visible}`);
+  return `filter({ ${parts.join(', ')} })`;
+}
+
+/** Tree-query matches over the whole snapshot, in document order. */
+export function findMatches(snap: Snapshot, query: TreeQuery): TreeNode[] {
   const out: TreeNode[] = [];
   for (const node of walk(snap)) {
     if (matchesQuery(node, query)) out.push(node);
   }
   return out;
+}
+
+/** Refs strictly below `node` in the tree. */
+function treeDescendants(snap: Snapshot, node: TreeNode, into: Set<number>): void {
+  for (const c of node.children) {
+    into.add(c);
+    const child = snap.nodes.get(c);
+    if (child) treeDescendants(snap, child, into);
+  }
+}
+
+const orderCache = new WeakMap<Snapshot, Map<number, number>>();
+function docOrder(snap: Snapshot): Map<number, number> {
+  let m = orderCache.get(snap);
+  if (!m) {
+    m = new Map();
+    let i = 0;
+    for (const n of walk(snap)) m.set(n.ref, i++);
+    orderCache.set(snap, m);
+  }
+  return m;
+}
+
+/**
+ * Matches of one resolution pass. `inner` holds, for a match found by
+ * a DOM query, the refs inside its element: that is the scope a chained
+ * query searches.
+ */
+interface Found {
+  nodes: TreeNode[];
+  inner: Map<number, number[]>;
+}
+
+/** Page-side collector: element -> [target ref, refs inside]. */
+const COLLECT_JS =
+  `function(els){var out=[];for(var i=0;i<els.length;i++){var el=els[i];` +
+  `var inner=[].map.call(el.querySelectorAll('[data-vs-ref]'),function(e){return +e.getAttribute('data-vs-ref')});` +
+  `var t=el.getAttribute('data-vs-ref');var up=0;if(t!==null){t=+t;}else if(inner.length){t=inner[0];}` +
+  `else{var a=el.parentElement;while(a&&!a.hasAttribute('data-vs-ref'))a=a.parentElement;if(!a)continue;t=+a.getAttribute('data-vs-ref');up=1;}` +
+  `out.push([t,inner,up]);}return out;}`;
+
+function domQueryJs(query: Extract<LocatorQuery, { kind: 'css' | 'attr' }>): string {
+  if (query.kind === 'css') {
+    return `(function(){var c=${COLLECT_JS};return c(document.querySelectorAll(${JSON.stringify(query.selector)}));})()`;
+  }
+  const v = query.value;
+  const test =
+    v instanceof RegExp
+      ? `var re=new RegExp(${JSON.stringify(v.source)},${JSON.stringify(v.flags.replace('g', ''))});var ok=function(s){return re.test(n(s));};`
+      : query.exact
+        ? `var w=n(${JSON.stringify(v)});var ok=function(s){return n(s)===w;};`
+        : `var w=n(${JSON.stringify(v)}).toLowerCase();var ok=function(s){return n(s).toLowerCase().indexOf(w)>=0;};`;
+  return (
+    `(function(){var c=${COLLECT_JS};var n=function(s){return String(s).replace(/\\s+/g,' ').trim();};${test}` +
+    `var a=${JSON.stringify(query.attr)};var all=document.querySelectorAll('['+CSS.escape(a)+']');var els=[];` +
+    `for(var i=0;i<all.length;i++){if(ok(all[i].getAttribute(a)))els.push(all[i]);}return c(els);})()`
+  );
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -107,17 +219,30 @@ function preferVisible(snap: Snapshot, all: TreeNode[]): TreeNode[] {
   return visible.length > 0 ? visible : all;
 }
 
+function pickIndex<T>(items: T[], index: number): T[] {
+  const item = index < 0 ? items[items.length + index] : items[index];
+  return item === undefined ? [] : [item];
+}
+
+interface DomState {
+  disabled: boolean;
+  editable: boolean;
+  focused: boolean;
+}
+
+export function byAttr(method: string, attr: string, value: string | RegExp, exact: boolean): LocatorQuery {
+  return { kind: 'attr', method, attr, value, exact };
+}
+
 export class Locator {
   private readonly page: Page;
-  private readonly query: LocatorQuery;
-  private readonly index: number | null;
+  private readonly steps: Step[];
   /** Refs from the previous visibility resolve, used as the composite layout hint. */
   private layoutHint: number[] = [];
 
-  constructor(page: Page, query: LocatorQuery, index: number | null = null) {
+  constructor(page: Page, steps: Step[] | LocatorQuery) {
     this.page = page;
-    this.query = query;
-    this.index = index;
+    this.steps = Array.isArray(steps) ? steps : [{ query: steps, filters: [], index: null }];
   }
 
   /** The owning page's expect timeout, used as the assertion default. */
@@ -125,19 +250,222 @@ export class Locator {
     return this.page.timeouts.expect;
   }
 
+  private get tail(): Step {
+    const s = this.steps[this.steps.length - 1];
+    if (!s) throw new Error('empty locator');
+    return s;
+  }
+
+  private get index(): number | null {
+    return this.tail.index;
+  }
+
+  private withTail(change: Partial<Step>): Locator {
+    return new Locator(this.page, [...this.steps.slice(0, -1), { ...this.tail, ...change }]);
+  }
+
+  private chain(query: LocatorQuery): Locator {
+    return new Locator(this.page, [...this.steps, { query, filters: [], index: null }]);
+  }
+
+  // --- building -------------------------------------------------------
+
   /** Pick the first match instead of failing on multiple matches. */
   first(): Locator {
     return this.nth(0);
   }
 
-  /** Pick the i-th match (0-based) instead of failing on multiple matches. */
+  /** Pick the last match. */
+  last(): Locator {
+    return this.nth(-1);
+  }
+
+  /** Pick the i-th match (0-based; negative counts from the end). */
   nth(index: number): Locator {
-    return new Locator(this.page, this.query, index);
+    return this.withTail({ index });
+  }
+
+  /** Narrow the matches by text, by a contained element, or by visibility. */
+  filter(options: FilterOptions): Locator {
+    return this.withTail({ filters: [...this.tail.filters, options] });
+  }
+
+  /** Elements matching both this locator and `other`. */
+  and(other: Locator): Locator {
+    return new Locator(this.page, { kind: 'and', left: this, right: other });
+  }
+
+  /** Elements matching either this locator or `other`, in document order. */
+  or(other: Locator): Locator {
+    return new Locator(this.page, { kind: 'or', left: this, right: other });
+  }
+
+  /** A CSS selector (or another locator) searched inside this locator's matches. */
+  locator(selector: string | Locator): Locator {
+    if (typeof selector !== 'string') return new Locator(this.page, [...this.steps, ...selector.steps]);
+    return this.chain({ kind: 'css', selector });
+  }
+
+  getByRole(role: string, options: ByRoleOptions = {}): Locator {
+    return this.chain({ kind: 'role', role, options });
+  }
+
+  getByText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.chain({ kind: 'text', text, options });
+  }
+
+  getByLabel(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.chain({ kind: 'label', text, options });
+  }
+
+  /** Exact match on the test-id attribute (`data-testid` unless configured otherwise). */
+  getByTestId(id: string | RegExp): Locator {
+    return this.chain(byAttr('getByTestId', this.page.testIdAttribute, id, true));
+  }
+
+  getByPlaceholder(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.chain(byAttr('getByPlaceholder', 'placeholder', text, options.exact ?? false));
+  }
+
+  getByAltText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.chain(byAttr('getByAltText', 'alt', text, options.exact ?? false));
+  }
+
+  getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.chain(byAttr('getByTitle', 'title', text, options.exact ?? false));
   }
 
   toString(): string {
-    const base = describeQuery(this.query);
-    return this.index === null ? base : `${base}.nth(${this.index})`;
+    return this.steps
+      .map((s) => {
+        let out = describeQuery(s.query);
+        for (const f of s.filters) out += `.${describeFilter(f)}`;
+        if (s.index !== null) out += s.index === -1 ? '.last()' : `.nth(${s.index})`;
+        return out;
+      })
+      .join('.');
+  }
+
+  // --- resolving ------------------------------------------------------
+
+  /** Candidates for one query inside `scope` (null: the whole page). */
+  private async candidates(
+    snap: Snapshot,
+    query: LocatorQuery,
+    scope: Set<number> | null,
+    owners: Set<number>,
+  ): Promise<Found> {
+    const inScope = (n: TreeNode) => scope === null || scope.has(n.ref);
+    switch (query.kind) {
+      case 'role':
+      case 'text':
+      case 'label':
+        return { nodes: findMatches(snap, query).filter(inScope), inner: new Map() };
+      case 'css':
+      case 'attr': {
+        const rows = await this.page.evaluate<[number, number[], number][] | null>(domQueryJs(query));
+        const nodes: TreeNode[] = [];
+        const inner = new Map<number, number[]>();
+        for (const [ref, refs, up] of rows ?? []) {
+          const node = snap.nodes.get(ref);
+          // An element mapped up to its ancestor may land on the
+          // element the chain is searching inside.
+          const ok = node !== undefined && (inScope(node) || (up === 1 && owners.has(ref)));
+          if (!node || !ok || inner.has(ref)) continue;
+          nodes.push(node);
+          inner.set(ref, refs);
+        }
+        return { nodes, inner };
+      }
+      case 'and': {
+        const a = await query.left.matchIn(snap, scope);
+        const b = new Set((await query.right.matchIn(snap, scope)).nodes.map((n) => n.ref));
+        return { nodes: a.nodes.filter((n) => b.has(n.ref)), inner: a.inner };
+      }
+      case 'or': {
+        const a = await query.left.matchIn(snap, scope);
+        const b = await query.right.matchIn(snap, scope);
+        const seen = new Map<number, TreeNode>();
+        for (const n of [...a.nodes, ...b.nodes]) seen.set(n.ref, n);
+        const order = docOrder(snap);
+        const nodes = [...seen.values()].sort((x, y) => (order.get(x.ref) ?? 0) - (order.get(y.ref) ?? 0));
+        return { nodes, inner: new Map([...b.inner, ...a.inner]) };
+      }
+    }
+  }
+
+  /** What a chained query searches inside `nodes`. */
+  private static scopeOf(snap: Snapshot, found: Found, nodes: TreeNode[]): Set<number> {
+    const scope = new Set<number>();
+    for (const n of nodes) {
+      treeDescendants(snap, n, scope);
+      for (const r of found.inner.get(n.ref) ?? []) {
+        if (r === n.ref) continue;
+        scope.add(r);
+        const node = snap.nodes.get(r);
+        if (node) treeDescendants(snap, node, scope);
+      }
+    }
+    return scope;
+  }
+
+  private async applyFilter(snap: Snapshot, found: Found, f: FilterOptions): Promise<TreeNode[]> {
+    let nodes = found.nodes;
+    const subtree = (n: TreeNode) => Locator.scopeOf(snap, found, [n]);
+    const text = (n: TreeNode) =>
+      [n.label, ...[...subtree(n)].map((r) => snap.nodes.get(r)?.label ?? '')].filter(Boolean).join(' ');
+    if (f.hasText !== undefined) {
+      const want = f.hasText;
+      nodes = nodes.filter((n) => matchesText(text(n), want, false));
+    }
+    if (f.hasNotText !== undefined) {
+      const want = f.hasNotText;
+      nodes = nodes.filter((n) => !matchesText(text(n), want, false));
+    }
+    if (f.has || f.hasNot) {
+      const kept: TreeNode[] = [];
+      for (const n of nodes) {
+        const scope = subtree(n);
+        if (f.has && (await f.has.matchIn(snap, scope)).nodes.length === 0) continue;
+        if (f.hasNot && (await f.hasNot.matchIn(snap, scope)).nodes.length > 0) continue;
+        kept.push(n);
+      }
+      nodes = kept;
+    }
+    if (f.visible !== undefined) {
+      const shown = nodes.filter((n) => !isHidden(snap, n));
+      const rects: Map<number, LayoutRect> =
+        shown.length > 0 ? await this.page.layout(shown.map((n) => n.ref)) : new Map();
+      const isShown = (n: TreeNode) => !isHidden(snap, n) && rects.get(n.ref)?.visible === true;
+      nodes = nodes.filter((n) => isShown(n) === f.visible);
+    }
+    return nodes;
+  }
+
+  /**
+   * Matches of the whole chain inside `scope`. Each step searches the
+   * previous step's matches. The outermost locator's own index is left
+   * to the caller (strict mode or count); inside a nested locator
+   * (has:, and/or) it applies here.
+   */
+  async matchIn(snap: Snapshot, scope: Set<number> | null): Promise<Found> {
+    let current = scope;
+    let owners = new Set<number>();
+    let found: Found = { nodes: [], inner: new Map() };
+    for (let i = 0; i < this.steps.length; i++) {
+      const step = this.steps[i];
+      if (!step) break;
+      found = await this.candidates(snap, step.query, current, owners);
+      for (const f of step.filters) found = { ...found, nodes: await this.applyFilter(snap, found, f) };
+      if (i === this.steps.length - 1) {
+        if (scope !== null && step.index !== null) found = { ...found, nodes: pickIndex(found.nodes, step.index) };
+        break;
+      }
+      const picked = step.index === null ? found.nodes : pickIndex(found.nodes, step.index);
+      current = Locator.scopeOf(snap, found, picked);
+      owners = new Set(picked.map((n) => n.ref));
+    }
+    return found;
   }
 
   /**
@@ -148,7 +476,7 @@ export class Locator {
    */
   async resolveAll(): Promise<TreeNode[]> {
     const snap = await this.page.view();
-    return preferVisible(snap, findMatches(snap, this.query));
+    return preferVisible(snap, (await this.matchIn(snap, null)).nodes);
   }
 
   /**
@@ -163,7 +491,7 @@ export class Locator {
     // hint, making the steady-state poll a single round trip. Refs
     // that changed since last time are fetched separately.
     const { snap, rects } = await this.page.viewWithLayout(this.layoutHint);
-    const candidates = findMatches(snap, this.query).filter((n) => !isHidden(snap, n));
+    const candidates = (await this.matchIn(snap, null)).nodes.filter((n) => !isHidden(snap, n));
     this.layoutHint = candidates.map((n) => n.ref);
     if (candidates.length === 0) return [];
     const missing = candidates.filter((n) => !rects.has(n.ref));
@@ -176,7 +504,7 @@ export class Locator {
 
   /** Strict-mode selection: exactly one node, nth() overrides, null when none. */
   private pickOne(matches: TreeNode[]): TreeNode | null {
-    if (this.index !== null) return matches[this.index] ?? null;
+    if (this.index !== null) return pickIndex(matches, this.index)[0] ?? null;
     if (matches.length === 0) return null;
     if (matches.length > 1) {
       const list = matches
@@ -198,7 +526,7 @@ export class Locator {
    */
   private async resolveForAction(): Promise<TreeNode | null> {
     const snap = await this.page.actionSnapshot();
-    return this.pickOne(preferVisible(snap, findMatches(snap, this.query)));
+    return this.pickOne(preferVisible(snap, (await this.matchIn(snap, null)).nodes));
   }
 
   /** Wait until the locator resolves to one node, then run the action, retrying on staleness. */
@@ -232,6 +560,8 @@ export class Locator {
       if (!stale) await sleep(POLL_MS);
     }
   }
+
+  // --- actions --------------------------------------------------------
 
   /**
    * Click the element. Visible targets get a trusted native click at
@@ -295,27 +625,6 @@ export class Locator {
     await this.withResolved('focus', (n) => this.page.act(n.ref, 'focus'), options?.timeout);
   }
 
-  /** Full text content of the element via vs_read. */
-  async textContent(options?: { timeout?: number }): Promise<string> {
-    return this.withResolved('textContent', (n) => this.page.readRef(n.ref), options?.timeout);
-  }
-
-  /** Number of current matches (no waiting). */
-  async count(): Promise<number> {
-    return (await this.resolveAll()).length;
-  }
-
-  /** True if the locator has a visible match right now (no waiting). */
-  async isVisible(): Promise<boolean> {
-    const visible = await this.resolveVisible();
-    return this.index === null ? visible.length > 0 : visible[this.index] !== undefined;
-  }
-
-  /** Checked state of a checkbox or radio, from the tree (vibesurfer 0.2.12+). */
-  async isChecked(options?: { timeout?: number }): Promise<boolean> {
-    return this.withResolved('isChecked', async (n) => n.attrs['checked'] === '1', options?.timeout);
-  }
-
   /** Click a checkbox or radio unless it is already checked. */
   async check(options?: { timeout?: number }): Promise<void> {
     if (!(await this.isChecked(options))) await this.click(options);
@@ -324,6 +633,112 @@ export class Locator {
   /** Click a checkbox unless it is already unchecked. */
   async uncheck(options?: { timeout?: number }): Promise<void> {
     if (await this.isChecked(options)) await this.click(options);
+  }
+
+  /**
+   * Drag this element onto `target` with a trusted press, move and
+   * release from center to center. vibesurfer also fires the HTML5
+   * drag events, so native draggable and react-dnd lists see the drop.
+   */
+  async dragTo(target: Locator, options?: { timeout?: number }): Promise<void> {
+    const from = await this.boundingBox(options);
+    if (!from) throw new TimeoutError(`dragTo: ${this.toString()} is not rendered`);
+    const to = await target.boundingBox(options);
+    if (!to) throw new TimeoutError(`dragTo: ${target.toString()} is not rendered`);
+    await this.page.mouse.drag(from.x + from.w / 2, from.y + from.h / 2, to.x + to.w / 2, to.y + to.h / 2);
+  }
+
+  // --- reading --------------------------------------------------------
+
+  /** Full text content of the element via vs_read. */
+  async textContent(options?: { timeout?: number }): Promise<string> {
+    return this.withResolved('textContent', (n) => this.page.readRef(n.ref), options?.timeout);
+  }
+
+  /** Same as textContent(): the tree carries rendered text only. */
+  async innerText(options?: { timeout?: number }): Promise<string> {
+    return this.textContent(options);
+  }
+
+  /** Number of current matches (no waiting). */
+  async count(): Promise<number> {
+    return (await this.resolveAll()).length;
+  }
+
+  /** One locator per current match, in document order (no waiting). */
+  async all(): Promise<Locator[]> {
+    const n = await this.count();
+    return Array.from({ length: n }, (_, i) => this.nth(i));
+  }
+
+  /** True if the locator has a visible match right now (no waiting). */
+  async isVisible(): Promise<boolean> {
+    const visible = await this.resolveVisible();
+    return this.index === null ? visible.length > 0 : pickIndex(visible, this.index).length > 0;
+  }
+
+  /** True if the locator has no visible match right now (no waiting). */
+  async isHidden(): Promise<boolean> {
+    return !(await this.isVisible());
+  }
+
+  /** Checked state of a checkbox or radio, from the tree (vibesurfer 0.2.12+). */
+  async isChecked(options?: { timeout?: number }): Promise<boolean> {
+    return this.withResolved('isChecked', async (n) => n.attrs['checked'] === '1', options?.timeout);
+  }
+
+  /** Disabled natively (`disabled`, a disabled fieldset) or with `aria-disabled="true"`. */
+  async isDisabled(options?: { timeout?: number }): Promise<boolean> {
+    return (await this.domState('isDisabled', options)).disabled;
+  }
+
+  async isEnabled(options?: { timeout?: number }): Promise<boolean> {
+    return !(await this.isDisabled(options));
+  }
+
+  /** An enabled, writable text control or contenteditable element. */
+  async isEditable(options?: { timeout?: number }): Promise<boolean> {
+    return (await this.domState('isEditable', options)).editable;
+  }
+
+  /** Whether the element has focus. */
+  async isFocused(options?: { timeout?: number }): Promise<boolean> {
+    return (await this.domState('isFocused', options)).focused;
+  }
+
+  /** An attribute's value, or null when absent. */
+  async getAttribute(name: string, options?: { timeout?: number }): Promise<string | null> {
+    return this.withResolved(
+      'getAttribute',
+      async (n) => {
+        const got = await this.page.evaluate<{ v: string | null } | null>(
+          `(function(){var e=document.querySelector('[data-vs-ref="${n.ref}"]');return e?{v:e.getAttribute(${JSON.stringify(name)})}:null;})()`,
+        );
+        if (!got) throw new WireError('NOT_FOUND', [`ref=${n.ref} is gone`]);
+        return got.v;
+      },
+      options?.timeout,
+    );
+  }
+
+  /** DOM state the tree does not carry. */
+  private async domState(actionName: string, options?: { timeout?: number }): Promise<DomState> {
+    return this.withResolved(
+      actionName,
+      async (n) => {
+        const state = await this.page.evaluate<DomState | null>(
+          `(function(){var e=document.querySelector('[data-vs-ref="${n.ref}"]');if(!e)return null;` +
+            `var dis=!!(e.matches(':disabled')||e.closest('[aria-disabled="true"]'));` +
+            `var tag=e.tagName;var t=(e.getAttribute('type')||'').toLowerCase();` +
+            `var text=tag==='TEXTAREA'||tag==='SELECT'||(tag==='INPUT'&&['button','checkbox','radio','submit','reset','image','file','hidden','range','color'].indexOf(t)<0);` +
+            `var ro=e.readOnly===true||e.getAttribute('aria-readonly')==='true';` +
+            `return {disabled:dis,editable:!dis&&!ro&&(text||e.isContentEditable),focused:document.activeElement===e};})()`,
+        );
+        if (!state) throw new WireError('NOT_FOUND', [`ref=${n.ref} is gone`]);
+        return state;
+      },
+      options?.timeout,
+    );
   }
 
   /**
@@ -346,19 +761,6 @@ export class Locator {
     );
   }
 
-  /**
-   * Drag this element onto `target` with a trusted press, move and
-   * release from center to center. vibesurfer also fires the HTML5
-   * drag events, so native draggable and react-dnd lists see the drop.
-   */
-  async dragTo(target: Locator, options?: { timeout?: number }): Promise<void> {
-    const from = await this.boundingBox(options);
-    if (!from) throw new TimeoutError(`dragTo: ${this.toString()} is not rendered`);
-    const to = await target.boundingBox(options);
-    if (!to) throw new TimeoutError(`dragTo: ${target.toString()} is not rendered`);
-    await this.page.mouse.drag(from.x + from.w / 2, from.y + from.h / 2, to.x + to.w / 2, to.y + to.h / 2);
-  }
-
   /** The matched element's subtree as template text (see toMatchAriaSnapshot). */
   async ariaSnapshot(options?: { timeout?: number }): Promise<string> {
     return this.withResolved(
@@ -371,7 +773,7 @@ export class Locator {
   /** Refs of the strict-mode match, for scoping a snapshot match. */
   async resolveScope(): Promise<{ snap: Snapshot; refs: number[] }> {
     const snap = await this.page.view();
-    const node = this.pickOne(preferVisible(snap, findMatches(snap, this.query)));
+    const node = this.pickOne(preferVisible(snap, (await this.matchIn(snap, null)).nodes));
     return { snap, refs: node ? [node.ref] : [] };
   }
 }

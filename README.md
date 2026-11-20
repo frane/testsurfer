@@ -59,9 +59,17 @@ Locators resolve lazily at action time, against a fresh view:
 - `page.getByRole(role, { name, exact, level })` matches ARIA roles (`button`, `textbox`, `heading`, `link`, ...). Name matching is whole-string and case-insensitive by default; `exact: true` makes it case-sensitive. RegExp names are supported.
 - `page.getByText(text, { exact })` matches visible text, substring and case-insensitive by default.
 - `page.getByLabel(text, { exact })` matches form fields by their `<label>` (for, wrapping, or `aria-labelledby`) or `aria-label`.
-- `.first()` and `.nth(i)` pick one match when several qualify. Otherwise a locator that matches more than one element fails the action, like Playwright's strict mode.
+- `page.getByTestId(id)` matches `data-testid` exactly (string or RegExp). The `testIdAttribute` option changes the attribute.
+- `page.getByPlaceholder(text)`, `page.getByAltText(text)` and `page.getByTitle(text)` match those attributes, substring and case-insensitive by default, whole-string with `{ exact: true }`.
+- `page.locator(css)` takes a CSS selector.
+- Every `getBy*` and `locator()` also exists on a locator and searches inside its matches: `page.getByTestId('cart').getByRole('button', { name: 'Remove' })`.
+- `.filter({ hasText, hasNotText, has, hasNot, visible })` narrows matches; `has` and `hasNot` take a locator searched inside each match.
+- `.and(locator)` keeps elements matching both, `.or(locator)` takes either.
+- `.first()`, `.last()` and `.nth(i)` pick one match when several qualify, and `all()` returns one locator per match. Otherwise a locator that matches more than one element fails the action, like Playwright's strict mode.
 
-Actions auto-wait for their element and retry when the page changes underneath them: `click()`, `fill(value)`, `type(text)` (trusted native keystrokes, for rich-text editors), `press(key)`, `hover()`, `focus()`, `check()`, `uncheck()`, `dragTo(locator)`. Reads: `textContent()`, `inputValue()`, `isChecked()`, `isVisible()`, `boundingBox()`, `count()`, `ariaSnapshot()`.
+Role, text and label queries match the accessibility tree. CSS and attribute queries run in the page and map each element to its node in that tree. An element the tree does not report resolves to the first reported element inside it, or to its nearest reported ancestor when there is none: a `<span>` whose text the tree folded into its list item acts as that item, so `toHaveText` sees the item's text.
+
+Actions auto-wait for their element and retry when the page changes underneath them: `click()`, `fill(value)`, `type(text)` (trusted native keystrokes, for rich-text editors), `press(key)`, `hover()`, `focus()`, `check()`, `uncheck()`, `dragTo(locator)`. Reads: `textContent()`, `innerText()`, `inputValue()`, `getAttribute(name)`, `isChecked()`, `isVisible()`, `isHidden()`, `isEnabled()`, `isDisabled()`, `isEditable()`, `isFocused()`, `boundingBox()`, `count()`, `all()`, `ariaSnapshot()`.
 
 Clicks and keystrokes dispatch as native OS input. The cadence is configurable per browser: the default `inputMode: 'robotic'` is instant, which is what tests want; `'human'` moves the cursor along a humanized path with realistic timing for flows that score input behavior.
 
@@ -70,7 +78,9 @@ Assertions poll until they pass or time out:
 - `expect(locator).toBeVisible()` / `.toBeHidden()`
 - `expect(locator).toHaveText(value)` / `.toContainText(value)` (string or RegExp)
 - `expect(locator).toHaveValue(value)` / `.toBeChecked()`
-- `expect(locator).toHaveCount(n)`
+- `expect(locator).toBeEnabled()` / `.toBeDisabled()` (native `disabled`, a disabled fieldset, or `aria-disabled="true"`) / `.toBeEditable()` / `.toBeFocused()`
+- `expect(locator).toHaveAttribute(name, value?)` / `.toHaveClass(value)` / `.toHaveId(value)`
+- `expect(locator).toHaveCount(n)` / `.toBeAttached()`
 - `expect(locator).toMatchAriaSnapshot(template)` / `expect(page).toMatchAriaSnapshot(template)`
 - `expect(page).toHaveTitle(value)` / `.toHaveURL(value)`
 - every matcher takes `{ timeout }` and negates with `.not`
@@ -117,13 +127,25 @@ With the `auth` option, every test's `page` starts logged in.
 
 The `test` export wraps node:test. Each test gets a fresh `page`; one browser session is shared across the file. `test.describe(name, fn)` groups tests, `test.beforeEach(fn)` and `test.afterEach(fn)` receive the same `{ page }`, and `test.only` / `test.skip` work as in node:test.
 
-`configure(options)` sets the shared browser up before the first test runs:
+Options come from `testsurfer.config.ts` (or `.mts`, `.js`, `.mjs`) in the directory you run the tests from, and from `configure(options)` in a test file, which wins over the file:
+
+```ts
+// testsurfer.config.ts
+import { defineConfig } from 'testsurfer';
+
+export default defineConfig({ baseURL: 'http://localhost:3000', screenshot: 'only-on-failure' });
+```
+
+The options:
 
 - `baseURL`: resolve relative `goto` URLs against it.
 - `auth: { name, url }`: start every page logged in (see above).
 - `screenshot: 'only-on-failure'` with `outputDir` (default `test-results`): save a PNG when a test fails and add its path to the error.
 - `timeouts: { action, expect, navigation }`, in milliseconds.
 - `inputMode`: `robotic` (default, instant), `careful`, or `human` (a humanized cursor path for flows that score input behavior).
+- `testIdAttribute`: the attribute `getByTestId` reads, default `data-testid`.
+
+Test files run in parallel: `node --test` gives each file its own process (one less than the CPU count at a time; set it with `--test-concurrency=N`), and each process opens its own session on the shared daemon. Tests inside a file run one after another.
 
 ```ts
 import { test, expect, configure } from 'testsurfer';
@@ -158,6 +180,8 @@ await browser.close();
 ## Status
 
 Version 0.1 pins vibesurfer 0.2.14 and speaks its frozen wire protocol (v1). Older daemons work for everything except `level`, `checked` and `<label>` lookups, which need the tree attributes 0.2.12 added. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
+
+Not supported yet, so a suite that relies on these will not run unchanged: request mocking (`page.route`), frames (`frameLocator`), CSS that pierces shadow roots, `toHaveScreenshot`, page events (`page.on`), multiple pages or contexts per test, parallel tests inside one file, and Windows runners.
 
 ## Benchmark
 

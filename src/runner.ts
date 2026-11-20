@@ -9,7 +9,9 @@
  */
 
 import { test as nodeTest, describe as nodeDescribe, after } from 'node:test';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Browser, type LaunchOptions } from './browser.ts';
 import type { Page } from './page.ts';
 
@@ -41,9 +43,31 @@ let teardownRegistered = false;
 /** Hooks registered at each describe depth, innermost last. */
 const hookStack: { before: HookFn[]; after: HookFn[] }[] = [{ before: [], after: [] }];
 
-/** Override options for the shared browser. Call before the first test runs. */
+/** Override options for the shared browser. Call before the first test runs. Wins over the config file. */
 export function configure(next: RunnerOptions): void {
   options = next;
+}
+
+/** Identity helper that types a config file's default export. */
+export function defineConfig(config: RunnerOptions): RunnerOptions {
+  return config;
+}
+
+const CONFIG_FILES = ['testsurfer.config.ts', 'testsurfer.config.mts', 'testsurfer.config.js', 'testsurfer.config.mjs'];
+
+/**
+ * The default export of the first testsurfer.config.* in the working
+ * directory, or `{}`. Read once, when the first test launches the
+ * browser.
+ */
+async function loadConfigFile(): Promise<RunnerOptions> {
+  for (const name of CONFIG_FILES) {
+    const file = path.resolve(name);
+    if (!fs.existsSync(file)) continue;
+    const mod = (await import(pathToFileURL(file).href)) as { default?: RunnerOptions };
+    return mod.default ?? {};
+  }
+  return {};
 }
 
 /**
@@ -62,7 +86,10 @@ function ensureTeardown(): void {
 }
 
 function sharedBrowser(): Promise<Browser> {
-  shared ??= Browser.launch(options);
+  shared ??= loadConfigFile().then((file) => {
+    options = { ...file, ...options, timeouts: { ...file.timeouts, ...options.timeouts } };
+    return Browser.launch(options);
+  });
   return shared;
 }
 

@@ -13,8 +13,8 @@
 
 export { Browser, type LaunchOptions } from './browser.ts';
 export { Page, type ClickVia, type InputMode, type LayoutRect, type ProtocolOptions, type Timeouts } from './page.ts';
-export { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
+export { Locator, type ByRoleOptions, type ByTextOptions, type FilterOptions } from './locator.ts';
 export { expect, LocatorAssertions, PageAssertions, type ExpectOptions } from './expect.ts';
-export { test, configure, type RunnerOptions, type TestFixtures } from './runner.ts';
+export { test, configure, defineConfig, type RunnerOptions, type TestFixtures } from './runner.ts';
 export { WireError, TimeoutError, StrictModeError } from './errors.ts';
 export { PINNED_VIBESURFER } from './client.ts';

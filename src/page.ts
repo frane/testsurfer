@@ -33,7 +33,7 @@ function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
 }
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
-import { Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
+import { byAttr, Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
 import { renderSnapshot } from './aria.ts';
 
 export interface Timeouts {
@@ -125,6 +125,8 @@ export class Page {
   readonly actDeltas: boolean;
   readonly navInPlace: boolean;
   readonly baseURL: string | undefined;
+  /** Attribute getByTestId matches. Set with the `testIdAttribute` launch option. */
+  testIdAttribute = 'data-testid';
 
   constructor(
     client: WireClient,
@@ -556,6 +558,31 @@ export class Page {
 
   getByLabel(text: string | RegExp, options: ByTextOptions = {}): Locator {
     return new Locator(this, { kind: 'label', text, options });
+  }
+
+  /** Elements matching a CSS selector, mapped to their tree nodes. */
+  locator(selector: string): Locator {
+    return new Locator(this, { kind: 'css', selector });
+  }
+
+  /** Exact match on the test-id attribute (`data-testid` by default). */
+  getByTestId(id: string | RegExp): Locator {
+    return new Locator(this, byAttr('getByTestId', this.testIdAttribute, id, true));
+  }
+
+  /** Fields by placeholder text (substring, case-insensitive; exact for whole-string). */
+  getByPlaceholder(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return new Locator(this, byAttr('getByPlaceholder', 'placeholder', text, options.exact ?? false));
+  }
+
+  /** Images and areas by alt text. */
+  getByAltText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return new Locator(this, byAttr('getByAltText', 'alt', text, options.exact ?? false));
+  }
+
+  /** Elements by their title attribute. */
+  getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return new Locator(this, byAttr('getByTitle', 'title', text, options.exact ?? false));
   }
 
   async close(): Promise<void> {

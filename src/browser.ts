@@ -50,6 +50,8 @@ export interface LaunchOptions extends ClientOptions {
   protocol?: ProtocolOptions;
   /** Resolve relative goto() URLs against this, e.g. `http://localhost:3000`. */
   baseURL?: string;
+  /** Attribute getByTestId matches. Default `data-testid`. */
+  testIdAttribute?: string;
 }
 
 export class Browser {
@@ -60,6 +62,7 @@ export class Browser {
   private readonly clickVia: ClickVia;
   private readonly protocol: ProtocolOptions;
   private readonly baseURL: string | undefined;
+  private testIdAttribute = 'data-testid';
 
   private constructor(
     client: WireClient,
@@ -97,7 +100,7 @@ export class Browser {
       client.close();
       throw new Error('vs_session_open returned no session id');
     }
-    return new Browser(
+    const browser = new Browser(
       client,
       sessionId,
       { ...DEFAULT_TIMEOUTS, ...options.timeouts },
@@ -109,11 +112,13 @@ export class Browser {
       },
       options.baseURL,
     );
+    if (options.testIdAttribute) browser.testIdAttribute = options.testIdAttribute;
+    return browser;
   }
 
   /** A new page in this session. Call page.goto(url) to load a URL. */
   newPage(): Page {
-    return new Page(
+    const page = new Page(
       this.client,
       this.sessionId,
       this.timeouts,
@@ -122,6 +127,8 @@ export class Browser {
       this.protocol,
       this.baseURL,
     );
+    page.testIdAttribute = this.testIdAttribute;
+    return page;
   }
 
   /** Close the session and drop the connection. */

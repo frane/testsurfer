@@ -194,6 +194,88 @@ export class LocatorAssertions {
     );
   }
 
+  private async boolAssertion(
+    condition: string,
+    read: () => Promise<boolean>,
+    options?: ExpectOptions,
+  ): Promise<void> {
+    await poll(
+      this.budget(options),
+      this.negated,
+      async () => {
+        const v = await read();
+        return { pass: v, actual: v ? `it was ${condition}` : `it was not ${condition}` };
+      },
+      (actual) => this.msg(`be ${condition}`, actual),
+    );
+  }
+
+  /** Not disabled (natively or with aria-disabled). */
+  async toBeEnabled(options?: ExpectOptions): Promise<void> {
+    await this.boolAssertion('enabled', () => this.locator.isEnabled({ timeout: 1_000 }), options);
+  }
+
+  /** Disabled natively (`disabled`, a disabled fieldset) or with `aria-disabled="true"`. */
+  async toBeDisabled(options?: ExpectOptions): Promise<void> {
+    await this.boolAssertion('disabled', () => this.locator.isDisabled({ timeout: 1_000 }), options);
+  }
+
+  /** An enabled, writable text control or contenteditable element. */
+  async toBeEditable(options?: ExpectOptions): Promise<void> {
+    await this.boolAssertion('editable', () => this.locator.isEditable({ timeout: 1_000 }), options);
+  }
+
+  /** The element has focus. */
+  async toBeFocused(options?: ExpectOptions): Promise<void> {
+    await this.boolAssertion('focused', () => this.locator.isFocused({ timeout: 1_000 }), options);
+  }
+
+  /** At least one match in the page, visible or not. */
+  async toBeAttached(options?: ExpectOptions): Promise<void> {
+    await this.boolAssertion('attached', async () => (await this.locator.count()) > 0, options);
+  }
+
+  /**
+   * The attribute is present, and with `value`, equals it (or matches
+   * the RegExp).
+   */
+  async toHaveAttribute(name: string, value?: string | RegExp, options?: ExpectOptions): Promise<void> {
+    await poll(
+      this.budget(options),
+      this.negated,
+      async () => {
+        const v = await this.locator.getAttribute(name, { timeout: 1_000 });
+        if (v === null) return { pass: false, actual: `${name} was absent` };
+        const pass = value === undefined ? true : value instanceof RegExp ? value.test(v) : v === value;
+        return { pass, actual: `${name} was ${JSON.stringify(v)}` };
+      },
+      (actual) => this.msg(`have attribute ${name}${value === undefined ? '' : ` ${String(value)}`}`, actual),
+    );
+  }
+
+  /**
+   * The class attribute equals the string (or matches the RegExp).
+   * Like Playwright, a string must be the whole value; use a RegExp to
+   * check for one class among several.
+   */
+  async toHaveClass(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
+    await poll(
+      this.budget(options),
+      this.negated,
+      async () => {
+        const v = (await this.locator.getAttribute('class', { timeout: 1_000 })) ?? '';
+        const pass = expected instanceof RegExp ? expected.test(v) : normalize(v) === normalize(expected);
+        return { pass, actual: `class was ${JSON.stringify(v)}` };
+      },
+      (actual) => this.msg(`have class ${String(expected)}`, actual),
+    );
+  }
+
+  /** The id attribute equals the string (or matches the RegExp). */
+  async toHaveId(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
+    await this.toHaveAttribute('id', expected, options);
+  }
+
   /** Exactly `count` matches. */
   async toHaveCount(count: number, options?: ExpectOptions): Promise<void> {
     await poll(
