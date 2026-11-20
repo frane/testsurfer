@@ -75,7 +75,7 @@ interface RequestInfo {
   method: string;
   headers: Record<string, string>;
   body: string | null;
-  type: 'fetch' | 'xhr';
+  type: 'fetch' | 'xhr' | 'document';
 }
 
 /** A fetch or XHR the page made. */
@@ -107,12 +107,21 @@ export class Request {
   postDataJSON(): unknown {
     return this.info.body === null ? null : JSON.parse(this.info.body);
   }
-  /** `fetch` or `xhr`: the only kinds the shim sees. */
+  /** `fetch`, `xhr`, or `document` for the main-frame navigation goto() returns. */
   resourceType(): string {
     return this.info.type;
   }
   isNavigationRequest(): boolean {
-    return false;
+    return this.info.type === 'document';
+  }
+  async allHeaders(): Promise<Record<string, string>> {
+    return this.headers();
+  }
+  async headerValue(name: string): Promise<string | null> {
+    return this.info.headers[name.toLowerCase()] ?? null;
+  }
+  postDataBuffer(): Buffer | null {
+    return this.info.body === null ? null : Buffer.from(this.info.body);
   }
   failure(): { errorText: string } | null {
     return this.failureText === null ? null : { errorText: this.failureText };
@@ -122,13 +131,42 @@ export class Request {
   }
 }
 
-/** Response metadata. Bodies are not captured for page.on('response'). */
+/**
+ * Response metadata. The body is read on demand by fetching the URL
+ * again from the page (GET only), since it is not captured in flight.
+ */
 export class Response {
   private readonly req: Request;
   private readonly data: { url: string; status: number; statusText: string; headers: Record<string, string> };
+  /** Reads the body; set by whoever built the response. */
+  bodyLoader: (() => Promise<Buffer>) | null = null;
   constructor(req: Request, data: { url: string; status: number; statusText: string; headers: Record<string, string> }) {
     this.req = req;
     this.data = data;
+  }
+  async allHeaders(): Promise<Record<string, string>> {
+    return this.headers();
+  }
+  async headerValue(name: string): Promise<string | null> {
+    return this.data.headers[name.toLowerCase()] ?? null;
+  }
+  async body(): Promise<Buffer> {
+    if (!this.bodyLoader || this.req.method() !== 'GET') {
+      throw new Error('response.body: the body of this response was not captured');
+    }
+    return this.bodyLoader();
+  }
+  async text(): Promise<string> {
+    return (await this.body()).toString('utf8');
+  }
+  async json(): Promise<unknown> {
+    return JSON.parse(await this.text());
+  }
+  async finished(): Promise<null> {
+    return null;
+  }
+  frame(): unknown {
+    return null;
   }
   url(): string {
     return this.data.url;

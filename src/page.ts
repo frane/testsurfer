@@ -394,7 +394,7 @@ export class Page {
     if (!/^https?:/.test(here)) {
       const shown = here.startsWith('data:') ? await this.url() : 'about:blank';
       const data = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-      await this.goto(data);
+      await this.navigate(data);
       await this.rememberNav(shown, data);
       return;
     }
@@ -414,8 +414,8 @@ export class Page {
   }
 
   /** Load the current URL again. */
-  async reload(): Promise<void> {
-    await this.goto(await this.url());
+  async reload(): Promise<Response | null> {
+    return this.goto(await this.url());
   }
 
   /** History back; resolves once the URL changed (or immediately when there is no history). */
@@ -496,7 +496,55 @@ export class Page {
    * Navigates in place on protocol-v1 daemons; older ones close the
    * page and open a new one.
    */
-  async goto(target: string): Promise<void> {
+  async goto(target: string, _options: { waitUntil?: string; timeout?: number; referer?: string } = {}): Promise<Response | null> {
+    await this.navigate(target);
+    return this.mainResponse();
+  }
+
+  /**
+   * The main document's response after a navigation (vibesurfer 0.2.16+
+   * `vs_inspect response`), or null for data:, about: and file: URLs or
+   * on older daemons.
+   */
+  private async mainResponse(): Promise<Response | null> {
+    if (!this.pageId) return null;
+    let body: string[];
+    try {
+      body = (await this.client.call('vs_inspect', ['response', this.pageId], { session: this.sessionId })).body;
+    } catch {
+      return null;
+    }
+    if (body.length === 0 || body[0] === 'none') return null;
+    let url = '';
+    let status = 0;
+    let statusText = '';
+    const headers: Record<string, string> = {};
+    for (const line of body) {
+      if (line.startsWith('url=')) url = line.slice(4);
+      else if (line.startsWith('status=')) status = Number(line.slice(7));
+      else if (line.startsWith('status_text=')) statusText = line.slice(12);
+      else if (line.startsWith('h ')) {
+        const i = line.indexOf(': ');
+        if (i > 2) {
+          const k = line.slice(2, i);
+          const v = line.slice(i + 2);
+          headers[k] = headers[k] === undefined ? v : `${headers[k]}, ${v}`;
+        }
+      }
+    }
+    const req = new Request({ id: 0, url, method: 'GET', headers: {}, body: null, type: 'document' });
+    const res = new Response(req, { url, status, statusText, headers });
+    req.responseValue = res;
+    res.bodyLoader = async () => {
+      const b64 = await this.evaluate<string>(
+        `fetch(${JSON.stringify(url)}, { credentials: 'include' }).then((r) => r.arrayBuffer()).then((b) => { let s = ''; const a = new Uint8Array(b); for (let i = 0; i < a.length; i += 32768) s += String.fromCharCode.apply(null, a.subarray(i, i + 32768)); return btoa(s); })`,
+      );
+      return Buffer.from(b64, 'base64');
+    };
+    return res;
+  }
+
+  private async navigate(target: string): Promise<void> {
     const url = this.baseURL ? new URL(target, this.baseURL).href : target;
     if (this.pageId && this.navInPlace) {
       try {

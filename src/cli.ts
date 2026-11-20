@@ -64,6 +64,8 @@ let grep: string | null = null;
 let workers = Math.max(1, Math.floor(os.availableParallelism() / 2));
 let reporter = 'spec';
 const env = { ...process.env };
+// Started from inside another node:test run, the child would refuse to run files.
+delete env['NODE_TEST_CONTEXT'];
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i]!;
   if (a === '--grep' || a === '-g') grep = argv[++i] ?? usage(2);
