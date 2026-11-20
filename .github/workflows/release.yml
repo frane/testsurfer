@@ -1,13 +1,13 @@
 name: release
 
-# Tag-driven npm release. Push a `v*` tag whose version matches
+# Tag-driven npm release. Push a `vX.Y.Z` tag whose version matches
 # package.json and this job publishes it with npm trusted publishing
 # (OIDC, no token) and a provenance attestation. The trusted publisher
 # is configured on npmjs.com for this repo and workflow file.
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*.*.*"]
 
 permissions:
   contents: read

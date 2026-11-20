@@ -14,18 +14,33 @@ npm run bench
 
 Current numbers come from the `bench` workflow (`.github/workflows/bench.yml`), run by hand on a clean GitHub runner so anyone can reproduce them.
 
-GitHub `macos-15-arm64` runner, vibesurfer 0.2.13, playwright 1.61.1, 2026-11-19. Median of 5 iterations, fresh page per iteration, steady state (browsers installed, daemon running).
+Two runs of the workflow on 2026-11-20, vibesurfer 0.2.14, playwright 1.61.1. Median of 5 iterations per run, fresh page per iteration, steady state (browsers installed, daemon running). Runs [44693388662](https://github.com/frane/testsurfer/actions/runs/44693388662) and [44693736927](https://github.com/frane/testsurfer/actions/runs/44693736927).
+
+GitHub `macos-15-arm64` runner, second run:
 
 | scenario           | testsurfer | playwright-webkit | playwright-chromium |
 | ------------------ | ---------- | ----------------- | ------------------- |
-| launch             | 4ms        | 2019ms            | 609ms               |
-| first paint        | 200ms      | 89ms              | 37ms                |
-| add two todos      | 344ms      | 278ms             | 139ms               |
-| complete and clear | 537ms      | 308ms             | 208ms               |
-| delete a todo      | 356ms      | 170ms             | 110ms               |
-| suite total        | 1437ms     | 845ms             | 494ms               |
+| launch             | 3ms        | 1327ms            | 381ms               |
+| first paint        | 162ms      | 81ms              | 35ms                |
+| add two todos      | 279ms      | 144ms             | 102ms               |
+| complete and clear | 356ms      | 217ms             | 181ms               |
+| delete a todo      | 171ms      | 119ms             | 98ms                |
+| suite total        | 968ms      | 561ms             | 416ms               |
 
-testsurfer launches in milliseconds against a running daemon and is about 1.7x slower than Playwright-WebKit on the flows themselves, most of it in first paint (navigation plus the first accessibility snapshot). The same workflow on vibesurfer 0.2.12 measured 4152ms for testsurfer: from 0.2.10 every click waited 250ms in case it had opened a new window, and 0.2.13 waits only when the page actually asked for one.
+GitHub `ubuntu-24.04` x86_64 runner (WebKitGTK 6 under Xvfb), second run:
+
+| scenario           | testsurfer | playwright-webkit | playwright-chromium |
+| ------------------ | ---------- | ----------------- | ------------------- |
+| launch             | 4ms        | 399ms             | 1096ms              |
+| first paint        | 91ms       | 40ms              | 28ms                |
+| add two todos      | 237ms      | 163ms             | 90ms                |
+| complete and clear | 305ms      | 214ms             | 158ms               |
+| delete a todo      | 209ms      | 132ms             | 92ms                |
+| suite total        | 842ms      | 549ms             | 368ms               |
+
+Across the two runs the suite took 702-968ms for testsurfer against 561-627ms for Playwright-WebKit on macOS, and 842-873ms against 549-664ms on Linux. testsurfer launches in milliseconds against a running daemon and is 1.1-1.7x slower than Playwright-WebKit on the flows themselves. First paint on the macOS runner varies most: 23ms in the first run, 162ms in the second, and within a run the first page is the slow one (193ms, then 22-27ms), which points at web-process startup rather than the actions.
+
+On vibesurfer 0.2.13 the same workflow measured 1437ms for testsurfer on macOS, and on 0.2.12 4152ms: from 0.2.10 every click waited 250ms in case it had opened a new window, and 0.2.13 waits only when the page actually asked for one.
 
 The tables below are the July history on a local Mac, kept for comparison.
 

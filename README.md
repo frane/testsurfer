@@ -32,6 +32,26 @@ vibesurfer is a daemon that owns one real WebKit engine and speaks a line protoc
 
 The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.14` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
 
+## CI
+
+testsurfer runs on macOS and Linux GitHub runners. On Linux it needs WebKitGTK 6 and an X display; the action in this repo installs both and starts the pinned vibesurfer daemon:
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-24.04 # or macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - uses: frane/testsurfer@v0
+      - run: node --test tests/
+```
+
+`vibesurfer-version` overrides the pinned daemon. This repo's own CI runs the same action on both runners. Windows (WebView2) is supported by vibesurfer but not yet tested here.
+
 ## API
 
 Locators resolve lazily at action time, against a fresh view:
@@ -141,7 +161,7 @@ Version 0.1 pins vibesurfer 0.2.14 and speaks its frozen wire protocol (v1). Old
 
 ## Benchmark
 
-[`bench/`](bench) runs identical flows through testsurfer and Playwright (WebKit and Chromium) against the same app and reports the numbers, favorable and not. On a GitHub macOS runner with vibesurfer 0.2.13: testsurfer launches in 4ms against Playwright's 0.6-2s, and runs the four-flow suite in 1437ms against 845ms for Playwright-WebKit and 494ms for Playwright-Chromium. A working install is ~6MB against ~300MB+ per Playwright browser. The full table, methodology and history are in the bench README; the `bench` workflow reproduces them.
+[`bench/`](bench) runs identical flows through testsurfer and Playwright (WebKit and Chromium) against the same app and reports the numbers, favorable and not. On GitHub runners with vibesurfer 0.2.14, testsurfer launches in 3-11ms against Playwright's 0.4-1.3s. The four-flow suite takes 702-968ms on macOS against 561-627ms for Playwright-WebKit and 416-483ms for Playwright-Chromium, and 842-873ms on Linux against 549-664ms and 368-408ms. A working install is ~6MB against ~300MB+ per Playwright browser. The full tables, methodology and history are in the bench README; the `bench` workflow reproduces them.
 
 ## Example
 
