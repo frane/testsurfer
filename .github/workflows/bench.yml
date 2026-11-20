@@ -9,7 +9,11 @@ on:
 
 jobs:
   bench:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,13 +27,10 @@ jobs:
         working-directory: bench
         run: |
           npm ci
-          npx playwright install webkit chromium
-      - name: Start the pinned vibesurfer daemon
-        run: |
-          pinned=$(sed -n "s/^export const PINNED_VIBESURFER = '\(.*\)';/\1/p" src/client.ts)
-          echo "pinned=${pinned}"
-          npx -y "vibesurfer@${pinned}" status
-          echo "VS_VERSION=$(npx -y "vibesurfer@${pinned}" --version)" >> "$GITHUB_ENV"
+          npx playwright install --with-deps webkit chromium
+      - uses: ./
+      - name: Record the vibesurfer version
+        run: echo "VS_VERSION=$($TESTSURFER_VS --version)" >> "$GITHUB_ENV"
       - name: Run the benchmark
         working-directory: bench
         run: |
@@ -38,7 +39,8 @@ jobs:
           {
             echo "## testsurfer vs Playwright"
             echo
-            echo "$(sw_vers -productName) $(sw_vers -productVersion) $(uname -m), ${VS_VERSION}, playwright $(npx playwright --version | awk '{print $2}'), $(date -u +%Y-%m-%d). Median of 5 iterations, fresh page per iteration, steady state."
+            if [ "$RUNNER_OS" = macOS ]; then os="$(sw_vers -productName) $(sw_vers -productVersion)"; else os="$(. /etc/os-release && echo "$PRETTY_NAME")"; fi
+            echo "${os} $(uname -m), ${VS_VERSION}, playwright $(npx playwright --version | awk '{print $2}'), $(date -u +%Y-%m-%d). Median of 5 iterations, fresh page per iteration, steady state."
             echo
             cat table.md
           } >> "$GITHUB_STEP_SUMMARY"
