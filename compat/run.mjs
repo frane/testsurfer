@@ -83,6 +83,9 @@ function runSpec(name) {
     const child = spawn(
       process.execPath,
       [
+        // The CLI's resolve/load hooks, as `testsurfer test` uses them.
+        '--import',
+        new URL('../src/register.ts', import.meta.url).href,
         '--test',
         '--test-concurrency=1',
         '--test-timeout=30000',

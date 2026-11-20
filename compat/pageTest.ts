@@ -6,7 +6,10 @@
 
 import * as path from 'node:path';
 import { after } from 'node:test';
-import { expect as tsExpect, test as tsTest } from '../src/index.ts';
+import { configure, expect as tsExpect, test as tsTest } from '../src/index.ts';
+
+// Playwright's own test config gives expect() 10 seconds.
+configure({ timeouts: { expect: 10_000 } });
 import { TestServer } from './server.ts';
 
 const ASSETS = path.resolve(process.env['COMPAT_ASSETS'] ?? path.join(import.meta.dirname, '.cache/playwright/tests/assets'));

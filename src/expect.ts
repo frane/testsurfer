@@ -5,6 +5,7 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
+import { diffValues, isStructured } from './diff.ts';
 import { matchesTemplate, parseTemplate, renderSnapshot } from './aria.ts';
 import { StrictModeError } from './errors.ts';
 import { APIResponse } from './events.ts';
@@ -93,7 +94,7 @@ export class ExpectError extends Error {
 
 function render(
   subject: string,
-  locator: string | null,
+  rawLocator: string | null,
   spec: Spec,
   negated: boolean,
   timeout: number,
@@ -101,6 +102,10 @@ function render(
   error: string | null,
   custom: string | undefined,
 ): { message: string; log: string[] } {
+  // A selector the CSS parser rejects prints as written, as Playwright
+  // cannot turn it back into locator code either.
+  const bad = error ? /while parsing css selector "([^"]*)"/.exec(error) : null;
+  const locator = rawLocator && bad ? rawLocator.replace(`locator('${bad[1]}')`, bad[1]!) : rawLocator;
   const not = negated ? 'not.' : '';
   const out: string[] = [];
   if (custom) out.push(custom, '');
@@ -123,9 +128,11 @@ function render(
       for (const [k, v] of loc) out.push(`${k}:  ${v}`);
       out.push(`Expected: ${expected}`, `Received: ${last.received ?? ''}`, `Timeout:  ${timeout}ms`);
     } else {
-      const w = Math.max(el.length, rl.length) + 2;
+      // Playwright aligns the two values, except in a negated message.
+      const w = negated ? 0 : Math.max(el.length, rl.length) + 2;
       for (const [k, v] of loc) out.push(`${k}: ${v}`);
-      out.push(`${`${el}:`.padEnd(w)}${expected}`, `${`${rl}:`.padEnd(w)}${last.received ?? ''}`, `Timeout: ${timeout}ms`);
+      const label = (l: string) => (w ? `${l}:`.padEnd(w) : `${l}: `);
+      out.push(`${label(el)}${expected}`, `${label(rl)}${last.received ?? ''}`, `Timeout: ${timeout}ms`);
     }
   }
   const log = [`Expect "${negated ? 'not ' : ''}${spec.name}" with timeout ${timeout}ms`];
@@ -165,7 +172,9 @@ async function poll(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const fatal = e instanceof StrictModeError || /^Error: /.test(msg);
-      error = /^Error: /.test(msg) ? msg : `Error: ${msg.replace(/^[\w.]+: /, '')}`;
+      // "locator.x: Error: ..." and "Error: ..." both print as one "Error: ..." line.
+      const bare = msg.replace(/^[\w.]+: (?=Error: )/, '').replace(/\n+$/, '');
+      error = /^Error: /.test(bare) ? bare : `Error: ${bare.replace(/^[\w.]+: /, '')}`;
       if (fatal) {
         const { message, log } = render(subject, locator, spec, negated, timeout, last, error, custom);
         throw new ExpectError(message, spec.name, !negated, log, timeout, frame);
@@ -416,13 +425,22 @@ export class LocatorAssertions {
     const spec: Spec =
       want === undefined
         ? { name: 'toHaveAttribute', arg: 'expected', expected: 'have attribute' }
-        : { name: 'toHaveAttribute', arg: 'expected', expected: show(want) };
+        : {
+            name: 'toHaveAttribute',
+            arg: 'expected',
+            expected: show(want),
+            ...(want instanceof RegExp ? { expectedLabel: 'Expected pattern', receivedLabel: 'Received string' } : {}),
+          };
     await this.run(spec, options, async () => {
       const r = await this.peekEl<string | null>('expect.toHaveAttribute', 'attr', { name });
       if (!r.found) return { pass: false, found: false };
       const v = r.v ?? null;
       if (want === undefined) return { pass: v !== null, found: true, received: v !== null ? 'have attribute' : 'not have attribute' };
-      if (v === null) return { pass: false, found: true, received: 'null' };
+      // null and "" print alike, so say that instead of a confusing "null".
+      if (v === null) {
+        if (want instanceof RegExp) return { pass: false, found: true, received: '""' };
+        return { pass: false, found: true, received: want === '' ? 'serializes to the same string' : 'null' };
+      }
       return { pass: textMatch(v, want, { normalize: false, ignoreCase: options.ignoreCase }), found: true, received: show(v) };
     });
   }
@@ -494,7 +512,12 @@ export class LocatorAssertions {
     await this.run({ name: 'toHaveJSProperty', arg: 'expected', expected: show(value) }, options, async () => {
       const r = await this.peekEl<unknown>('expect.toHaveJSProperty', 'prop', { name });
       if (!r.found) return { pass: false, found: false };
-      return { pass: isDeepStrictEqual(r.v, value), found: true, received: show(r.v) };
+      const pass = isDeepStrictEqual(r.v, value);
+      // Objects and arrays fail with a line diff, as in Playwright.
+      if (!pass && !this.negated && isStructured(value) && isStructured(r.v)) {
+        return { pass, found: true, diff: diffValues(value, r.v) };
+      }
+      return { pass, found: true, received: show(r.v) };
     });
   }
 
