@@ -1,60 +1,5 @@
 [
   {
-    "spec": "expect-misc",
-    "test": "fail",
-    "error": "expected 'expect(locator).toHaveJSProperty(expected) failed\\n' +"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "fail with positive predicate",
-    "error": "expected 'expect(page).toHaveURL(expected) failed\\n' +"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "fail with negative predicate",
-    "error": "expected 'expect(page).not.toHaveURL(expected) failed\\n' +"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "should not match missing attribute",
-    "error": "expected 'expect(locator).toHaveAttribute(expected) failed\\n' +"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "should match boolean attribute",
-    "error": "expected 'expect(locator).not.toHaveAttribute(expected) failed\\n' +"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "should have good stack",
-    "error": "__filename is not defined"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "strict mode violation error format",
-    "error": "expected 'expect(locator).toHaveText(expected) failed\\n' +"
-  },
-  {
-    "spec": "expect-misc",
-    "test": "invalid selector error format",
-    "error": "expected 'expect(locator).toBeVisible() failed\\n' +"
-  },
-  {
-    "spec": "expect-timeout",
-    "test": "should timeout during first locator handler check",
-    "error": "Cannot read properties of undefined (reading 'message')"
-  },
-  {
-    "spec": "locator-convenience",
-    "test": "should have a nice preview",
-    "error": "inner.evaluateHandle is not a function"
-  },
-  {
-    "spec": "locator-convenience",
-    "test": "should return page",
-    "error": "Cannot read properties of undefined (reading 'locator')"
-  },
-  {
     "spec": "locator-frame",
     "test": "should work for iframe @smoke",
     "error": "locator.waitFor: Timeout 10000ms exceeded."
@@ -77,7 +22,7 @@
   {
     "spec": "locator-frame",
     "test": "should click in lazy iframe",
-    "error": "expect(locator).toHaveText(expected) failed"
+    "error": "locator.click: Timeout 10000ms exceeded."
   },
   {
     "spec": "locator-frame",
@@ -133,76 +78,6 @@
     "spec": "locator-frame",
     "test": "frameLocator.owner should work",
     "error": "expect(locator).toBeVisible() failed"
-  },
-  {
-    "spec": "locator-misc-1",
-    "test": "should focus and blur a button",
-    "error": "expected false to be true"
-  },
-  {
-    "spec": "locator-misc-2",
-    "test": "should take screenshot",
-    "error": "expect(...).toMatchSnapshot is not a function"
-  },
-  {
-    "spec": "locator-misc-2",
-    "test": "locator.count should work with deleted Map in main world",
-    "error": "1 is not a constructor (evaluating 'new Map()')"
-  },
-  {
-    "spec": "locator-misc-2",
-    "test": "press should throw on unknown keys",
-    "error": "expected a rejection, got undefined"
-  },
-  {
-    "spec": "locator-query",
-    "test": "should throw on capture w/ nth()",
-    "error": "expected 'locator.click: Timeout 10000ms exceeded.\\n' +"
-  },
-  {
-    "spec": "locator-query",
-    "test": "should allow some, but not all nested frameLocators",
-    "error": "expected 'expect(locator).toHaveText(expected) failed\\n' +"
-  },
-  {
-    "spec": "locator-query",
-    "test": "should enforce same frame for has/leftOf/rightOf/above/below/near",
-    "error": "expected \"Cannot read properties of undefined (reading 'locator')\" to contain 'Inner \"has\" locator must belong to the same frame.'"
-  },
-  {
-    "spec": "locator-query",
-    "test": "count() should not throw during navigation",
-    "error": "expected 1 to be 0"
-  },
-  {
-    "spec": "selectors-css",
-    "test": "should work for open shadow roots",
-    "error": "root2Shadow.$eval is not a function"
-  },
-  {
-    "spec": "selectors-css",
-    "test": "should work with *",
-    "error": "expected 4 to be 2"
-  },
-  {
-    "spec": "selectors-css",
-    "test": "should work with :is",
-    "error": "expected 0 to be 1"
-  },
-  {
-    "spec": "selectors-css",
-    "test": "should work with :scope",
-    "error": "expected 1 to be 0"
-  },
-  {
-    "spec": "selectors-get-by",
-    "test": "getByTestId with custom testId should work",
-    "error": "Cannot read properties of undefined (reading 'selectors')"
-  },
-  {
-    "spec": "selectors-text",
-    "test": "should work with :has-text",
-    "error": "page.$eval: Error: failed to find element matching selector \"div:has-text(\"hello\\a wo\\\"r>>ld\")\""
   },
   {
     "spec": "page-route",
@@ -292,7 +167,7 @@
   {
     "spec": "page-route",
     "test": "should navigate to URL with hash and and fire requests without hash",
-    "error": "expected 'http://localhost:61573/empty.html#hash' to be 'http://localhost:61573/empty.html'"
+    "error": "expected 'http://localhost:50935/empty.html#hash' to be 'http://localhost:50935/empty.html'"
   },
   {
     "spec": "page-route",
@@ -327,7 +202,7 @@
   {
     "spec": "page-route",
     "test": "should add Access-Control-Allow-Origin by default when fulfill",
-    "error": "expected null to be 'http://localhost:61573'"
+    "error": "expected null to be 'http://localhost:50935'"
   },
   {
     "spec": "page-route",
@@ -427,7 +302,7 @@
   {
     "spec": "page-network-request",
     "test": "should not work for a redirect and interception",
-    "error": "expected Promise { <pending>, Symbol(async_id_symbol): 2246, Symbol(trigger_async_id_symbol): 2115 } to be 'http://localhost:61602/empty.html'"
+    "error": "expected Promise { <pending>, Symbol(async_id_symbol): 2549, Symbol(trigger_async_id_symbol): 2332 } to be 'http://localhost:50947/empty.html'"
   },
   {
     "spec": "page-network-request",
@@ -567,7 +442,7 @@
   {
     "spec": "page-network-response",
     "test": "should bypass disk cache when page interception is enabled",
-    "error": "step \"subframe iteration 0\": page.frame(...).evaluate is not a function"
+    "error": "step \"subframe iteration 0\": Cannot read properties of null (reading 'evaluate')"
   },
   {
     "spec": "page-network-response",
