@@ -84,6 +84,11 @@ export const asymmetric = {
 type Check = { pass: boolean; message: string };
 
 export class ValueAssertions {
+  /** Only APIResponse has toBeOK; Playwright says so for anything else. */
+  async toBeOK(): Promise<never> {
+    throw new Error('toBeOK can be only used with APIResponse object');
+  }
+
   private readonly actual: unknown;
   private readonly negated: boolean;
   private readonly mode: 'value' | 'resolves' | 'rejects';

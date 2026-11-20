@@ -148,7 +148,7 @@ function onePart(raw: string): ParsedPart {
       case 'visible':
         return { kind: 'visible', visible: body.trim() !== 'false' };
       default:
-        throw new Error(`unsupported selector engine "${name}="`);
+        throw new Error(`Unknown engine "${name}" while parsing selector ${raw.trim()}`);
     }
   }
   if (part.startsWith('//') || part.startsWith('..') || part.startsWith('(//')) return { kind: 'xpath', xpath: part };

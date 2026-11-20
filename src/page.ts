@@ -48,6 +48,7 @@ import {
   type SelectOptionValue,
 } from './locator.ts';
 import { installEngine } from './injected.ts';
+import { APIRequestContext } from './request.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
 import { decodePng, encodePng } from './png.ts';
 
@@ -164,6 +165,8 @@ export class Page {
   readonly actDeltas: boolean;
   readonly navInPlace: boolean;
   readonly baseURL: string | undefined;
+  /** HTTP requests from the test process (not the browser). */
+  readonly request: APIRequestContext;
   /** Attribute getByTestId matches. Set with the `testIdAttribute` launch option. */
   testIdAttribute = 'data-testid';
   /** Document-start scripts, replayed into the web view when it is created. */
@@ -182,6 +185,7 @@ export class Page {
     baseURL?: string,
   ) {
     this.baseURL = baseURL;
+    this.request = new APIRequestContext(baseURL);
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
@@ -356,7 +360,10 @@ export class Page {
   async setContent(html: string): Promise<void> {
     const here = this.pageId ? await this.url().catch(() => '') : '';
     if (!/^https?:/.test(here)) {
-      await this.goto(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      const shown = here.startsWith('data:') ? await this.url() : 'about:blank';
+      const data = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+      await this.goto(data);
+      await this.rememberNav(shown, data);
       return;
     }
     await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
@@ -468,6 +475,7 @@ export class Page {
         this.synced = false;
         this.fresh = false;
         this.events.documentChanged();
+        await this.rememberNav(url, url);
         return;
       } catch {
         // Old daemon or dead page; fall through to close+open.
@@ -499,6 +507,7 @@ export class Page {
       this.token = nav.token;
     }
     this.events.documentChanged();
+    await this.rememberNav(url, url);
     // No settle wait here: locators auto-wait and assertions poll, so
     // a still-loading tree just resolves a poll tick later.
   }
@@ -956,7 +965,34 @@ export class Page {
 
   /** The page's current URL. */
   async url(): Promise<string> {
-    return this.evaluate<string>('location.href');
+    const href = await this.evaluate<string>('location.href');
+    const nav = this.navURL;
+    if (!nav || href !== nav.actual) {
+      // WebKit percent-encodes data: URLs; show them as written.
+      if (href.startsWith('data:')) {
+        try {
+          return decodeURI(href);
+        } catch {
+          return href;
+        }
+      }
+      return href;
+    }
+    // The engine percent-encodes a data: URL; report it as given, and a
+    // setContent() page as the about:blank Playwright would show.
+    return nav ? nav.shown : href;
+  }
+
+  /** What goto() was asked for, and what the engine then reports. */
+  private navURL: { shown: string; actual: string } | null = null;
+
+  private async rememberNav(shown: string, requested: string): Promise<void> {
+    if (!requested.startsWith('data:')) {
+      this.navURL = null;
+      return;
+    }
+    const actual = await this.evaluate<string>('location.href').catch(() => '');
+    this.navURL = actual ? { shown, actual } : null;
   }
 
   /**

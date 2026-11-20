@@ -18,7 +18,10 @@ export function installEngine(SER) {
 
   // --- basics ---------------------------------------------------------
 
-  const N = (s) => String(s == null ? '' : s).replace(/[\s​]+/g, ' ').trim();
+  const N = (s) => String(s == null ? '' : s).replace(/[\u200b\u00ad]/g, '').trim().replace(/\s+/g, ' ');
+
+  /** A label stands in for its control in value, check and fill operations, as in Playwright. */
+  const retarget = (e) => (e.nodeName === 'LABEL' && e.control ? e.control : e);
 
   function parentOf(e) {
     if (e.parentElement) return e.parentElement;
@@ -468,7 +471,22 @@ export function installEngine(SER) {
   function cssQuery(root, q) {
     const all = allUnder(root);
     // Validate once so a bad selector throws instead of matching nothing.
-    (root.nodeType === 9 ? root : root.ownerDocument || document).querySelector(q.sel);
+    try {
+      (root.nodeType === 9 ? root : root.ownerDocument || document).querySelector(q.sel);
+    } catch (_) {
+      let depth = [];
+      let bad = q.sel[q.sel.length - 1];
+      for (const ch of q.sel) {
+        if (ch === '[' || ch === '(') depth.push(ch);
+        else if (ch === ']' || ch === ')') {
+          if (!depth.length || depth.pop() !== (ch === ']' ? '[' : '(')) {
+            bad = ch;
+            break;
+          }
+        }
+      }
+      throw new Error(`Error: Unexpected token "${bad}" while parsing css selector "${q.sel}". Did you mean to CSS.escape it?`);
+    }
     return all.filter((e) => e.matches(q.sel) && extrasOk(e, q.x));
   }
 
@@ -557,15 +575,40 @@ export function installEngine(SER) {
 
   // --- descriptions -----------------------------------------------------
 
+  const VOID = new Set(['AREA', 'BASE', 'BR', 'COL', 'COMMAND', 'EMBED', 'HR', 'IMG', 'INPUT', 'KEYGEN', 'LINK', 'MENUITEM', 'META', 'PARAM', 'SOURCE', 'TRACK', 'WBR']);
+  const BOOL_ATTR = new Set(['checked', 'selected', 'disabled', 'readonly', 'multiple']);
+  const trim = (s, n) => (s.length > n ? s.slice(0, n - 1) + '\u2026' : s);
+
+  /** An element as Playwright previews it in logs and strict-mode errors. */
   function preview(e) {
-    const attrs = [...e.attributes]
-      .filter((a) => a.name !== 'data-vs-ref' && a.name !== 'style')
-      .slice(0, 4)
-      .map((a) => (a.value ? `${a.name}="${a.value.slice(0, 40)}"` : a.name))
-      .join(' ');
-    const t = N(elementText(e)).slice(0, 50);
     const name = tag(e);
-    return `<${name}${attrs ? ' ' + attrs : ''}>${t}${t.length >= 50 ? '…' : ''}</${name}>`;
+    const attrs = [...e.attributes]
+      .filter((a) => a.name !== 'style' && a.name !== 'data-vs-ref')
+      .map((a) => (!a.value && BOOL_ATTR.has(a.name) ? ` ${a.name}` : ` ${a.name}="${a.value}"`))
+      .sort((a, b) => a.length - b.length);
+    const at = trim(attrs.join(''), 500);
+    const line = (s) => s.replace(/\n/g, '↵').replace(/\t/g, '⇆');
+    if (VOID.has(e.nodeName)) return line(`<${name}${at}/>`);
+    const kids = e.childNodes;
+    let onlyText = kids.length <= 5;
+    for (const c of kids) onlyText = onlyText && c.nodeType === 3;
+    const text = onlyText ? e.textContent || '' : kids.length ? '\u2026' : '';
+    return line(`<${name}${at}>${trim(text, 50)}</${name}>`);
+  }
+
+  /** A short locator for an element, for strict-mode lists (Playwright's "aka"). */
+  function aka(e) {
+    const qs = (s) => `'${String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+    const tid = attr(e, 'data-testid');
+    if (tid) return `getByTestId(${qs(tid)})`;
+    const role = roleOf(e);
+    const name = role ? accName(e) : '';
+    if (role && name && !/^(generic|presentation|paragraph)$/.test(role)) return `getByRole(${qs(role)}, { name: ${qs(name)} })`;
+    const text = N(elementText(e));
+    if (text && text.length <= 80) return `getByText(${qs(text)})`;
+    if (role) return `getByRole(${qs(role)})`;
+    if (e.id) return `locator(${qs('#' + e.id)})`;
+    return `locator(${qs(tag(e))})`;
   }
 
   // --- input helpers ----------------------------------------------------
@@ -995,6 +1038,7 @@ export function installEngine(SER) {
   const OPS = {
     count: (els) => els.length,
     texts: (els) => els.map((e) => e.textContent || ''),
+    elTexts: (els) => els.map((e) => elementText(e)),
     innerTexts: (els) => els.map((e) => e.innerText || ''),
     visibleAny: (els) => els.some(isVisible),
     evalAll: (els, a) => a.fnc(els, SER.des(a.arg)),
@@ -1008,15 +1052,23 @@ export function installEngine(SER) {
 
   const ONE = {
     text: (e) => e.textContent || '',
+    elText: (e) => elementText(e),
     innerText: (e) => (e.innerText !== undefined ? e.innerText : e.textContent || ''),
     innerHTML: (e) => e.innerHTML,
     attr: (e, a) => attr(e, a.name),
-    value: (e) => inputValue(e),
-    values: (e) => (tag(e) === 'select' ? [...e.selectedOptions].map((o) => o.value) : [inputValue(e)]),
-    checked: (e) => checkedState(e),
+    value: (e) => inputValue(retarget(e)),
+    values: (e) => {
+      e = retarget(e);
+      if (tag(e) !== 'select' || !e.multiple) throw new Error('Error: Not a select element with a multiple attribute');
+      return [...e.selectedOptions].map((o) => o.value);
+    },
+    checked: (e) => checkedState(retarget(e)),
     disabled: (e) => isDisabled(e),
     editable: (e) => isEditable(e),
-    focused: (e) => deepActive(e.ownerDocument) === e,
+    focused: (e) => {
+      const root = e.getRootNode();
+      return (root.activeElement || null) === e;
+    },
     visible: (e) => isVisible(e),
     box: (e) => {
       if (!isVisible(e) && e.getBoundingClientRect().width === 0) return null;
@@ -1044,7 +1096,7 @@ export function installEngine(SER) {
         if (isDisabled(e)) return { retry: 'element is not enabled' };
         if (e.readOnly || attr(e, 'aria-readonly') === 'true') return { retry: 'element is not editable' };
       }
-      fill(e, a.value);
+      fill(retarget(e), a.value);
       return true;
     },
     refs: (e) => {
@@ -1059,7 +1111,7 @@ export function installEngine(SER) {
       pressKey(a.key);
       return true;
     },
-    selectOption: (e, a) => selectOption(e, a.values),
+    selectOption: (e, a) => selectOption(retarget(e), a.values),
     selectText: (e) => {
       e.focus();
       if (typeof e.select === 'function') e.select();
@@ -1081,6 +1133,7 @@ export function installEngine(SER) {
       return true;
     },
     setFiles: (e, a) => {
+      e = retarget(e);
       if (tag(e) !== 'input' || e.type !== 'file') throw new Error('Error: Node is not an HTMLInputElement');
       const dt = new DataTransfer();
       for (const f of a.files) {
@@ -1095,12 +1148,13 @@ export function installEngine(SER) {
       return true;
     },
     checkedMixed: (e) => {
+      e = retarget(e);
       const c = ariaChecked(e);
       if (c === undefined) checkedState(e);
       return c === undefined ? false : c;
     },
     css: (e, a) => styleOf(e).getPropertyValue(a.name) || styleOf(e)[a.name] || '',
-    prop: (e, a) => e[a.name],
+    prop: (e, a) => a.name.split('.').reduce((o, k) => (o == null ? undefined : o[k]), e),
     role: (e) => roleOf(e) || '',
     name: (e) => accName(e),
     description: (e) => {
@@ -1140,8 +1194,10 @@ export function installEngine(SER) {
       const wrap = (v, n) => (v && typeof v.then === 'function' ? v.then((r) => ({ v: r, n })) : { v, n });
       if (req.many) return wrap(OPS[req.op](els, req.args || {}), els.length);
       if (els.length === 0) return { none: true };
-      if (els.length > 1 && !req.first) return { strict: els.slice(0, 10).map(preview), n: els.length };
-      return wrap(ONE[req.op](els[0], req.args || {}), 1);
+      if (els.length > 1 && !req.first) return { strict: els.slice(0, 10).map((e) => `${preview(e)} aka ${aka(e)}`), n: els.length };
+      const r = wrap(ONE[req.op](els[0], req.args || {}), 1);
+      const p = preview(els[0]);
+      return r && typeof r.then === 'function' ? r.then((x) => ({ ...x, p })) : { ...r, p };
     },
     key(chord, phase) {
       pressKey(chord, phase);

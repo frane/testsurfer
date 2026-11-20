@@ -62,7 +62,9 @@ export type LocatorQuery =
   | { kind: 'and' | 'or'; left: Locator; right: Locator }
   | { kind: 'frame' }
   /** The previous step's matches themselves, so an index or filter can apply after an index. */
-  | { kind: 'self' };
+  | { kind: 'self' }
+  /** A selector that failed to parse; resolving it throws `message`. */
+  | { kind: 'invalid'; selector: string; message: string };
 
 /** One link of a chain: a query, its filters, and an optional index. */
 export interface Step {
@@ -134,6 +136,8 @@ export function describeQuery(query: LocatorQuery): string {
       return 'contentFrame()';
     case 'self':
       return '';
+    case 'invalid':
+      return query.selector;
   }
 }
 
@@ -177,6 +181,8 @@ function wireQuery(query: LocatorQuery): Record<string, unknown> {
       return { k: 'frame' };
     case 'self':
       return { k: 'self' };
+    case 'invalid':
+      throw new Error(`Error: ${query.message}`);
   }
 }
 
@@ -200,6 +206,15 @@ const step = (query: LocatorQuery): Step => ({ query, filters: [], index: null }
 
 /** A Playwright selector string as chain steps. */
 export function selectorSteps(selector: string): Step[] {
+  try {
+    return parseSteps(selector);
+  } catch (e) {
+    // Like Playwright, a bad selector fails when the locator is used, not when it is made.
+    return [step({ kind: 'invalid', selector, message: e instanceof Error ? e.message : String(e) })];
+  }
+}
+
+function parseSteps(selector: string): Step[] {
   const steps: Step[] = [];
   const last = (what: string): Step => {
     const s = steps[steps.length - 1];
@@ -239,6 +254,8 @@ export function selectorSteps(selector: string): Step[] {
 
 interface RunResult<T> {
   v?: T;
+  /** Preview of the element a one-element op ran on. */
+  p?: string;
   n?: number;
   none?: boolean;
   strict?: string[];
@@ -433,11 +450,11 @@ export class Locator {
   }
 
   /** One-element op with no waiting: undefined when nothing matches. */
-  async peek<T>(apiName: string, op: string, args?: unknown): Promise<{ found: boolean; v?: T }> {
+  async peek<T>(apiName: string, op: string, args?: unknown): Promise<{ found: boolean; v?: T; preview?: string }> {
     const r = await this.run<T>(op, args);
     if (r.strict) throw this.strictError(apiName, r);
     if (r.none) return { found: false };
-    return { found: true, v: r.v as T };
+    return { found: true, v: r.v as T, preview: r.p ?? '' };
   }
 
   /** A multi-element op over the current matches. */

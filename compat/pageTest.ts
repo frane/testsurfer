@@ -12,11 +12,13 @@ import { TestServer } from './server.ts';
 const ASSETS = path.resolve(process.env['COMPAT_ASSETS'] ?? path.join(import.meta.dirname, '.cache/playwright/tests/assets'));
 
 let server: TestServer | null = null;
+// Registered at load time: a hook added inside a test would attach to
+// that test and stop the server after it.
+after(() => server?.stop());
 async function sharedServer(): Promise<TestServer> {
   if (!server) {
     server = new TestServer(ASSETS);
     await server.start();
-    after(() => server?.stop());
   }
   server.reset();
   return server;

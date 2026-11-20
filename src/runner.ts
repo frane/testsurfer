@@ -122,6 +122,8 @@ interface TestOpts {
 
 interface Scope {
   title?: string;
+  /** Group-level skip/fixme/fail/slow, decided per test from its fixtures. */
+  conditions?: { kind: 'skip' | 'fixme' | 'fail' | 'slow'; when: (f: Fixtures) => unknown; reason?: string | undefined }[];
   /** test.use() overrides, applied to tests registered after them in this scope. */
   uses?: Record<string, unknown>;
   beforeEach: TestBody<Fixtures>[];
@@ -320,6 +322,9 @@ async function runTest(
     }
     await withFixtures({ page, context, browser }, defs, async (all) => {
       try {
+        for (const c of chain.flatMap((s) => s.conditions ?? [])) {
+          if (c.when(all)) info[c.kind](true, c.reason);
+        }
         for (const h of befores) await h(all, info);
         await fn(all, info);
         if (info.softErrors.length > 0) {
@@ -354,7 +359,8 @@ export interface DescribeFn {
   /** Tests in this group run one after another (the default). */
   serial: (name: string, body: () => void) => void;
   /** Inside a describe body: `{ mode: 'parallel' }` runs the group's tests at the same time. */
-  configure: (o: { mode?: 'default' | 'parallel' | 'serial' }) => void;
+  configure: (o: { mode?: 'default' | 'parallel' | 'serial'; retries?: number; timeout?: number }) => void;
+  fixme: (name: string, body: () => void) => void;
 }
 
 export interface TestApi<F extends object> {
@@ -409,19 +415,34 @@ function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F
       chain: [...stack],
       defs: Object.assign({}, defs, ...stack.map((s) => s.uses ?? {})),
     });
+  /**
+   * skip/fixme/fail/slow called outside a test, in a describe body or
+   * at file level: the condition (a boolean, or a function of the
+   * fixtures) applies to every test in that scope.
+   */
+  const grouped = (kind: 'skip' | 'fixme' | 'fail' | 'slow', a: unknown, reason: string | undefined): boolean => {
+    if (currentTestInfo()) return false;
+    const when = typeof a === 'function' ? (a as (f: Fixtures) => unknown) : () => a ?? true;
+    const scope = current();
+    (scope.conditions ??= []).push({ kind, when, reason });
+    return true;
+  };
   const running = (what: string): TestInfo => {
     const info = currentTestInfo();
     if (!info) throw new Error(`test.${what}() must be called inside a test`);
     return info;
   };
 
-  const t = ((name: string, fn: TestBody<F>) => reg(name, fn, {})) as TestApi<F>;
-  t.only = (name, fn) => reg(name, fn, { only: true });
-  const skipper = ((a?: string | boolean, b?: TestBody<F> | string) => {
-    if (typeof a === 'string' && typeof b === 'function') {
-      reg(a, b, { skip: true });
+  // test(title, body) or test(title, details, body); details are ignored.
+  const body = (a: unknown[]) => a.find((x) => typeof x === 'function') as TestBody<F>;
+  const t = ((name: string, ...rest: unknown[]) => reg(name, body(rest), {})) as TestApi<F>;
+  t.only = ((name: string, ...rest: unknown[]) => reg(name, body(rest), { only: true })) as TestApi<F>['only'];
+  const skipper = ((a?: string | boolean, b?: TestBody<F> | string | object, c?: TestBody<F>) => {
+    if (typeof a === 'string' && (typeof b === 'function' || typeof c === 'function')) {
+      reg(a, (typeof b === 'function' ? b : c) as TestBody<F>, { skip: true });
       return;
     }
+    if (grouped('skip', a, typeof b === 'string' ? b : undefined)) return;
     if (a === false) return;
     running('skip').skip(a ?? true, typeof b === 'string' ? b : undefined);
   }) as TestApi<F>['skip'];
@@ -435,9 +456,13 @@ function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F
       }) as TestBody<F>, {});
       return;
     }
+    if (grouped('fail', a, typeof b === 'string' ? b : undefined)) return;
     running('fail').fail(a ?? true, typeof b === 'string' ? b : undefined);
   }) as TestApi<F>['fail'];
-  t.slow = (c, r) => running('slow').slow(c ?? true, r);
+  t.slow = (c, r) => {
+    if (grouped('slow', c, r)) return;
+    running('slow').slow(c ?? true, r);
+  };
   t.setTimeout = (ms) => running('setTimeout').setTimeout(ms);
   t.info = () => running('info');
   t.use = (values) => {
@@ -461,15 +486,30 @@ function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F
   return t;
 }
 
-const describeApi = ((name: string, body: () => void) => describeWith(name, body, {}, 'default')) as DescribeFn;
-describeApi.only = (name, body) => describeWith(name, body, { only: true }, 'default');
-describeApi.skip = (name, body) => describeWith(name, body, { skip: true }, 'default');
-describeApi.parallel = (name, body) => describeWith(name, body, {}, 'parallel');
-describeApi.serial = (name, body) => describeWith(name, body, {}, 'serial');
+/**
+ * describe(body), describe(title, body) and describe(title, details,
+ * body) all register a group; details ({ tag, annotation }) are
+ * accepted and ignored.
+ */
+function groupArgs(args: unknown[]): [string, () => void] {
+  const body = args.find((a) => typeof a === 'function') as (() => void) | undefined;
+  if (!body) throw new Error('test.describe() needs a body function');
+  return [typeof args[0] === 'string' ? args[0] : '', body];
+}
+
+const describeWithArgs = (args: unknown[], opts: TestOpts, mode: Scope['mode']) => {
+  const [name, body] = groupArgs(args);
+  describeWith(name, body, opts, mode);
+};
+const describeApi = ((...a: unknown[]) => describeWithArgs(a, {}, 'default')) as DescribeFn;
+describeApi.only = ((...a: unknown[]) => describeWithArgs(a, { only: true }, 'default')) as DescribeFn['only'];
+describeApi.skip = ((...a: unknown[]) => describeWithArgs(a, { skip: true }, 'default')) as DescribeFn['skip'];
+describeApi.parallel = ((...a: unknown[]) => describeWithArgs(a, {}, 'parallel')) as DescribeFn['parallel'];
+describeApi.serial = ((...a: unknown[]) => describeWithArgs(a, {}, 'serial')) as DescribeFn['serial'];
+describeApi.fixme = describeApi.skip;
 describeApi.configure = (o) => {
-  const scope = current();
-  if (scope === root) throw new Error('test.describe.configure() goes inside a describe block');
-  if (o.mode) scope.mode = o.mode;
+  // At file level it applies to the file's top-level tests.
+  if (o.mode) current().mode = o.mode;
 };
 
 export const test: TestApi<TestFixtures> = makeTest<TestFixtures>({});

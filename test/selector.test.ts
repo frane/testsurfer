@@ -27,5 +27,5 @@ test('engines: nth, role, id, xpath', () => {
   assert.deepEqual(parseSelector('role=button[name="OK"]'), [{ kind: 'role', role: 'button', options: { name: 'OK' } }]);
   assert.deepEqual(parseSelector('id=foo'), [{ kind: 'attr', attr: 'id', value: 'foo' }]);
   assert.equal(parseSelector('xpath=//a')[0]?.kind, 'xpath');
-  assert.throws(() => parseSelector('nope=1'), /unsupported selector engine/);
+  assert.throws(() => parseSelector('nope=1'), /Unknown engine "nope"/);
 });
