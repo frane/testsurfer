@@ -29,6 +29,7 @@ if(ArrayBuffer.isView(v))return Array.from(v);
 var o={};for(var k in v){try{o[k]=ser(v[k],seen);}catch(e){}}
 return {$t:'o',v:o};
 }finally{seen.pop();}}
+var H={get:function(){return undefined;}};
 function des(v){
 if(v===null||typeof v!=='object')return v;
 if(Array.isArray(v))return v.map(des);
@@ -42,16 +43,21 @@ case 'url':return new URL(v.v);
 case 'e':var e=new Error(v.v.message);e.name=v.v.name;return e;
 case 'map':return new Map(v.v.map(function(p){return [des(p[0]),des(p[1])];}));
 case 'set':return new Set(v.v.map(des));
+case 'h':return H.get(v.v);
 case 'o':var o={};for(var k in v.v)o[k]=des(v.v[k]);return o;
 }
 return v;}
-return {ser:ser,des:des};})()`;
+return {ser:ser,des:des,H:H};})()`;
 
 type Tagged = null | boolean | number | string | Tagged[] | { $t: string; v?: unknown };
 
 /** Node-side encode, mirror of the page-side `ser`. */
 export function serializeValue(v: unknown, seen: unknown[] = []): Tagged {
   if (v === undefined) return { $t: 'u' };
+  // A JSHandle or ElementHandle passes as a reference to the page-side value.
+  if (typeof v === 'object' && v !== null && typeof (v as { handleId?: unknown }).handleId === 'number') {
+    return { $t: 'h', v: (v as { handleId: number }).handleId };
+  }
   if (typeof v === 'number') {
     if (Number.isNaN(v)) return { $t: 'n', v: 'NaN' };
     if (v === Infinity) return { $t: 'n', v: 'Infinity' };

@@ -37,17 +37,20 @@ export function installEngine(SER) {
   /** Elements under `root` in document order, entering open shadow roots. */
   function allUnder(root, out) {
     if (!out) {
-      out = [];
-      // A scope element's own shadow root is part of its subtree.
-      if (root.nodeType === 1 && root.shadowRoot) allUnder(root.shadowRoot, out);
+      // A scope element's own shadow root is part of its subtree, after its light children.
+      const top = [];
+      allUnder(root, top);
+      if (root.nodeType === 1 && root.shadowRoot) allUnder(root.shadowRoot, top);
+      return top;
     }
     const kids = root.children || (root.nodeType === 9 ? [root.documentElement] : root.childNodes);
     for (let i = 0; i < kids.length; i++) {
       const c = kids[i];
       if (!c || c.nodeType !== 1) continue;
       out.push(c);
-      if (c.shadowRoot) allUnder(c.shadowRoot, out);
+      // Light children before shadow content, as Playwright orders them.
       allUnder(c, out);
+      if (c.shadowRoot) allUnder(c.shadowRoot, out);
     }
     return out;
   }
@@ -107,13 +110,28 @@ export function installEngine(SER) {
     return (t) => N(t).toLowerCase().includes(lw);
   }
 
+  /**
+   * Exact text (`text="..."`, getByText exact): an element's full text
+   * when it has no child elements, otherwise one of its own text nodes.
+   */
+  function strictTextOk(e, want) {
+    if (!e.firstElementChild) return N(elementText(e)) === want;
+    for (let c = e.firstChild; c; c = c.nextSibling) if (c.nodeType === 3 && N(c.nodeValue) === want) return true;
+    return false;
+  }
+
   /** Playwright's text engine: the smallest elements whose text matches. */
-  function textQuery(root, m) {
+  function textQuery(root, m, legacy) {
+    if (legacy && m && m.exact && !m.re) {
+      const want = N(m.s);
+      const pool = root.nodeType === 1 ? [root, ...allUnder(root)] : allUnder(root);
+      return pool.filter((e) => !SKIP_TEXT[e.nodeName] && !(e.closest && e.closest('head')) && strictTextOk(e, want));
+    }
     const ok = matcher(m);
     // A text query chained off an element can match that element itself.
     const pool = root.nodeType === 1 ? [root, ...allUnder(root)] : allUnder(root);
     return pool.filter((e) => {
-      if (SKIP_TEXT[e.nodeName]) return false;
+      if (SKIP_TEXT[e.nodeName] || (e.closest && e.closest('head'))) return false;
       if (!ok(elementText(e))) return false;
       for (let c = e.firstElementChild; c; c = c.nextElementSibling) if (ok(elementText(c))) return false;
       if (e.shadowRoot) for (let c = e.shadowRoot.firstElementChild; c; c = c.nextElementSibling) if (ok(elementText(c))) return false;
@@ -454,44 +472,265 @@ export function installEngine(SER) {
     });
   }
 
-  // --- CSS extras -------------------------------------------------------
+  // --- CSS ---------------------------------------------------------------
+  //
+  // Playwright's CSS: the descendant combinator pierces open shadow
+  // roots, :scope and leading combinators refer to the chain's scope
+  // (so `>> ~ div` finds siblings), comma lists come back in document
+  // order, and :has-text(), :text(), :text-is(), :text-matches() and
+  // :visible work in any compound. Each compound is checked with the
+  // native matches(); combinators are walked here, right to left.
 
-  function extrasOk(e, x) {
-    if (!x) return true;
+  const CUSTOM_PSEUDO = /^(has-text|text|text-is|text-matches|visible|scope|is|where|not|has)$/;
+  const LIST_PSEUDO = /^(is|where|not|has)$/;
+
+  function splitList(s) {
+    const out = [];
+    let cur = '';
+    let depth = 0;
+    let quote = null;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (quote) {
+        cur += c;
+        if (c === '\\') cur += s[++i] ?? '';
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '\\') {
+        cur += c + (s[++i] ?? '');
+        continue;
+      }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth--;
+      else if (c === ',' && depth === 0) {
+        out.push(cur);
+        cur = '';
+        continue;
+      }
+      cur += c;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  const unq = (v) => {
+    const m = /^\s*(["'])([\s\S]*)\1\s*$/.exec(v);
+    return m ? m[2].replace(/\\(.)/g, '$1') : v.trim();
+  };
+
+  /** One compound: native part for matches(), plus Playwright's own pseudos. */
+  function compound(src) {
+    let native = '';
+    const custom = [];
+    let depth = 0;
+    let quote = null;
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (quote) {
+        native += c;
+        if (c === '\\') native += src[++i] ?? '';
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '\\') {
+        native += c + (src[++i] ?? '');
+        continue;
+      }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth--;
+      else if (c === ':' && depth === 0 && src[i + 1] !== ':') {
+        const m = /^:([a-zA-Z-]+)/.exec(src.slice(i));
+        if (m && CUSTOM_PSEUDO.test(m[1])) {
+          let j = i + m[0].length;
+          let args = '';
+          if (src[j] === '(') {
+            let d = 0;
+            let qq = null;
+            const s0 = j;
+            for (; j < src.length; j++) {
+              const ch = src[j];
+              if (qq) {
+                if (ch === '\\') j++;
+                else if (ch === qq) qq = null;
+                continue;
+              }
+              if (ch === '"' || ch === "'") qq = ch;
+              else if (ch === '(') d++;
+              else if (ch === ')' && --d === 0) break;
+            }
+            args = src.slice(s0 + 1, j);
+            j++;
+          }
+          custom.push(
+            LIST_PSEUDO.test(m[1])
+              ? { name: m[1], list: splitList(args).map((x) => complex(x.trim())) }
+              : { name: m[1], args: splitList(args).map(unq), raw: args },
+          );
+          i = j - 1;
+          continue;
+        }
+      }
+      native += c;
+    }
+    return { native: native.trim() || '*', custom };
+  }
+
+  /** A complex selector as [compound, combinator, compound, ...]; a leading combinator gets :scope. */
+  function complex(sel) {
+    const parts = [];
+    let cur = '';
+    let depth = 0;
+    let quote = null;
+    const push = () => {
+      if (cur.trim()) parts.push(compound(cur.trim()));
+      cur = '';
+    };
+    for (let i = 0; i < sel.length; i++) {
+      const c = sel[i];
+      if (quote) {
+        cur += c;
+        if (c === '\\') cur += sel[++i] ?? '';
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '\\') {
+        cur += c + (sel[++i] ?? '');
+        continue;
+      }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth--;
+      else if (depth === 0 && /[\s>+~]/.test(c)) {
+        push();
+        let comb = ' ';
+        let j = i;
+        while (j < sel.length && /[\s>+~]/.test(sel[j])) {
+          if (!/\s/.test(sel[j])) comb = sel[j];
+          j++;
+        }
+        i = j - 1;
+        if (parts.length === 0) {
+          if (comb !== ' ') parts.push(compound(':scope'), comb);
+        } else if (j < sel.length) parts.push(comb);
+        continue;
+      }
+      cur += c;
+    }
+    push();
+    return parts;
+  }
+
+  function customOk(e, c, scope) {
+    switch (c.name) {
+      case 'scope':
+        return e === scope;
+      case 'is':
+      case 'where':
+        return c.list.some((parts) => matchComplex(e, parts, parts.length - 1, scope));
+      case 'not':
+        return !c.list.some((parts) => matchComplex(e, parts, parts.length - 1, scope));
+      case 'has':
+        // Inside :has(), :scope is the element being tested.
+        {
+          // Sibling combinators can reach outside the element, so search its whole tree then.
+          const wide = c.list.some((parts) => parts.includes('+') || parts.includes('~'));
+          const pool = wide ? allUnder(e.getRootNode()) : allUnder(e);
+          return pool.some((d) => c.list.some((parts) => matchComplex(d, parts, parts.length - 1, e)));
+        }
+    }
+    if (/^(has-text|text|text-is)$/.test(c.name)) {
+      const raw = (c.raw || '').trim();
+      if (c.args.length !== 1 || (!/^(["'])[\s\S]*\1$/.test(raw) && /[\s>+~,]/.test(raw))) {
+        throw new Error(`Error: "${c.name === 'has-text' ? 'has-text' : 'text'}" engine expects a single string`);
+      }
+    }
+    if (c.name !== 'visible' && (SKIP_TEXT[e.nodeName] || (e.closest && e.closest('head')))) return false;
     const t = elementText(e);
     const own = (ok) => {
       if (!ok(t)) return false;
-      for (let c = e.firstElementChild; c; c = c.nextElementSibling) if (ok(elementText(c))) return false;
+      for (let k = e.firstElementChild; k; k = k.nextElementSibling) if (ok(elementText(k))) return false;
       return true;
     };
-    for (const s of x.hasText || []) if (!matcher({ s })(t)) return false;
-    for (const s of x.text || []) if (!own(matcher({ s }))) return false;
-    for (const s of x.textIs || []) if (!own(matcher({ s, exact: true }))) return false;
-    for (const [src, fl] of x.textRe || []) if (!own(matcher({ re: [src, fl] }))) return false;
-    if (x.visible && !isVisible(e)) return false;
-    return true;
+    switch (c.name) {
+      case 'has-text':
+        return matcher({ s: c.args[0] || '' })(t);
+      case 'text':
+        return own(matcher({ s: c.args[0] || '' }));
+      case 'text-is':
+        return strictTextOk(e, N(c.args[0] || ''));
+      case 'text-matches':
+        return own(matcher({ re: [c.args[0] || '', c.args[1] || ''] }));
+      case 'visible':
+        return isVisible(e);
+    }
+    return false;
+  }
+
+  function cssError(sel) {
+    let bad = sel[sel.length - 1];
+    const stack = [];
+    for (const ch of sel) {
+      if (ch === '[' || ch === '(') stack.push(ch);
+      else if (ch === ']' || ch === ')') {
+        if (!stack.length || stack.pop() !== (ch === ']' ? '[' : '(')) {
+          bad = ch;
+          break;
+        }
+      }
+    }
+    return new Error(`Error: Unexpected token "${bad}" while parsing css selector "${sel}". Did you mean to CSS.escape it?`);
+  }
+
+  /** Does `el` match compound i of `parts`, walking combinators leftward? */
+  function matchComplex(el, parts, i, scope) {
+    const c = parts[i];
+    if (!el || el.nodeType !== 1 || !el.matches(c.native)) return false;
+    for (const x of c.custom) if (!customOk(el, x, scope)) return false;
+    if (i === 0) return true;
+    switch (parts[i - 1]) {
+      case '>':
+        return matchComplex(parentOf(el), parts, i - 2, scope);
+      case '+':
+        return matchComplex(el.previousElementSibling, parts, i - 2, scope);
+      case '~':
+        for (let s = el.previousElementSibling; s; s = s.previousElementSibling) if (matchComplex(s, parts, i - 2, scope)) return true;
+        return false;
+      default:
+        for (let p = parentOf(el); p; p = parentOf(p)) if (matchComplex(p, parts, i - 2, scope)) return true;
+        return false;
+    }
+  }
+
+  function validate(doc, parts, sel) {
+    for (let i = 0; i < parts.length; i += 2) {
+      try {
+        doc.querySelector(parts[i].native);
+      } catch (_) {
+        throw cssError(sel);
+      }
+      for (const x of parts[i].custom) for (const sub of x.list || []) validate(doc, sub, sel);
+    }
   }
 
   function cssQuery(root, q) {
-    const all = allUnder(root);
-    // Validate once so a bad selector throws instead of matching nothing.
-    try {
-      (root.nodeType === 9 ? root : root.ownerDocument || document).querySelector(q.sel);
-    } catch (_) {
-      let depth = [];
-      let bad = q.sel[q.sel.length - 1];
-      for (const ch of q.sel) {
-        if (ch === '[' || ch === '(') depth.push(ch);
-        else if (ch === ']' || ch === ')') {
-          if (!depth.length || depth.pop() !== (ch === ']' ? '[' : '(')) {
-            bad = ch;
-            break;
-          }
-        }
-      }
-      throw new Error(`Error: Unexpected token "${bad}" while parsing css selector "${q.sel}". Did you mean to CSS.escape it?`);
-    }
-    return all.filter((e) => e.matches(q.sel) && extrasOk(e, q.x));
+    const scopeEl = root.nodeType === 9 ? root.documentElement : root.nodeType === 11 ? root.host : root;
+    const lists = splitList(q.sel).map((s) => s.trim()).filter(Boolean);
+    if (!lists.length) throw cssError(q.sel);
+    const doc = root.nodeType === 9 ? root : root.ownerDocument;
+    const parsed = lists.map((l) => complex(l));
+    for (const parts of parsed) validate(doc, parts, q.sel);
+    // :scope can reach siblings and the scope itself, so search the
+    // whole tree the scope lives in; otherwise only below it.
+    let pool;
+    if (/:scope/.test(q.sel) || parsed.some((parts) => parts[0].custom.some((c) => c.name === 'scope'))) {
+      const top = scopeEl.getRootNode();
+      pool = allUnder(top);
+      if (top.nodeType === 11) pool.unshift(top.host);
+    } else pool = allUnder(root);
+    return pool.filter((e) => parsed.some((parts) => matchComplex(e, parts, parts.length - 1, scopeEl)));
   }
 
   function xpathQuery(root, q) {
@@ -511,9 +750,21 @@ export function installEngine(SER) {
 
   function query(root, q) {
     switch (q.k) {
-      case 'css': return cssQuery(root, q);
+      case 'css':
+        if (q.light) {
+          try {
+            return [...root.querySelectorAll(q.sel)];
+          } catch (_) {
+            throw cssError(q.sel);
+          }
+        }
+        return cssQuery(root, q);
       case 'xpath': return xpathQuery(root, q);
-      case 'text': return textQuery(root, q.t);
+      case 'text': {
+        const found = textQuery(root, q.t, q.legacy);
+        // :light skips matches inside shadow roots.
+        return q.light ? found.filter((e) => !(e.getRootNode() instanceof ShadowRoot)) : found;
+      }
       case 'role': return roleQuery(root, q);
       case 'label': return labelQuery(root, q.t);
       case 'attr': return attrQuery(root, q);
@@ -554,6 +805,11 @@ export function installEngine(SER) {
         let out = cur.filter((e) => e.nodeType === 1);
         for (const f of s.f || []) out = applyFilter(out, f);
         if (s.i !== null && s.i !== undefined) out = pick(out, s.i);
+        cur = out;
+      } else if (s.q.k === 'handle') {
+        const v = HANDLES.get(s.q.id);
+        let out = isEl(v) ? [v] : [];
+        for (const f of s.f || []) out = applyFilter(out, f);
         cur = out;
       } else if (s.q.k === 'frame') {
         cur = cur
@@ -1050,6 +1306,7 @@ export function installEngine(SER) {
     visibleAny: (els) => els.some(isVisible),
     evalAll: (els, a) => a.fnc(els, SER.des(a.arg)),
     describe: (els) => els.map(preview),
+    adoptAll: (els) => els.map((e) => adopt(e)),
     refs: (els) => els.map((e) => {
       const own = attr(e, 'data-vs-ref');
       if (own) return [Number(own)];
@@ -1059,6 +1316,7 @@ export function installEngine(SER) {
 
   const ONE = {
     text: (e) => e.textContent || '',
+    adopt: (e) => adopt(e),
     elText: (e) => elementText(e),
     innerText: (e) => {
       if (!(e instanceof (e.ownerDocument.defaultView || window).HTMLElement)) throw new Error('Error: Node is not an HTMLElement');
@@ -1110,11 +1368,26 @@ export function installEngine(SER) {
       return true;
     },
     refs: (e) => {
-      const own = attr(e, 'data-vs-ref');
-      if (own) return [Number(own)];
-      return [...e.querySelectorAll('[data-vs-ref]')]
-        .filter((x) => !x.parentElement || !x.parentElement.closest('[data-vs-ref]') || !e.contains(x.parentElement.closest('[data-vs-ref]')))
-        .map((x) => Number(x.getAttribute('data-vs-ref')));
+      // vibesurfer 0.2.16+ keeps refs in maps (__vsRefOf); older ones in an attribute.
+      const refOf = (x) => {
+        if (typeof window.__vsRefOf === 'function') return window.__vsRefOf(x);
+        const a = attr(x, 'data-vs-ref');
+        return a === null ? null : Number(a);
+      };
+      const own = refOf(e);
+      if (own !== null) return [own];
+      // The outermost reported elements inside.
+      const out = [];
+      const walk = (n) => {
+        for (const c of n.children) {
+          const r = refOf(c);
+          if (r !== null) out.push(r);
+          else walk(c);
+        }
+        if (n.shadowRoot) walk(n.shadowRoot);
+      };
+      walk(e);
+      return out;
     },
     press: (e, a) => {
       if (deepActive(e.ownerDocument) !== e) e.focus();
@@ -1192,6 +1465,17 @@ export function installEngine(SER) {
   const SLOTS = new Map();
   let seq = 0;
 
+  // Handles: page values the test holds by id (JSHandle, ElementHandle).
+  const HANDLES = new Map();
+  let handleSeq = 0;
+  const adopt = (v) => {
+    const id = ++handleSeq;
+    HANDLES.set(id, v);
+    return id;
+  };
+  SER.H.get = (id) => HANDLES.get(id);
+  const isEl = (v) => !!v && typeof v === 'object' && v.nodeType === 1;
+
   const api = {
     /**
      * req: { steps, op, args, many } -> { n, v } for `many` ops,
@@ -1237,6 +1521,22 @@ export function installEngine(SER) {
         return { p: id };
       }
       return { v: SER.ser(v) };
+    },
+    h: (id) => HANDLES.get(id),
+    drop(id) {
+      HANDLES.delete(id);
+      return true;
+    },
+    /** Adopt a value (or a promise of one): { id, el } with el true for an element. */
+    adoptValue(v) {
+      const done = (x) => ({ id: adopt(x), el: isEl(x) });
+      return v && typeof v.then === 'function' ? v.then(done) : done(v);
+    },
+    props(id) {
+      const v = HANDLES.get(id);
+      const out = [];
+      if (v && typeof v === 'object') for (const k of Object.keys(v)) out.push([k, adopt(v[k]), isEl(v[k])]);
+      return out;
     },
     take(id) {
       if (!SLOTS.has(id)) return { gone: true };

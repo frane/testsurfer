@@ -36,7 +36,9 @@ import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
 import {
   byAttr,
+  ElementHandle,
   FrameLocator,
+  JSHandle,
   selectorSteps,
   Locator,
   type BoundingBox,
@@ -857,25 +859,37 @@ export class Page {
     return this.locator(selector).evaluateAll(fn, arg);
   }
 
-  /** The first element matching `selector` as a locator, or null. Locators stand in for element handles. */
-  async $(selector: string): Promise<Locator | null> {
-    const l = this.locator(selector);
-    return (await l.count()) > 0 ? l.first() : null;
+  /** The first element matching `selector`, or null. */
+  async $(selector: string): Promise<ElementHandle | null> {
+    return this.locator(selector).firstHandle();
   }
 
-  /** One locator per element matching `selector`. */
-  async $$(selector: string): Promise<Locator[]> {
-    return this.locator(selector).all();
+  /** Every element matching `selector`. */
+  async $$(selector: string): Promise<ElementHandle[]> {
+    return this.locator(selector).elementHandles();
+  }
+
+  /** Like evaluate(), but keeps the result in the page and returns a handle to it. */
+  async evaluateHandle<A = unknown>(fn: string | ((arg: A) => unknown), arg?: A): Promise<JSHandle> {
+    const a = JSON.stringify(serializeValue(arg));
+    const src = typeof fn === 'function' ? fn.toString() : fn;
+    return this.adoptResult(`(function(){var v=(${src});return typeof v==='function'?v(E.des(${a})):v;})()`);
+  }
+
+  /** @internal Evaluate `expr` (may be a promise) and hand back a handle to its value. */
+  async adoptResult(expr: string): Promise<JSHandle> {
+    const r = (await this.engineCall(`E.adoptValue(${expr})`)) as { id: number; el: boolean };
+    return r.el ? new ElementHandle(this, r.id) : new JSHandle(this, r.id);
   }
 
   /** Wait for `selector` to reach a state (visible by default); returns the element as a locator. */
   async waitForSelector(
     selector: string,
     options: { state?: 'attached' | 'detached' | 'visible' | 'hidden'; timeout?: number } = {},
-  ): Promise<Locator | null> {
+  ): Promise<ElementHandle | null> {
     const l = this.locator(selector);
     await l.first().waitFor(options);
-    return options.state === 'detached' || options.state === 'hidden' ? null : l.first();
+    return options.state === 'detached' || options.state === 'hidden' ? null : l.firstHandle();
   }
 
   // Selector shorthands (Playwright's page.click(selector) family).

@@ -21,10 +21,12 @@ export interface CssExtras {
   visible?: boolean;
 }
 
-export type ParsedPart =
-  | { kind: 'css'; selector: string; extras: CssExtras }
+export type ParsedPart = BasePart & { capture?: boolean };
+
+type BasePart =
+  | { kind: 'css'; selector: string; extras: CssExtras; light?: boolean }
   | { kind: 'xpath'; xpath: string }
-  | { kind: 'text'; text: string | RegExp; exact: boolean }
+  | { kind: 'text'; text: string | RegExp; exact: boolean; light?: boolean; legacy?: boolean }
   | { kind: 'attr'; attr: string; value: string }
   | { kind: 'role'; role: string; options: ByRoleOptions }
   | { kind: 'nth'; index: number }
@@ -43,7 +45,12 @@ function splitTop(s: string, sep: string): string[] {
       else if (c === quote) quote = null;
       continue;
     }
-    if (c === '"' || c === "'" || c === '`') quote = c;
+    // A quote opens a string only where one can start: a part's start,
+    // after `=` (engine body, attribute value), `(` or `,`. Elsewhere it
+    // is a literal character (`text=/let's/ >> span`).
+    const before = s.slice(start, i).trimEnd();
+    const opens = before === '' || /[=(,]$/.test(before);
+    if ((c === '"' || c === "'" || c === '`') && opens) quote = c;
     else if (c === '(' || c === '[') depth++;
     else if (c === ')' || c === ']') depth--;
     else if (depth === 0 && s.startsWith(sep, i)) {
@@ -67,13 +74,16 @@ function parseRegex(v: string): RegExp | null {
   return m ? new RegExp(m[1]!, m[2]) : null;
 }
 
-function textPart(body: string): ParsedPart {
+function textPart(body: string): BasePart {
   const re = parseRegex(body);
   if (re) return { kind: 'text', text: re, exact: false };
+  // Only a quote right at the start makes a quoted body; `text= "x"`
+  // searches for the literal `"x"`.
+  if (!/^["'`]/.test(body)) return { kind: 'text', text: body.trim(), exact: false };
   const q = unquote(body);
-  // "quoted" is a whole-string, case-sensitive match; a trailing i
-  // makes it case-insensitive again.
-  return { kind: 'text', text: q.value, exact: q.quoted && q.flag !== 'i' };
+  // "quoted" matches the element's own text nodes, case-sensitively; a
+  // trailing i makes it case-insensitive again.
+  return { kind: 'text', text: q.value, exact: q.quoted && q.flag !== 'i', legacy: true };
 }
 
 function rolePart(body: string): ParsedPart {
@@ -102,38 +112,31 @@ const PSEUDO = /:(has-text|text-is|text-matches|text|visible)(?:\(((?:[^()"']|"(
  * selector (`div:has-text("x") > span`) is left for the browser to
  * reject.
  */
+/** CSS, passed through whole: the engine handles Playwright's pseudos in any position. */
 function cssPart(selector: string): ParsedPart {
-  const extras: CssExtras = {};
-  let sel = selector.trim();
-  for (let m = PSEUDO.exec(sel); m; m = PSEUDO.exec(sel)) {
-    sel = sel.slice(0, m.index);
-    const [, name, arg = ''] = m;
-    if (name === 'visible') extras.visible = true;
-    else if (name === 'text-matches') {
-      const args = splitTop(arg, ',').map((a) => unquote(a).value);
-      (extras.textRe ??= []).push([args[0] ?? '', args[1] ?? '']);
-    } else {
-      const v = unquote(arg).value;
-      const key = name === 'has-text' ? 'hasText' : name === 'text-is' ? 'textIs' : 'text';
-      (extras[key] ??= []).push(v);
-    }
-  }
-  // A bare pseudo (`:visible`) applies to any element.
-  if (sel === '' || /[\s>+~,]$/.test(sel)) sel += '*';
-  return { kind: 'css', selector: sel, extras };
+  return { kind: 'css', selector: selector.trim(), extras: {} };
 }
 
 function onePart(raw: string): ParsedPart {
-  let part = raw.trim();
-  if (part.startsWith('*')) part = part.slice(1);
-  const eng = /^([a-zA-Z_][\w-]*)\s*=\s*([\s\S]*)$/.exec(part);
+  const part = raw.trim();
+  // `*css=div >> span`: the result is the marked part, among those the rest matches inside.
+  if (/^\*[a-zA-Z_-]+=/.test(part)) return { ...basePart(part.slice(1)), capture: true };
+  return basePart(part);
+}
+
+function basePart(part: string): BasePart {
+  const eng = /^([a-zA-Z_][\w-]*(?::light)?)\s*=([\s\S]*)$/.exec(part);
   if (eng) {
     const [, name, body] = eng as unknown as [string, string, string];
     switch (name) {
       case 'css':
         return cssPart(body);
+      case 'css:light':
+        return { kind: 'css', selector: body.trim(), extras: {}, light: true };
+      case 'text:light':
+        return { ...textPart(body), light: true } as BasePart;
       case 'xpath':
-        return { kind: 'xpath', xpath: body };
+        return { kind: 'xpath', xpath: body.trim() };
       case 'text':
         return textPart(body);
       case 'id':
@@ -148,7 +151,7 @@ function onePart(raw: string): ParsedPart {
       case 'visible':
         return { kind: 'visible', visible: body.trim() !== 'false' };
       default:
-        throw new Error(`Unknown engine "${name}" while parsing selector ${raw.trim()}`);
+        throw new Error(`Unknown engine "${name}" while parsing selector ${part}`);
     }
   }
   if (part.startsWith('//') || part.startsWith('..') || part.startsWith('(//')) return { kind: 'xpath', xpath: part };

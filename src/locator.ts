@@ -54,15 +54,17 @@ export type LocatorOptions = Omit<FilterOptions, 'visible'>;
 
 export type LocatorQuery =
   | { kind: 'role'; role: string; options: ByRoleOptions }
-  | { kind: 'text'; text: string | RegExp; options: ByTextOptions }
+  | { kind: 'text'; text: string | RegExp; options: ByTextOptions; light?: boolean; legacy?: boolean }
   | { kind: 'label'; text: string | RegExp; options: ByTextOptions }
-  | { kind: 'css'; selector: string; extras?: CssExtras }
+  | { kind: 'css'; selector: string; extras?: CssExtras; light?: boolean }
   | { kind: 'xpath'; xpath: string }
   | { kind: 'attr'; method: string; attr: string; value: string | RegExp; exact: boolean }
   | { kind: 'and' | 'or'; left: Locator; right: Locator }
   | { kind: 'frame' }
   /** The previous step's matches themselves, so an index or filter can apply after an index. */
   | { kind: 'self' }
+  /** A held element (ElementHandle). */
+  | { kind: 'handle'; id: number }
   /** A selector that failed to parse; resolving it throws `message`. */
   | { kind: 'invalid'; selector: string; message: string };
 
@@ -138,6 +140,8 @@ export function describeQuery(query: LocatorQuery): string {
       return '';
     case 'invalid':
       return query.selector;
+    case 'handle':
+      return 'ElementHandle';
   }
 }
 
@@ -165,11 +169,11 @@ function wireQuery(query: LocatorQuery): Record<string, unknown> {
       return { k: 'role', role: query.role, o: { ...rest, ...(name !== undefined ? { name: wm(name, exact) } : {}) } };
     }
     case 'text':
-      return { k: 'text', t: wm(query.text, query.options.exact) };
+      return { k: 'text', t: wm(query.text, query.options.exact), light: query.light, legacy: query.legacy };
     case 'label':
       return { k: 'label', t: wm(query.text, query.options.exact) };
     case 'css':
-      return { k: 'css', sel: query.selector, x: query.extras && Object.keys(query.extras).length ? query.extras : undefined };
+      return { k: 'css', sel: query.selector, light: query.light };
     case 'xpath':
       return { k: 'xpath', xp: query.xpath };
     case 'attr':
@@ -183,6 +187,8 @@ function wireQuery(query: LocatorQuery): Record<string, unknown> {
       return { k: 'self' };
     case 'invalid':
       throw new Error(`Error: ${query.message}`);
+    case 'handle':
+      return { k: 'handle', id: query.id };
   }
 }
 
@@ -215,13 +221,25 @@ export function selectorSteps(selector: string): Step[] {
 }
 
 function parseSteps(selector: string): Step[] {
+  const parts = parseSelector(selector);
+  const at = parts.findIndex((p) => p.capture);
+  if (at < 0 || at === parts.length - 1) return stepsOf(parts);
+  // A capture: keep the marked part's matches that contain the rest.
+  const head = stepsOf(parts.slice(0, at + 1));
+  const rest = stepsOf(parts.slice(at + 1));
+  const tail = head[head.length - 1]!;
+  tail.filters.push({ has: new Locator(null as unknown as Page, rest) });
+  return head;
+}
+
+function stepsOf(parts: ReturnType<typeof parseSelector>): Step[] {
   const steps: Step[] = [];
   const last = (what: string): Step => {
     const s = steps[steps.length - 1];
     if (!s) throw new Error(`"${what}" cannot start a selector`);
     return s;
   };
-  for (const p of parseSelector(selector)) {
+  for (const p of parts) {
     switch (p.kind) {
       case 'nth':
         last('nth=').index = p.index;
@@ -230,13 +248,15 @@ function parseSteps(selector: string): Step[] {
         last('visible=').filters.push({ visible: p.visible });
         break;
       case 'css':
-        steps.push(step({ kind: 'css', selector: p.selector, extras: p.extras }));
+        steps.push(step({ kind: 'css', selector: p.selector, ...(p.light ? { light: true } : {}) }));
         break;
       case 'xpath':
         steps.push(step(p));
         break;
       case 'text':
-        steps.push(step({ kind: 'text', text: p.text, options: { exact: p.exact } }));
+        steps.push(
+          step({ kind: 'text', text: p.text, options: { exact: p.exact }, ...(p.light ? { light: true } : {}), ...(p.legacy ? { legacy: true } : {}) }),
+        );
         break;
       case 'attr':
         steps.push(step(byAttr('locator', p.attr, p.value, true)));
@@ -246,7 +266,7 @@ function parseSteps(selector: string): Step[] {
         break;
     }
   }
-  if (steps.length === 0) throw new Error(`empty selector "${selector}"`);
+  if (steps.length === 0) throw new Error('empty selector');
   return steps;
 }
 
@@ -382,6 +402,24 @@ export class Locator {
 
   getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
     return this.chain(byAttr('getByTitle', 'title', text, options.exact ?? false));
+  }
+
+  /** The matched element as an ElementHandle (waits for it, strict). */
+  async elementHandle(options: { timeout?: number } = {}): Promise<ElementHandle> {
+    const id = await this.waitOne<number>('locator.elementHandle', 'adopt', {}, options.timeout);
+    return new ElementHandle(this.owner, id);
+  }
+
+  /** Every current match as an ElementHandle. */
+  async elementHandles(): Promise<ElementHandle[]> {
+    const ids = await this.many<number[]>('adoptAll');
+    return ids.map((id) => new ElementHandle(this.owner, id));
+  }
+
+  /** The first match as an ElementHandle, or null (no waiting, not strict). */
+  async firstHandle(): Promise<ElementHandle | null> {
+    const r = await this.run<number>('adopt', {}, { first: true });
+    return r.none ? null : new ElementHandle(this.owner, r.v as number);
   }
 
   /** The content of the iframe this locator matches. */
@@ -839,5 +877,155 @@ export class FrameLocator {
   }
   getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
     return this.inside().getByTitle(text, options);
+  }
+}
+
+/** A page value held by the test (Playwright's JSHandle). */
+export class JSHandle {
+  readonly handleId: number;
+  readonly ownerPage: Page;
+
+  constructor(page: Page, id: number) {
+    this.ownerPage = page;
+    this.handleId = id;
+  }
+
+  /** Call `fn(value, arg)` in the page. */
+  async evaluate<R, A = unknown>(fn: string | ((v: any, arg: A) => R | Promise<R>), arg?: A): Promise<R> {
+    return (await this.ownerPage.engineCall(
+      `(${fn.toString()})(E.h(${this.handleId}),E.des(${JSON.stringify(serializeValue(arg))}))`,
+    )) as R;
+  }
+
+  async evaluateHandle<A = unknown>(fn: string | ((v: any, arg: A) => unknown), arg?: A): Promise<JSHandle> {
+    return this.ownerPage.adoptResult(
+      `(${fn.toString()})(E.h(${this.handleId}),E.des(${JSON.stringify(serializeValue(arg))}))`,
+    );
+  }
+
+  /** The value, serialized back. */
+  async jsonValue<T = unknown>(): Promise<T> {
+    return (await this.ownerPage.engineCall(`E.h(${this.handleId})`)) as T;
+  }
+
+  async getProperty(name: string): Promise<JSHandle> {
+    return this.ownerPage.adoptResult(
+      `(function(v){return v==null?undefined:v[${JSON.stringify(name)}];})(E.h(${this.handleId}))`,
+    );
+  }
+
+  async getProperties(): Promise<Map<string, JSHandle>> {
+    const rows = (await this.ownerPage.engineCall(`E.props(${this.handleId})`)) as [string, number, boolean][];
+    return new Map(
+      rows.map(([k, id, el]) => [k, el ? new ElementHandle(this.ownerPage, id) : new JSHandle(this.ownerPage, id)]),
+    );
+  }
+
+  asElement(): ElementHandle | null {
+    return null;
+  }
+
+  async dispose(): Promise<void> {
+    await this.ownerPage.engineCall(`E.drop(${this.handleId})`).catch(() => {});
+  }
+
+  toString(): string {
+    return 'JSHandle';
+  }
+}
+
+/**
+ * An element held by the test (Playwright's ElementHandle). It is a
+ * locator pinned to that one element, so every locator method works on
+ * it; selectors on it search inside the element.
+ */
+export class ElementHandle extends Locator {
+  readonly handleId: number;
+  readonly ownerPage: Page;
+
+  constructor(page: Page, id: number) {
+    super(page, { kind: 'handle', id });
+    this.handleId = id;
+    this.ownerPage = page;
+  }
+
+  asElement(): ElementHandle {
+    return this;
+  }
+
+  /** The first element matching `selector` inside this one, or null. */
+  async $(selector: string): Promise<ElementHandle | null> {
+    return this.locator(selector).firstHandle();
+  }
+
+  async $$(selector: string): Promise<ElementHandle[]> {
+    return this.locator(selector).elementHandles();
+  }
+
+  async $eval<R, A = unknown>(selector: string, fn: string | ((el: any, arg: A) => R | Promise<R>), arg?: A): Promise<R> {
+    const r = await this.page().engineRun<{ v?: R; none?: boolean }>(
+      { steps: this.locator(selector).wire(), op: 'eval', args: { arg: serializeValue(arg) }, first: true },
+      fn.toString(),
+    );
+    if (r.none) throw new Error(`elementHandle.$eval: Error: failed to find element matching selector "${selector}"`);
+    return r.v as R;
+  }
+
+  async $$eval<R, A = unknown>(selector: string, fn: string | ((els: any[], arg: A) => R | Promise<R>), arg?: A): Promise<R> {
+    return this.locator(selector).evaluateAll(fn, arg);
+  }
+
+  async evaluateHandle<A = unknown>(fn: string | ((v: any, arg: A) => unknown), arg?: A): Promise<JSHandle> {
+    return new JSHandle(this.page(), this.handleId).evaluateHandle(fn, arg);
+  }
+
+  async jsonValue<T = unknown>(): Promise<T> {
+    return {} as T;
+  }
+
+  async getProperty(name: string): Promise<JSHandle> {
+    return new JSHandle(this.page(), this.handleId).getProperty(name);
+  }
+
+  async getProperties(): Promise<Map<string, JSHandle>> {
+    return new JSHandle(this.page(), this.handleId).getProperties();
+  }
+
+  async dispose(): Promise<void> {
+    await new JSHandle(this.page(), this.handleId).dispose();
+  }
+
+  /** The element matching `selector` inside this one, once it reaches `state` (visible by default). */
+  async waitForSelector(
+    selector: string,
+    options: { state?: 'attached' | 'detached' | 'visible' | 'hidden'; timeout?: number } = {},
+  ): Promise<ElementHandle | null> {
+    const l = this.locator(selector).first();
+    await l.waitFor(options);
+    return options.state === 'detached' || options.state === 'hidden' ? null : l.firstHandle();
+  }
+
+  /** Wait for the element to be visible, hidden, stable, enabled, disabled or editable. */
+  async waitForElementState(
+    state: 'visible' | 'hidden' | 'stable' | 'enabled' | 'disabled' | 'editable',
+    options: { timeout?: number } = {},
+  ): Promise<void> {
+    const budget = options.timeout ?? this.page().timeouts.action;
+    const deadline = Date.now() + budget;
+    for (let i = 0; ; i++) {
+      let ok = true;
+      if (state === 'visible') ok = await this.isVisible();
+      else if (state === 'hidden') ok = !(await this.isVisible());
+      else if (state === 'enabled') ok = await this.isEnabled({ timeout: budget });
+      else if (state === 'disabled') ok = await this.isDisabled({ timeout: budget });
+      else if (state === 'editable') ok = await this.isEditable({ timeout: budget });
+      if (ok) return;
+      if (Date.now() >= deadline) throw new TimeoutError(`elementHandle.waitForElementState: Timeout ${budget}ms exceeded.`);
+      await sleep(BACKOFF[Math.min(i, BACKOFF.length - 1)]!);
+    }
+  }
+
+  override toString(): string {
+    return 'ElementHandle';
   }
 }

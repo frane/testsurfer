@@ -9,17 +9,16 @@ test('>> splits a chain, but not inside quotes or brackets', () => {
 
 test('text= is substring unless quoted', () => {
   assert.deepEqual(parseSelector('text=foo'), [{ kind: 'text', text: 'foo', exact: false }]);
-  assert.deepEqual(parseSelector('text="Foo"'), [{ kind: 'text', text: 'Foo', exact: true }]);
-  assert.deepEqual(parseSelector('"Hello"'), [{ kind: 'text', text: 'Hello', exact: true }]);
+  assert.deepEqual(parseSelector('text="Foo"'), [{ kind: 'text', text: 'Foo', exact: true, legacy: true }]);
+  assert.deepEqual(parseSelector('"Hello"'), [{ kind: 'text', text: 'Hello', exact: true, legacy: true }]);
   const [re] = parseSelector('text=/fo+/i');
   assert.ok(re?.kind === 'text' && re.text instanceof RegExp && re.text.flags === 'i');
 });
 
-test('trailing CSS pseudos become element checks', () => {
+test('CSS passes through whole, pseudos and all', () => {
   assert.deepEqual(parseSelector('button:has-text("Hi"):visible'), [
-    { kind: 'css', selector: 'button', extras: { visible: true, hasText: ['Hi'] } },
+    { kind: 'css', selector: 'button:has-text("Hi"):visible', extras: {} },
   ]);
-  assert.deepEqual(parseSelector(':visible'), [{ kind: 'css', selector: '*', extras: { visible: true } }]);
 });
 
 test('engines: nth, role, id, xpath', () => {

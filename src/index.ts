@@ -13,7 +13,7 @@
 
 export { Browser, BrowserContext, type LaunchOptions } from './browser.ts';
 export { Page, type ClickVia, type InputMode, type LayoutRect, type ProtocolOptions, type Timeouts } from './page.ts';
-export { FrameLocator, Locator, type ByRoleOptions, type ByTextOptions, type FilterOptions, type LocatorOptions } from './locator.ts';
+export { ElementHandle, FrameLocator, JSHandle, Locator, type ByRoleOptions, type ByTextOptions, type FilterOptions, type LocatorOptions } from './locator.ts';
 export { expect, LocatorAssertions, PageAssertions, type ExpectOptions } from './expect.ts';
 export { ValueAssertions, AssertionError } from './values.ts';
 export {
