@@ -61,7 +61,7 @@ Locators resolve lazily at action time, against a fresh view:
 - `page.getByLabel(text, { exact })` matches form fields by their `<label>` (for, wrapping, or `aria-labelledby`) or `aria-label`.
 - `page.getByTestId(id)` matches `data-testid` exactly (string or RegExp). The `testIdAttribute` option changes the attribute.
 - `page.getByPlaceholder(text)`, `page.getByAltText(text)` and `page.getByTitle(text)` match those attributes, substring and case-insensitive by default, whole-string with `{ exact: true }`.
-- `page.locator(css)` takes a CSS selector.
+- `page.locator(css)` takes a CSS selector. CSS and attribute locators search open shadow roots and same-origin iframes too.
 - Every `getBy*` and `locator()` also exists on a locator and searches inside its matches: `page.getByTestId('cart').getByRole('button', { name: 'Remove' })`.
 - `.filter({ hasText, hasNotText, has, hasNot, visible })` narrows matches; `has` and `hasNot` take a locator searched inside each match.
 - `.and(locator)` keeps elements matching both, `.or(locator)` takes either.
@@ -81,6 +81,7 @@ Assertions poll until they pass or time out:
 - `expect(locator).toBeEnabled()` / `.toBeDisabled()` (native `disabled`, a disabled fieldset, or `aria-disabled="true"`) / `.toBeEditable()` / `.toBeFocused()`
 - `expect(locator).toHaveAttribute(name, value?)` / `.toHaveClass(value)` / `.toHaveId(value)`
 - `expect(locator).toHaveCount(n)` / `.toBeAttached()`
+- `expect(locator).toHaveScreenshot(name?, { threshold, maxDiffPixels, maxDiffPixelRatio })` / `expect(page).toHaveScreenshot(...)` compare against a baseline PNG stored next to the test file, in `<file>-snapshots/<name>-<os>.png`. A missing baseline is written and fails the test once; a mismatch writes the actual image and a diff to `outputDir`. `TESTSURFER_UPDATE_SNAPSHOTS=1` rewrites baselines.
 - `expect(locator).toMatchAriaSnapshot(template)` / `expect(page).toMatchAriaSnapshot(template)`
 - `expect(page).toHaveTitle(value)` / `.toHaveURL(value)`
 - every matcher takes `{ timeout }` and negates with `.not`
@@ -108,6 +109,28 @@ Template siblings must appear in that order, and a child can sit at any depth un
 - `page.url()`, `page.title()`, and `page.evaluate(expr | fn)` read the page. `evaluate` returns the JSON-serialized result.
 - `page.screenshot({ path, fullPage })` saves a PNG and returns its path.
 - `page.mouse.move(x, y)`, `page.mouse.click(x, y)` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop.
+- `page.reload()`, `page.goBack()`, `page.goForward()`, `page.waitForURL(url)`, `page.waitForTimeout(ms)`.
+- `page.addInitScript(fn | string | { path }, arg)` runs a script at document start in every later document, before the page's own scripts. The page's Content Security Policy does not block it.
+- `page.frameLocator(selector)` (or `locator.contentFrame()`) gives locators inside a same-origin iframe. vibesurfer reports a same-origin frame's content as part of the tree; a cross-origin frame has nothing to search.
+
+## Network and events
+
+`page.route(url, handler, { times })` intercepts `fetch` and `XMLHttpRequest` requests whose URL matches a glob (`**/api/*`), a RegExp or a predicate. The handler gets a route:
+
+```ts
+await page.route('**/api/items', (route) => route.fulfill({ json: { items: ['mocked'] } }));
+await page.route('**/api/items', async (route) => {
+  const res = await route.fetch();
+  await route.fulfill({ response: res, json: { ...(await res.json()), extra: true } });
+});
+await page.route('**/analytics/**', (route) => route.abort());
+```
+
+`fulfill({ status, headers, contentType, body, json, path, response })`, `continue({ url, method, headers, postData })`, `abort()`, `fallback()` (the next matching handler decides) and `fetch()` work as in Playwright. Routes added later win. Register routes before `goto` to catch requests made while the page loads; routes added afterwards apply from then on. `page.unroute(url)` and `page.unrouteAll()` remove them, and `context.route()` covers every page in a context.
+
+`page.on(event, listener)` (and `once`, `off`) reports `console` (`msg.type()`, `msg.text()`), `pageerror`, `request`, `response`, `requestfinished` and `requestfailed`. `page.waitForRequest(url)`, `page.waitForResponse(url)` and `page.waitForEvent(name, predicate)` wait for one.
+
+Both work through a script testsurfer installs in the page, so they see what page script does: `fetch`, `XMLHttpRequest`, `console`, uncaught errors. Navigations, images, scripts, stylesheets and requests from workers are not intercepted or reported. While a page has routes, each `fetch` and XHR waits a poll interval (15ms) for the handler's decision.
 
 ## Logging in once
 
@@ -125,7 +148,14 @@ With the `auth` option, every test's `page` starts logged in.
 
 ## Runner
 
-The `test` export wraps node:test. Each test gets a fresh `page`; one browser session is shared across the file. `test.describe(name, fn)` groups tests, `test.beforeEach(fn)` and `test.afterEach(fn)` receive the same `{ page }`, and `test.only` / `test.skip` work as in node:test.
+The `test` export wraps node:test with Playwright's test API. Each test gets fresh `page` and `context` fixtures plus the shared `browser`; one browser session is shared across the file.
+
+- `test.describe(name, fn)` groups tests; `.only`, `.skip`, `.parallel` and `.serial` variants exist.
+- `test.beforeEach` / `test.afterEach` get the test's fixtures; `test.beforeAll` / `test.afterAll` get `{ browser }`.
+- `test.only`, `test.skip(name, fn)` and `test.fixme(name, fn)` register; `test.skip(condition, reason)` inside a test skips it there.
+- `test.step(name, fn)` runs a named part of a test and puts the name in its errors.
+- `test.extend({ ... })` adds fixtures: a value, `[value, { option: true }]`, or a setup function that receives the other fixtures and calls `use(value)`, with teardown after `use` returns.
+- `context.newPage()` opens more pages in a test; `browser.newContext()` opens another context (see Status for how isolated it is).
 
 Options come from `testsurfer.config.ts` (or `.mts`, `.js`, `.mjs`) in the directory you run the tests from, and from `configure(options)` in a test file, which wins over the file:
 
@@ -144,8 +174,23 @@ The options:
 - `timeouts: { action, expect, navigation }`, in milliseconds.
 - `inputMode`: `robotic` (default, instant), `careful`, or `human` (a humanized cursor path for flows that score input behavior).
 - `testIdAttribute`: the attribute `getByTestId` reads, default `data-testid`.
+- `updateSnapshots`: `missing` (default), `all` or `none`, for `toHaveScreenshot` baselines. `TESTSURFER_UPDATE_SNAPSHOTS=1` means `all`.
 
-Test files run in parallel: `node --test` gives each file its own process (one less than the CPU count at a time; set it with `--test-concurrency=N`), and each process opens its own session on the shared daemon. Tests inside a file run one after another.
+Test files run in parallel: `node --test` gives each file its own process (one less than the CPU count at a time; set it with `--test-concurrency=N`), and each process opens its own session on the shared daemon. Inside a file, tests run one after another unless a describe block calls `test.describe.configure({ mode: 'parallel' })` (or is `test.describe.parallel`); then its tests run at the same time, each with its own page.
+
+```ts
+const it = test.extend<{ todos: TodoPage }>({
+  todos: async ({ page }, use) => {
+    const todos = new TodoPage(page);
+    await todos.open();
+    await use(todos);
+  },
+});
+
+it('adds one', async ({ todos }) => {
+  await todos.add('Buy milk');
+});
+```
 
 ```ts
 import { test, expect, configure } from 'testsurfer';
@@ -181,7 +226,15 @@ await browser.close();
 
 Version 0.1 pins vibesurfer 0.2.14 and speaks its frozen wire protocol (v1). Older daemons work for everything except `level`, `checked` and `<label>` lookups, which need the tree attributes 0.2.12 added. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
 
-Not supported yet, so a suite that relies on these will not run unchanged: request mocking (`page.route`), frames (`frameLocator`), CSS that pierces shadow roots, `toHaveScreenshot`, page events (`page.on`), multiple pages or contexts per test, parallel tests inside one file, and Windows runners.
+Differences from Playwright, so a suite that relies on these will not run unchanged:
+
+- `page.route` and network events cover `fetch` and XHR only (see Network and events).
+- Contexts share one cookie and storage jar. `browser.newContext()` opens a separate vibesurfer session with its own pages, but logins and storage are visible across contexts.
+- No popups: a link or `window.open` that would open a new window loads in the same page, so `waitForEvent('popup')` never fires.
+- `page.on('dialog')` is not reported; WebKit headless dismisses alerts and confirms.
+- `toHaveScreenshot` compares against baselines recorded by testsurfer; Playwright's baselines come from different engines and will not match.
+- Worker-scoped fixtures in `test.extend` are set up per test.
+- Cross-origin iframes cannot be searched.
 
 ## Benchmark
 

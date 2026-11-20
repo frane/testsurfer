@@ -184,17 +184,37 @@ interface Found {
   inner: Map<number, number[]>;
 }
 
-/** Page-side collector: element -> [target ref, refs inside]. */
+/**
+ * Page-side querySelectorAll that also searches open shadow roots, as
+ * Playwright's CSS engine does. vibesurfer's walker reports elements
+ * inside open shadow roots, so they have refs too.
+ */
+const DEEP_JS =
+  `function deep(root,sel){var out=[].slice.call(root.querySelectorAll(sel));` +
+  `var hosts=[root].concat([].slice.call(root.querySelectorAll('*')));` +
+  `for(var i=0;i<hosts.length;i++){var h=hosts[i];if(h.shadowRoot)out=out.concat(deep(h.shadowRoot,sel));` +
+  `if(h.tagName==='IFRAME'||h.tagName==='FRAME'){var d=null;try{d=h.contentDocument;}catch(e){}if(d)out=out.concat(deep(d,sel));}}return out;}`;
+
+/** Parent element, stepping out of a shadow root to its host and out of a frame to its iframe. */
+const PARENT_JS =
+  `function up(e){var r=e.getRootNode&&e.getRootNode();return e.parentElement||(r&&r.host)||` +
+  `(e.ownerDocument&&e.ownerDocument.defaultView&&e.ownerDocument.defaultView.frameElement)||null;}`;
+
+/** The element carrying `ref`, wherever it is. */
+export const FIND_REF_JS = (ref: number) =>
+  `(window.__vsFindRef?window.__vsFindRef(${ref}):document.querySelector('[data-vs-ref="${ref}"]'))`;
+
+/** Page-side collector: element -> [target ref, refs inside, mapped up]. */
 const COLLECT_JS =
-  `function(els){var out=[];for(var i=0;i<els.length;i++){var el=els[i];` +
-  `var inner=[].map.call(el.querySelectorAll('[data-vs-ref]'),function(e){return +e.getAttribute('data-vs-ref')});` +
-  `var t=el.getAttribute('data-vs-ref');var up=0;if(t!==null){t=+t;}else if(inner.length){t=inner[0];}` +
-  `else{var a=el.parentElement;while(a&&!a.hasAttribute('data-vs-ref'))a=a.parentElement;if(!a)continue;t=+a.getAttribute('data-vs-ref');up=1;}` +
-  `out.push([t,inner,up]);}return out;}`;
+  `function(els){var deep=${DEEP_JS};var up=${PARENT_JS};var out=[];for(var i=0;i<els.length;i++){var el=els[i];` +
+  `var inner=deep(el,'[data-vs-ref]').map(function(e){return +e.getAttribute('data-vs-ref')});` +
+  `var t=el.getAttribute('data-vs-ref');var climbed=0;if(t!==null){t=+t;}else if(inner.length){t=inner[0];}` +
+  `else{var a=up(el);while(a&&!a.hasAttribute('data-vs-ref'))a=up(a);if(!a)continue;t=+a.getAttribute('data-vs-ref');climbed=1;}` +
+  `out.push([t,inner,climbed]);}return out;}`;
 
 function domQueryJs(query: Extract<LocatorQuery, { kind: 'css' | 'attr' }>): string {
   if (query.kind === 'css') {
-    return `(function(){var c=${COLLECT_JS};return c(document.querySelectorAll(${JSON.stringify(query.selector)}));})()`;
+    return `(function(){var c=${COLLECT_JS};var deep=${DEEP_JS};return c(deep(document,${JSON.stringify(query.selector)}));})()`;
   }
   const v = query.value;
   const test =
@@ -205,7 +225,7 @@ function domQueryJs(query: Extract<LocatorQuery, { kind: 'css' | 'attr' }>): str
         : `var w=n(${JSON.stringify(v)}).toLowerCase();var ok=function(s){return n(s).toLowerCase().indexOf(w)>=0;};`;
   return (
     `(function(){var c=${COLLECT_JS};var n=function(s){return String(s).replace(/\\s+/g,' ').trim();};${test}` +
-    `var a=${JSON.stringify(query.attr)};var all=document.querySelectorAll('['+CSS.escape(a)+']');var els=[];` +
+    `var deep=${DEEP_JS};var a=${JSON.stringify(query.attr)};var all=deep(document,'['+CSS.escape(a)+']');var els=[];` +
     `for(var i=0;i<all.length;i++){if(ok(all[i].getAttribute(a)))els.push(all[i]);}return c(els);})()`
   );
 }
@@ -399,8 +419,10 @@ export class Locator {
     const scope = new Set<number>();
     for (const n of nodes) {
       treeDescendants(snap, n, scope);
+      // `inner` never holds an element's own ref; when it holds the
+      // match's ref, the match stands in for a wrapper without one and
+      // must stay searchable.
       for (const r of found.inner.get(n.ref) ?? []) {
-        if (r === n.ref) continue;
         scope.add(r);
         const node = snap.nodes.get(r);
         if (node) treeDescendants(snap, node, scope);
@@ -712,7 +734,7 @@ export class Locator {
       'getAttribute',
       async (n) => {
         const got = await this.page.evaluate<{ v: string | null } | null>(
-          `(function(){var e=document.querySelector('[data-vs-ref="${n.ref}"]');return e?{v:e.getAttribute(${JSON.stringify(name)})}:null;})()`,
+          `(function(){var e=${FIND_REF_JS(n.ref)};return e?{v:e.getAttribute(${JSON.stringify(name)})}:null;})()`,
         );
         if (!got) throw new WireError('NOT_FOUND', [`ref=${n.ref} is gone`]);
         return got.v;
@@ -727,7 +749,7 @@ export class Locator {
       actionName,
       async (n) => {
         const state = await this.page.evaluate<DomState | null>(
-          `(function(){var e=document.querySelector('[data-vs-ref="${n.ref}"]');if(!e)return null;` +
+          `(function(){var e=${FIND_REF_JS(n.ref)};if(!e)return null;` +
             `var dis=!!(e.matches(':disabled')||e.closest('[aria-disabled="true"]'));` +
             `var tag=e.tagName;var t=(e.getAttribute('type')||'').toLowerCase();` +
             `var text=tag==='TEXTAREA'||tag==='SELECT'||(tag==='INPUT'&&['button','checkbox','radio','submit','reset','image','file','hidden','range','color'].indexOf(t)<0);` +
@@ -761,6 +783,29 @@ export class Locator {
     );
   }
 
+  /**
+   * Content of the iframe this locator matches. vibesurfer reports a
+   * same-origin frame's content as the iframe's children; a
+   * cross-origin frame has none.
+   */
+  contentFrame(): FrameLocator {
+    return new FrameLocator(this);
+  }
+
+  /** The iframe matching `selector` inside this locator's matches. */
+  frameLocator(selector: string): FrameLocator {
+    return new FrameLocator(this.locator(selector));
+  }
+
+  /** PNG of the element. Returns the file path (`path` when given). */
+  async screenshot(options: { path?: string; timeout?: number } = {}): Promise<string> {
+    return this.withResolved(
+      'screenshot',
+      (n) => this.page.capture(n.ref, options.path ? { path: options.path } : {}),
+      options.timeout,
+    );
+  }
+
   /** The matched element's subtree as template text (see toMatchAriaSnapshot). */
   async ariaSnapshot(options?: { timeout?: number }): Promise<string> {
     return this.withResolved(
@@ -775,5 +820,57 @@ export class Locator {
     const snap = await this.page.view();
     const node = this.pickOne(preferVisible(snap, (await this.matchIn(snap, null)).nodes));
     return { snap, refs: node ? [node.ref] : [] };
+  }
+}
+
+/** Locators inside an iframe (Playwright's FrameLocator). */
+export class FrameLocator {
+  private readonly frame: Locator;
+
+  constructor(frame: Locator) {
+    this.frame = frame;
+  }
+
+  /** The iframe element itself. */
+  owner(): Locator {
+    return this.frame;
+  }
+
+  locator(selector: string | Locator): Locator {
+    return this.frame.locator(selector);
+  }
+  getByRole(role: string, options: ByRoleOptions = {}): Locator {
+    return this.frame.getByRole(role, options);
+  }
+  getByText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.frame.getByText(text, options);
+  }
+  getByLabel(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.frame.getByLabel(text, options);
+  }
+  getByTestId(id: string | RegExp): Locator {
+    return this.frame.getByTestId(id);
+  }
+  getByPlaceholder(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.frame.getByPlaceholder(text, options);
+  }
+  getByAltText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.frame.getByAltText(text, options);
+  }
+  getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.frame.getByTitle(text, options);
+  }
+  /** A frame nested inside this one. */
+  frameLocator(selector: string): FrameLocator {
+    return new FrameLocator(this.frame.locator(selector));
+  }
+  first(): FrameLocator {
+    return new FrameLocator(this.frame.first());
+  }
+  last(): FrameLocator {
+    return new FrameLocator(this.frame.last());
+  }
+  nth(index: number): FrameLocator {
+    return new FrameLocator(this.frame.nth(index));
   }
 }

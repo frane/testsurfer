@@ -25,6 +25,7 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
   }
   return caps;
 }
+import type { RouteHandler, UrlMatcher } from './events.ts';
 import {
   Page,
   DEFAULT_TIMEOUTS,
@@ -116,11 +117,60 @@ export class Browser {
     return browser;
   }
 
+  private defaultCtx: BrowserContext | null = null;
+  private readonly openContexts = new Set<BrowserContext>();
+
+  /** The context that browser.newPage() opens pages in. */
+  get defaultContext(): BrowserContext {
+    this.defaultCtx ??= new BrowserContext(this, this.sessionId, false);
+    return this.defaultCtx;
+  }
+
+  /**
+   * A new context: its own vibesurfer session, closed with the context.
+   * The engine has one cookie and storage jar for all sessions, so
+   * contexts are not isolated from each other the way Playwright's are.
+   */
+  async newContext(): Promise<BrowserContext> {
+    const resp = await this.client.call('vs_session_open', [], {});
+    const id = resp.body[0];
+    if (!id) throw new Error('vs_session_open returned no session id');
+    const ctx = new BrowserContext(this, id, true);
+    this.openContexts.add(ctx);
+    return ctx;
+  }
+
+  /** A context over this browser's own session; closing it closes its pages only. */
+  sharedContext(): BrowserContext {
+    return new BrowserContext(this, this.sessionId, false);
+  }
+
+  contexts(): BrowserContext[] {
+    return [...(this.defaultCtx ? [this.defaultCtx] : []), ...this.openContexts];
+  }
+
+  /** @internal Called by a context when it closes. */
+  forgetContext(ctx: BrowserContext): void {
+    this.openContexts.delete(ctx);
+  }
+
+  /** @internal Close a context's session. */
+  async closeSession(sessionId: string): Promise<void> {
+    await this.client.call('vs_session_close', [sessionId], {}).catch(() => {});
+  }
+
   /** A new page in this session. Call page.goto(url) to load a URL. */
   newPage(): Page {
+    const page = this.makePage(this.sessionId);
+    this.defaultContext.adopt(page);
+    return page;
+  }
+
+  /** @internal A page bound to `sessionId`, with this browser's options. */
+  makePage(sessionId: string): Page {
     const page = new Page(
       this.client,
-      this.sessionId,
+      sessionId,
       this.timeouts,
       this.inputMode,
       this.clickVia,
@@ -133,7 +183,76 @@ export class Browser {
 
   /** Close the session and drop the connection. */
   async close(): Promise<void> {
+    for (const ctx of [...this.openContexts]) await ctx.close().catch(() => {});
     await this.client.call('vs_session_close', [this.sessionId], {}).catch(() => {});
     this.client.close();
+  }
+}
+
+/**
+ * A group of pages, with routes and init scripts that apply to all of
+ * them (Playwright's BrowserContext). See Browser.newContext() for the
+ * isolation caveat.
+ */
+export class BrowserContext {
+  private readonly owner: Browser;
+  readonly sessionId: string;
+  private readonly ownsSession: boolean;
+  private readonly open: Page[] = [];
+  private readonly routes: { url: UrlMatcher; handler: RouteHandler; times?: number }[] = [];
+  private readonly scripts: { script: Parameters<Page['addInitScript']>[0]; arg?: unknown }[] = [];
+
+  constructor(owner: Browser, sessionId: string, ownsSession: boolean) {
+    this.owner = owner;
+    this.sessionId = sessionId;
+    this.ownsSession = ownsSession;
+  }
+
+  browser(): Browser {
+    return this.owner;
+  }
+
+  /** @internal Track a page created elsewhere as part of this context. */
+  adopt(page: Page): void {
+    this.open.push(page);
+    page.bindContext(this);
+  }
+
+  async newPage(): Promise<Page> {
+    const page = this.owner.makePage(this.sessionId);
+    this.adopt(page);
+    for (const s of this.scripts) await page.addInitScript(s.script, s.arg);
+    for (const r of this.routes) await page.route(r.url, r.handler, r.times === undefined ? {} : { times: r.times });
+    return page;
+  }
+
+  pages(): Page[] {
+    return [...this.open];
+  }
+
+  /** Route requests of every page in this context, current and future. */
+  async route(url: UrlMatcher, handler: RouteHandler, options: { times?: number } = {}): Promise<void> {
+    this.routes.push({ url, handler, ...(options.times === undefined ? {} : { times: options.times }) });
+    for (const p of this.open) await p.route(url, handler, options);
+  }
+
+  async unrouteAll(): Promise<void> {
+    this.routes.length = 0;
+    for (const p of this.open) await p.unrouteAll();
+  }
+
+  /** An init script for every page in this context, current and future. */
+  async addInitScript(script: Parameters<Page['addInitScript']>[0], arg?: unknown): Promise<void> {
+    this.scripts.push({ script, arg });
+    for (const p of this.open) await p.addInitScript(script, arg);
+  }
+
+  /** Close every page, and the session when the context opened one. */
+  async close(): Promise<void> {
+    for (const p of this.open.splice(0)) await p.close().catch(() => {});
+    if (this.ownsSession) {
+      await this.owner.closeSession(this.sessionId);
+      this.owner.forgetContext(this);
+    }
   }
 }

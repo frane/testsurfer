@@ -8,6 +8,7 @@ import { matchesTemplate, parseTemplate, renderSnapshot } from './aria.ts';
 import { TimeoutError } from './errors.ts';
 import { Locator } from './locator.ts';
 import { Page } from './page.ts';
+import { assertScreenshot, type ScreenshotOptions } from './screenshot.ts';
 
 export interface ExpectOptions {
   timeout?: number;
@@ -276,6 +277,24 @@ export class LocatorAssertions {
     await this.toHaveAttribute('id', expected, options);
   }
 
+  /**
+   * The element looks like its stored baseline. See src/screenshot.ts
+   * for where baselines live and how they are created.
+   */
+  async toHaveScreenshot(nameOrOptions?: string | ScreenshotOptions, options: ScreenshotOptions = {}): Promise<void> {
+    if (this.negated) throw new Error('toHaveScreenshot cannot be negated');
+    const name = typeof nameOrOptions === 'string' ? nameOrOptions : undefined;
+    const opts = typeof nameOrOptions === 'object' ? nameOrOptions : options;
+    const fs = await import('node:fs/promises');
+    await assertScreenshot(
+      async () => fs.readFile(await this.locator.screenshot({ timeout: 2_000 })),
+      name,
+      opts,
+      opts.timeout ?? this.defaultTimeout,
+      this.locator.toString(),
+    );
+  }
+
   /** Exactly `count` matches. */
   async toHaveCount(count: number, options?: ExpectOptions): Promise<void> {
     await poll(
@@ -333,6 +352,21 @@ export class PageAssertions {
       },
       (actual) =>
         `expected page ${this.negated ? 'not ' : ''}to match the aria snapshot\n${template.trim()}\nbut ${actual}`,
+    );
+  }
+
+  /** The page looks like its stored baseline (see LocatorAssertions.toHaveScreenshot). */
+  async toHaveScreenshot(nameOrOptions?: string | ScreenshotOptions, options: ScreenshotOptions = {}): Promise<void> {
+    if (this.negated) throw new Error('toHaveScreenshot cannot be negated');
+    const name = typeof nameOrOptions === 'string' ? nameOrOptions : undefined;
+    const opts = typeof nameOrOptions === 'object' ? nameOrOptions : options;
+    const fs = await import('node:fs/promises');
+    await assertScreenshot(
+      async () => fs.readFile(await this.page.screenshot(opts.fullPage ? { fullPage: true } : {})),
+      name,
+      opts,
+      opts.timeout ?? this.defaultTimeout,
+      'page',
     );
   }
 

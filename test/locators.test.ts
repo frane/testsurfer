@@ -28,8 +28,17 @@ const APP = `<!doctype html>
     <fieldset disabled><button>Checkout</button></fieldset>
     <button aria-disabled="true">Gift wrap</button>
     <button id="pay" class="btn primary">Pay</button>
+    <shadow-card data-testid="card"></shadow-card>
+    <iframe id="pane" src="/inner" title="Pane"></iframe>
   </main>
   <script>
+    customElements.define('shadow-card', class extends HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: 'open' }).innerHTML =
+          '<button class="inner" data-testid="shadow-btn" disabled>Shadow action</button>';
+      }
+    });
     document.querySelector('.items').addEventListener('click', (e) => {
       if (e.target.tagName === 'BUTTON') e.target.closest('li').remove();
     });
@@ -37,12 +46,19 @@ const APP = `<!doctype html>
 </body>
 </html>`;
 
+const INNER = `<!doctype html><title>Inner</title>
+<label for="who">Who</label><input id="who">
+<button id="hi">Say hi</button><p id="res">-</p>
+<script>document.getElementById('hi').onclick = () => {
+  document.getElementById('res').textContent = 'hi ' + document.getElementById('who').value;
+};</script>`;
+
 let server: http.Server;
 
 before(async () => {
-  server = http.createServer((_req, res) => {
+  server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(APP);
+    res.end(req.url === '/inner' ? INNER : APP);
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   configure({ baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}` });
@@ -109,5 +125,20 @@ test.describe('locators', () => {
     if ((await pay.getAttribute('id')) !== 'pay') throw new Error('getAttribute');
     await expect(page.locator('li.item')).toBeAttached();
     await expect(page.locator('.missing')).not.toBeAttached({ timeout: 300 });
+  });
+
+  test('frameLocator reaches into a same-origin iframe', async ({ page }) => {
+    const pane = page.frameLocator('#pane');
+    await pane.getByLabel('Who').fill('Ada');
+    await pane.getByRole('button', { name: 'Say hi' }).click();
+    await expect(pane.locator('#res')).toHaveText('hi Ada');
+    await expect(page.locator('#pane').contentFrame().getByRole('button')).toHaveCount(1);
+  });
+
+  test('CSS and test ids reach into open shadow roots', async ({ page }) => {
+    await expect(page.locator('button.inner')).toHaveText('Shadow action');
+    await expect(page.getByTestId('shadow-btn')).toBeVisible();
+    await expect(page.locator('shadow-card').locator('.inner')).toHaveCount(1);
+    await expect(page.getByTestId('card').getByRole('button')).toBeDisabled();
   });
 });

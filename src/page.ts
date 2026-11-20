@@ -5,6 +5,7 @@
  */
 
 import type { WireClient } from './client.ts';
+import type { BrowserContext } from './browser.ts';
 import type { WireResponse } from './wire.ts';
 
 /** Parse `<ref> x=.. y=.. w=.. h=.. visible=.. z=..` lines; `!` error lines are skipped. */
@@ -33,8 +34,18 @@ function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
 }
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
-import { byAttr, Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
+import { byAttr, FrameLocator, Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
 import { renderSnapshot } from './aria.ts';
+import { PAGE_SHIM } from './shim.ts';
+import {
+  ConsoleMessage,
+  PageEvents,
+  Request,
+  Response,
+  urlMatches,
+  type RouteHandler,
+  type UrlMatcher,
+} from './events.ts';
 
 export interface Timeouts {
   /** Budget for actions (click, fill, ...) including auto-waiting. */
@@ -127,6 +138,11 @@ export class Page {
   readonly baseURL: string | undefined;
   /** Attribute getByTestId matches. Set with the `testIdAttribute` launch option. */
   testIdAttribute = 'data-testid';
+  /** Document-start scripts, replayed into the web view when it is created. */
+  private initScripts: string[] = [];
+  private shimInstalled = false;
+  private readonly events: PageEvents;
+  private ctx: BrowserContext | null = null;
 
   constructor(
     client: WireClient,
@@ -145,6 +161,191 @@ export class Page {
     this.clickVia = clickVia;
     this.actDeltas = protocol.actDeltas ?? false;
     this.navInPlace = protocol.navInPlace ?? false;
+    this.events = new PageEvents({
+      openPoller: () => this.client.sibling(),
+      target: () => ({ pageId: this.pageId, sessionId: this.sessionId }),
+      baseURL,
+      ensureShim: () => this.ensureShim(),
+      addInitScript: (src) => this.addInitSource(src),
+    });
+  }
+
+  /** @internal Set by the context that created this page. */
+  bindContext(ctx: BrowserContext): void {
+    this.ctx = ctx;
+  }
+
+  /** The context this page belongs to. */
+  context(): BrowserContext {
+    if (!this.ctx) throw new Error('page has no context');
+    return this.ctx;
+  }
+
+  private async addInitSource(source: string): Promise<void> {
+    this.initScripts.push(source);
+    if (this.pageId) await this.client.call('vs_init_script', [this.pageId, source], { session: this.sessionId });
+  }
+
+  private async ensureShim(): Promise<void> {
+    if (this.shimInstalled) return;
+    this.shimInstalled = true;
+    await this.addInitSource(PAGE_SHIM);
+    if (this.pageId) await this.evaluate(PAGE_SHIM.replace(/;\s*$/, ''));
+  }
+
+  /**
+   * Run a script at document start in every later document of this
+   * page, before the page's own scripts (Playwright's addInitScript).
+   * A function is called with `arg`. The current document is not
+   * touched.
+   */
+  async addInitScript(
+    script: string | ((arg: never) => unknown) | { path?: string; content?: string },
+    arg?: unknown,
+  ): Promise<void> {
+    let source: string;
+    if (typeof script === 'function') source = `(${script.toString()})(${JSON.stringify(arg ?? null)});`;
+    else if (typeof script === 'string') source = script;
+    else if (script.content !== undefined) source = script.content;
+    else if (script.path) source = await (await import('node:fs/promises')).readFile(script.path, 'utf8');
+    else throw new Error('addInitScript: pass a function, a string, or { path } / { content }');
+    await this.addInitSource(source);
+  }
+
+  /**
+   * Intercept fetch and XHR requests whose URL matches. The handler
+   * gets a Route to fulfill, continue, abort, fall back or fetch.
+   * Navigations, images, scripts and stylesheets are not intercepted.
+   */
+  async route(url: UrlMatcher, handler: RouteHandler, options: { times?: number } = {}): Promise<void> {
+    this.events.addRoute(url, handler, options.times ?? null);
+    await this.events.sync();
+  }
+
+  /** Remove routes for `url` (only `handler`'s, when given). */
+  async unroute(url: UrlMatcher, handler?: RouteHandler): Promise<void> {
+    this.events.removeRoutes(url, handler);
+    await this.events.sync();
+  }
+
+  async unrouteAll(): Promise<void> {
+    this.events.removeRoutes();
+    await this.events.sync();
+  }
+
+  /**
+   * Listen for `console`, `pageerror`, `request`, `response`,
+   * `requestfinished` or `requestfailed`. Requests and responses are
+   * fetch and XHR only.
+   */
+  on(event: 'console', listener: (msg: ConsoleMessage) => void): this;
+  on(event: 'pageerror', listener: (error: Error) => void): this;
+  on(event: 'request' | 'requestfinished' | 'requestfailed', listener: (request: Request) => void): this;
+  on(event: 'response', listener: (response: Response) => void): this;
+  on(event: string, listener: (arg: never) => void): this {
+    this.events.on(event, listener);
+    void this.events.sync().catch(() => {});
+    return this;
+  }
+
+  once(event: string, listener: (arg: never) => void): this {
+    const wrapped = (arg: never) => {
+      this.off(event, wrapped);
+      listener(arg);
+    };
+    return this.on(event as 'console', wrapped as never);
+  }
+
+  off(event: string, listener: (arg: never) => void): this {
+    this.events.off(event, listener);
+    void this.events.sync().catch(() => {});
+    return this;
+  }
+
+  removeListener(event: string, listener: (arg: never) => void): this {
+    return this.off(event, listener);
+  }
+
+  /** The next `event` that `predicate` accepts. */
+  async waitForEvent<T = unknown>(
+    event: string,
+    optionsOrPredicate?: ((arg: T) => boolean | Promise<boolean>) | { predicate?: (arg: T) => boolean | Promise<boolean>; timeout?: number },
+  ): Promise<T> {
+    const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
+    return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
+  }
+
+  /** The next fetch/XHR request matching a URL pattern or predicate. */
+  async waitForRequest(
+    match: UrlMatcher | ((request: Request) => boolean | Promise<boolean>),
+    options: { timeout?: number } = {},
+  ): Promise<Request> {
+    const test =
+      typeof match === 'function' && match.length === 1 && !(match instanceof RegExp)
+        ? (r: Request) => (match as (r: Request) => boolean | Promise<boolean>)(r)
+        : (r: Request) => urlMatches(match as UrlMatcher, r.url(), this.baseURL);
+    return this.events.waitFor<Request>('request', test, options.timeout ?? this.timeouts.action);
+  }
+
+  /** The next fetch/XHR response matching a URL pattern or predicate. */
+  async waitForResponse(
+    match: UrlMatcher | ((response: Response) => boolean | Promise<boolean>),
+    options: { timeout?: number } = {},
+  ): Promise<Response> {
+    const test =
+      typeof match === 'function' && !(match instanceof RegExp)
+        ? (r: Response) => (match as (r: Response) => boolean | Promise<boolean>)(r)
+        : (r: Response) => urlMatches(match as UrlMatcher, r.url(), this.baseURL);
+    return this.events.waitFor<Response>('response', test, options.timeout ?? this.timeouts.action);
+  }
+
+  async waitForTimeout(ms: number): Promise<void> {
+    await new Promise((r) => setTimeout(r, ms));
+  }
+
+  /** Poll until the URL matches. */
+  async waitForURL(url: UrlMatcher, options: { timeout?: number } = {}): Promise<void> {
+    const budget = options.timeout ?? this.timeouts.navigation;
+    const deadline = Date.now() + budget;
+    for (;;) {
+      const now = await this.url().catch(() => '');
+      if (now && urlMatches(url, now, this.baseURL)) return;
+      if (Date.now() >= deadline) throw new Error(`waitForURL(${String(url)}) timed out after ${budget}ms; URL is ${now}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  /** goto() already waits for the load; kept for Playwright compatibility. */
+  async waitForLoadState(_state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void> {}
+
+  /** Load the current URL again. */
+  async reload(): Promise<void> {
+    await this.goto(await this.url());
+  }
+
+  /** History back; resolves once the URL changed (or immediately when there is no history). */
+  async goBack(): Promise<void> {
+    await this.historyMove(-1);
+  }
+
+  async goForward(): Promise<void> {
+    await this.historyMove(1);
+  }
+
+  private async historyMove(delta: number): Promise<void> {
+    const before = await this.url();
+    await this.evaluate(`(history.go(${delta}), 'ok')`);
+    // No history entry means no change; give up on the URL after 2s.
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      const now = await this.url().catch(() => before);
+      if (now !== before) break;
+    }
+    this.snapshot = null;
+    this.synced = false;
+    this.fresh = false;
+    this.events.documentChanged();
   }
 
   /**
@@ -193,6 +394,7 @@ export class Page {
         this.snapshot = null;
         this.synced = false;
         this.fresh = false;
+        this.events.documentChanged();
         return;
       } catch {
         // Old daemon or dead page; fall through to close+open.
@@ -208,11 +410,22 @@ export class Page {
     this.snapshot = null;
     this.synced = false;
     this.fresh = false;
-    const resp = await this.client.call('vs_open', [url], { session: this.sessionId });
+    // Init scripts have to be in place before the first document, so
+    // a page that has them opens blank, installs them, then loads.
+    const first = this.initScripts.length > 0 ? 'about:blank' : url;
+    const resp = await this.client.call('vs_open', [first], { session: this.sessionId });
     const id = resp.body[0];
     if (!id) throw new Error(`vs_open returned no page id for ${url}`);
     this.pageId = id;
     this.token = resp.token;
+    if (first !== url) {
+      for (const src of this.initScripts) {
+        await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
+      }
+      const nav = await this.client.call('vs_goto', [id, url], { session: this.sessionId });
+      this.token = nav.token;
+    }
+    this.events.documentChanged();
     // No settle wait here: locators auto-wait and assertions poll, so
     // a still-loading tree just resolves a poll tick later.
   }
@@ -453,9 +666,15 @@ export class Page {
    * Returns the file path; with `path`, the file is copied there.
    */
   async screenshot(options: { path?: string; fullPage?: boolean } = {}): Promise<string> {
+    return this.capture(null, options);
+  }
+
+  /** PNG of the page, or of one element when `ref` is given. Returns the file path. */
+  async capture(ref: number | null, options: { path?: string; fullPage?: boolean } = {}): Promise<string> {
     const flags: Record<string, string | true> = { session: this.sessionId };
     if (options.fullPage) flags['full-page'] = true;
-    const resp = await this.client.call('vs_capture', [this.id], flags);
+    const args = ref === null ? [this.id] : [this.id, String(ref)];
+    const resp = await this.client.call('vs_capture', args, flags);
     const saved = (resp.body[0] ?? '').trim();
     if (!saved) throw new Error('vs_capture returned no path');
     if (!options.path) return saved;
@@ -560,6 +779,11 @@ export class Page {
     return new Locator(this, { kind: 'label', text, options });
   }
 
+  /** Locators inside the iframe matching `selector` (same-origin frames, vibesurfer 0.2.15+). */
+  frameLocator(selector: string): FrameLocator {
+    return new FrameLocator(this.locator(selector));
+  }
+
   /** Elements matching a CSS selector, mapped to their tree nodes. */
   locator(selector: string): Locator {
     return new Locator(this, { kind: 'css', selector });
@@ -586,6 +810,7 @@ export class Page {
   }
 
   async close(): Promise<void> {
+    this.events.close();
     if (!this.pageId) return;
     await this.client
       .call('vs_close', [this.pageId], { session: this.sessionId })

@@ -78,9 +78,26 @@ function runCommand(cmd: string[], args: string[], timeoutMs: number): Promise<v
       reject(new Error('empty vs command'));
       return;
     }
-    execFile(bin, [...pre, ...args], { timeout: timeoutMs }, (err) => {
+    // npx and npm shims are .cmd files on Windows, which only run
+    // through a shell.
+    execFile(bin, [...pre, ...args], { timeout: timeoutMs, shell: process.platform === 'win32' }, (err) => {
       if (err) reject(err);
       else resolve();
+    });
+  });
+}
+
+/** Run a vs command and return its trimmed stdout. */
+function commandOutput(cmd: string[], args: string[], timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const [bin, ...pre] = cmd;
+    if (!bin) {
+      reject(new Error('empty vs command'));
+      return;
+    }
+    execFile(bin, [...pre, ...args], { timeout: timeoutMs, shell: process.platform === 'win32' }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(String(stdout).trim());
     });
   });
 }
@@ -124,13 +141,39 @@ export class WireClient {
     return client;
   }
 
+  /** Resolved daemon address; on Windows a named pipe only `vs socket` can name. */
+  private address: string | null = null;
+
   private socketPath(): string {
-    return this.opts.socketPath ?? defaultSocketPath();
+    return this.opts.socketPath ?? this.address ?? defaultSocketPath();
+  }
+
+  /**
+   * On Windows the daemon listens on a named pipe whose name is a hash
+   * of the socket path, so ask the vs binary for it (vibesurfer
+   * 0.2.15+). Unix uses the path directly.
+   */
+  private async resolveAddress(): Promise<void> {
+    if (this.opts.socketPath || this.address || process.platform !== 'win32') return;
+    let lastErr: unknown = null;
+    for (const cmd of candidateCommands(this.opts)) {
+      try {
+        const out = await commandOutput(cmd, ['socket'], 180_000);
+        if (out) {
+          this.address = out.split(/\r?\n/).pop()!.trim();
+          return;
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw new Error(`could not get the vibesurfer pipe name from \`vs socket\`: ${String(lastErr)}`);
   }
 
   private async ensureConnected(): Promise<void> {
     if (this.sock && !this.sock.destroyed) return;
     if (this.closed) throw new Error('client closed');
+    await this.resolveAddress();
     try {
       this.attach(await connectOnce(this.socketPath()));
       return;
@@ -313,6 +356,11 @@ export class WireClient {
       this.queue.push({ resolve, reject, timer, line, extraSections: opts.extraSections ?? 0 });
       sock.write(line);
     });
+  }
+
+  /** A second connection to the same daemon, with the same options. */
+  sibling(): Promise<WireClient> {
+    return WireClient.connect({ ...this.opts, socketPath: this.socketPath() });
   }
 
   close(): void {
