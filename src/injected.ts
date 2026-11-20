@@ -1546,6 +1546,8 @@ export function installEngine(SER) {
   const isEl = (v) => !!v && typeof v === 'object' && v.nodeType === 1;
 
   const api = {
+    /** Identifies this document: a new document installs a new engine. */
+    doc: Math.random().toString(36).slice(2),
     /**
      * req: { steps, op, args, many } -> { n, v } for `many` ops,
      * { v } for one-element ops, { none } when nothing matches,
@@ -1598,7 +1600,14 @@ export function installEngine(SER) {
     },
     /** Adopt a value (or a promise of one): { id, el } with el true for an element. */
     adoptValue(v) {
-      const done = (x) => ({ id: adopt(x), el: isEl(x) });
+      const prev = (x) => {
+        if (x && typeof x === 'object' && x.nodeType === 3) return '#text=' + String(x.nodeValue).replace(/\n/g, '↵');
+        if (isEl(x)) return preview(x);
+        if (x === null || x === undefined || typeof x !== 'object') return String(x);
+        if (Array.isArray(x)) return 'Array(' + x.length + ')';
+        return x.constructor && x.constructor.name ? x.constructor.name : 'Object';
+      };
+      const done = (x) => ({ id: adopt(x), el: isEl(x), p: prev(x) });
       return v && typeof v.then === 'function' ? v.then(done) : done(v);
     },
     /** Same-origin and cross-origin iframes, depth first: [id, parentId, name, url]. */

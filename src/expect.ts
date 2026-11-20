@@ -258,10 +258,18 @@ export class LocatorAssertions {
     return r;
   }
 
+  /** When the running assertion gives up; locator handlers wait no longer than this. */
+  private deadline = 0;
+
   private run(spec: Spec, options: ExpectOptions | undefined, sample: () => Promise<Sample>): Promise<void> {
-    return poll('locator', this.locator.toString(), spec, this.negated, options?.timeout ?? this.defaultTimeout, this.custom, async () => {
+    const timeout = options?.timeout ?? this.defaultTimeout;
+    this.deadline = Date.now() + timeout;
+    return poll('locator', this.locator.toString(), spec, this.negated, timeout, this.custom, async () => {
       this.lastPreview = undefined;
-      await this.locator.page().runLocatorHandlers();
+      const page = this.locator.page();
+      if (!(await page.runLocatorHandlers(this.deadline))) {
+        return { pass: false, found: true, received: '""', log: [...page.handlerLog] };
+      }
       const s = await sample();
       if (!s.log && this.lastPreview) s.log = [`locator resolved to ${this.lastPreview}`];
       return s;

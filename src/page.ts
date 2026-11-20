@@ -380,7 +380,9 @@ export class Page {
   }
 
   /** goto() already waits for the load; kept for Playwright compatibility. */
-  async waitForLoadState(_state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void> {}
+  async waitForLoadState(_state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void> {
+    await this.refreshFrames();
+  }
 
   /**
    * Replace the document with `html`; its scripts run. On an http(s)
@@ -396,9 +398,11 @@ export class Page {
       const data = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
       await this.navigate(data);
       await this.rememberNav(shown, data);
+      await this.refreshFrames();
       return;
     }
     await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
+    await this.refreshFrames();
     this.snapshot = null;
     this.synced = false;
     this.fresh = false;
@@ -557,6 +561,7 @@ export class Page {
         this.fresh = false;
         this.events.documentChanged();
         await this.rememberNav(url, url);
+        await this.refreshFrames();
         return;
       } catch {
         // Old daemon or dead page; fall through to close+open.
@@ -590,6 +595,7 @@ export class Page {
     }
     this.events.documentChanged();
     await this.rememberNav(url, url);
+    await this.refreshFrames();
     // No settle wait here: locators auto-wait and assertions poll, so
     // a still-loading tree just resolves a poll tick later.
   }
@@ -862,6 +868,9 @@ export class Page {
     return (await this.engineCall(`E.run(${JSON.stringify(req)}${fn ? `,(${fn})` : ''})`)) as T;
   }
 
+  /** Log lines from the last locator-handler run that blocked a wait. */
+  handlerLog: string[] = [];
+
   private locatorHandlers: {
     locator: Locator;
     handler: (l: Locator) => unknown;
@@ -887,17 +896,30 @@ export class Page {
     this.locatorHandlers = this.locatorHandlers.filter((h) => h.locator.toString() !== locator.toString());
   }
 
-  /** @internal Run the handlers whose locator is visible now. Called on each action and assertion retry. */
-  async runLocatorHandlers(): Promise<void> {
-    if (this.handlingLocators || this.locatorHandlers.length === 0) return;
+  /**
+   * @internal Run the handlers whose locator is visible now. Called on
+   * each action and assertion retry. Returns false while a handled
+   * locator has not gone away yet: the caller keeps waiting, as
+   * Playwright does, until it hides or the caller's time runs out.
+   */
+  async runLocatorHandlers(deadline = Date.now() + this.timeouts.action): Promise<boolean> {
+    if (this.handlingLocators || this.locatorHandlers.length === 0) return true;
     this.handlingLocators = true;
     try {
       for (const h of [...this.locatorHandlers]) {
-        if (!(await h.locator.isVisible().catch(() => false))) continue;
+        const seen = await h.locator.peek<boolean>('locatorHandler', 'visible').catch(() => ({ found: false, v: false, preview: '' }));
+        if (!seen.found || seen.v !== true) continue;
+        this.handlerLog = [`found ${h.locator.toString()}, intercepting action to run the handler`, `locator resolved to visible ${seen.preview ?? ''}`];
         await h.handler(h.locator);
         if (h.times !== null && --h.times <= 0) this.locatorHandlers = this.locatorHandlers.filter((x) => x !== h);
-        if (!h.noWaitAfter) await h.locator.waitFor({ state: 'hidden', timeout: this.timeouts.action }).catch(() => {});
+        if (h.noWaitAfter) continue;
+        this.handlerLog.push(`locator handler has finished, waiting for ${h.locator.toString()} to be hidden`);
+        const left = Math.max(1, deadline - Date.now());
+        const hidden = await h.locator.waitFor({ state: 'hidden', timeout: left }).then(() => true, () => false);
+        if (!hidden) return false;
+        this.handlerLog = [];
       }
+      return true;
     } finally {
       this.handlingLocators = false;
     }
@@ -955,11 +977,27 @@ export class Page {
     return this.main;
   }
 
-  /** The main frame, then every iframe, depth first. */
-  async frames(): Promise<Frame[]> {
-    const rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string][];
-    const out: Frame[] = [this.mainFrame()];
+  private frameCache: Frame[] = [];
+
+  /**
+   * The main frame, then every iframe, depth first, as of the last
+   * navigation or refreshFrames() call (Playwright's frames() is
+   * synchronous; testsurfer reads the frame tree after each load).
+   */
+  frames(): Frame[] {
+    return [this.mainFrame(), ...this.frameCache];
+  }
+
+  /** Re-read the frame tree, for iframes added after the page loaded. */
+  async refreshFrames(): Promise<Frame[]> {
+    let rows: [number, number | null, string, string][] = [];
+    try {
+      rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string][];
+    } catch {
+      rows = [];
+    }
     const byId = new Map<number, Frame>();
+    const out: Frame[] = [];
     for (const [id, parent, name, url] of rows) {
       const f = new Frame(this, new ElementHandle(this, id), parent === null ? this.mainFrame() : (byId.get(parent) ?? this.mainFrame()));
       f.frameName = name;
@@ -967,12 +1005,13 @@ export class Page {
       byId.set(id, f);
       out.push(f);
     }
-    return out;
+    this.frameCache = out;
+    return this.frames();
   }
 
   /** A frame by name, or by URL (string, RegExp or predicate). */
-  async frame(match: string | { name?: string; url?: string | RegExp | ((u: URL) => boolean) }): Promise<Frame | null> {
-    const all = await this.frames();
+  frame(match: string | { name?: string; url?: string | RegExp | ((u: URL) => boolean) }): Frame | null {
+    const all = this.frames();
     const m = typeof match === 'string' ? { name: match } : match;
     return (
       all.find((f) => {
@@ -1017,8 +1056,10 @@ export class Page {
 
   /** @internal Evaluate `expr` (may be a promise) and hand back a handle to its value. */
   async adoptResult(expr: string): Promise<JSHandle> {
-    const r = (await this.engineCall(`E.adoptValue(${expr})`)) as { id: number; el: boolean };
-    return r.el ? new ElementHandle(this, r.id) : new JSHandle(this, r.id);
+    const r = (await this.engineCall(`E.adoptValue(${expr})`)) as { id: number; el: boolean; p?: string };
+    const h = r.el ? new ElementHandle(this, r.id) : new JSHandle(this, r.id);
+    h.previewText = r.p ?? '';
+    return h;
   }
 
   /** Wait for `selector` to reach a state (visible by default); returns the element as a locator. */

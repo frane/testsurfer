@@ -77,6 +77,8 @@ export interface Step {
   filters: FilterOptions[];
   /** nth() index; negative counts from the end (last() is -1). */
   index: number | null;
+  /** The marked part of a `*css=` capture selector. */
+  capture?: boolean;
 }
 
 export interface BoundingBox {
@@ -233,6 +235,7 @@ function parseSteps(selector: string): Step[] {
   const rest = stepsOf(parts.slice(at + 1));
   const tail = head[head.length - 1]!;
   tail.filters.push({ has: new Locator(null as unknown as Page, rest) });
+  tail.capture = true;
   return head;
 }
 
@@ -321,7 +324,47 @@ export class Locator {
 
   /** The chain in the engine's wire form. */
   wire(): unknown[] {
-    return this.steps.map((s) => ({ q: wireQuery(s.query), f: s.filters.map(wireFilter), i: s.index }));
+    return this.steps.map((s) => {
+      if (s.capture && s.index !== null) throw new Error("Error: Can't query n-th element in a request with the capture.");
+      return { q: wireQuery(s.query), f: s.filters.map(wireFilter), i: s.index };
+    });
+  }
+
+  /** Steps up to and including the last frame hop, and the rest. */
+  private frameSplit(): { prefix: Step[]; rest: Step[] } | null {
+    let at = -1;
+    this.steps.forEach((s, i) => {
+      if (s.query.kind === 'frame') at = i;
+    });
+    return at < 0 ? null : { prefix: this.steps.slice(0, at + 1), rest: this.steps.slice(at + 1) };
+  }
+
+  private static stepsText(owner: Page, steps: Step[]): string {
+    return new Locator(owner, steps).toString();
+  }
+
+  /**
+   * and()/or(): both sides inside the same frame compose inside it;
+   * frame locators on different frames cannot be combined.
+   */
+  private composite(kind: 'and' | 'or', other: Locator): Locator {
+    const a = this.frameSplit();
+    const b = other.frameSplit();
+    if (!a && !b) return new Locator(this.owner, { kind, left: this, right: other });
+    const text = `${this.toString()}.${kind}(${other.toString()})`;
+    if (a && b && Locator.stepsText(this.owner, a.prefix) === Locator.stepsText(this.owner, b.prefix) && a.rest.length && b.rest.length) {
+      const inner = new Locator(this.owner, { kind, left: new Locator(this.owner, a.rest), right: new Locator(other.owner, b.rest) });
+      return new Locator(this.owner, [...a.prefix, ...inner.steps], text);
+    }
+    return new Locator(
+      this.owner,
+      {
+        kind: 'invalid',
+        selector: text,
+        message: `Frame locators are not allowed inside composite locators, while querying "${text}"`,
+      },
+      text,
+    );
   }
 
   private get tail(): Step {
@@ -361,17 +404,21 @@ export class Locator {
   }
 
   filter(options: FilterOptions): Locator {
+    for (const [key, inner] of [['has', options.has], ['hasNot', options.hasNot]] as const) {
+      // An inner locator searches inside this one's matches, so it cannot hop into another frame.
+      if (inner && inner.frameSplit() && !this.frameSplit()) throw new Error(`Inner "${key}" locator must belong to the same frame.`);
+    }
     // A filter after an index filters that one match.
     if (this.tail.index !== null) return this.extendWith([{ query: { kind: 'self' }, filters: [options], index: null }]);
     return this.withTail({ filters: [...this.tail.filters, options] });
   }
 
   and(other: Locator): Locator {
-    return new Locator(this.owner, { kind: 'and', left: this, right: other });
+    return this.composite('and', other);
   }
 
   or(other: Locator): Locator {
-    return new Locator(this.owner, { kind: 'or', left: this, right: other });
+    return this.composite('or', other);
   }
 
   /** A selector (or another locator) searched inside this locator's matches. */
@@ -406,6 +453,12 @@ export class Locator {
 
   getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
     return this.chain(byAttr('getByTitle', 'title', text, options.exact ?? false));
+  }
+
+  /** `fn(element, arg)` in the page, keeping the result there as a handle. */
+  async evaluateHandle<A = unknown>(fn: string | ((el: any, arg: A) => unknown), arg?: A, options: { timeout?: number } = {}): Promise<JSHandle> {
+    const h = await this.elementHandle(options);
+    return h.evaluateHandle(fn, arg);
   }
 
   /** The matched element as an ElementHandle (waits for it, strict). */
@@ -769,9 +822,25 @@ export class Locator {
     return !(await this.isVisible());
   }
 
-  /** Number of current matches (no waiting). */
-  async count(): Promise<number> {
-    return (await this.run<number>('count', {}, { many: true })).n ?? 0;
+  /** Number of current matches (no waiting). A navigation mid-query counts as no matches. */
+  async count(options: { __testHookBeforeQuery?: () => Promise<unknown> } = {}): Promise<number> {
+    // The query belongs to the document it started in; if a navigation
+    // replaces that document before the result is read, nothing matched.
+    const hookFn = options.__testHookBeforeQuery;
+    const doc = hookFn ? await this.owner.engineCall('E.doc').catch(() => null) : null;
+    const hook = hookFn ? hookFn().catch(() => {}) : null;
+    try {
+      if (hook) await hook;
+      const n = (await this.run<number>('count', {}, { many: true })).n ?? 0;
+      if (!hookFn) return n;
+      const after = await this.owner.engineCall('E.doc').catch(() => null);
+      return doc !== null && after !== doc ? 0 : n;
+    } catch (e) {
+      if (e instanceof Error && /Execution context was destroyed/.test(e.message)) return 0;
+      throw e;
+    } finally {
+      await hook;
+    }
   }
 
   /** One locator per current match, in document order (no waiting). */
@@ -933,8 +1002,11 @@ export class JSHandle {
     await this.ownerPage.engineCall(`E.drop(${this.handleId})`).catch(() => {});
   }
 
+  /** @internal What the page showed for the value when it was adopted. */
+  previewText = '';
+
   toString(): string {
-    return 'JSHandle';
+    return `JSHandle@${this.previewText}`;
   }
 }
 
@@ -997,13 +1069,16 @@ export class ElementHandle extends Locator {
     return this.locator(selector).evaluateAll(fn, arg);
   }
 
-  async evaluateHandle<A = unknown>(fn: string | ((v: any, arg: A) => unknown), arg?: A): Promise<JSHandle> {
+  override async evaluateHandle<A = unknown>(fn: string | ((v: any, arg: A) => unknown), arg?: A): Promise<JSHandle> {
     return new JSHandle(this.page(), this.handleId).evaluateHandle(fn, arg);
   }
 
   async jsonValue<T = unknown>(): Promise<T> {
     return {} as T;
   }
+
+  /** @internal Set when the handle came from evaluateHandle. */
+  previewText = '';
 
   async getProperty(name: string): Promise<JSHandle> {
     return new JSHandle(this.page(), this.handleId).getProperty(name);

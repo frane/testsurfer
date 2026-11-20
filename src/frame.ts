@@ -64,8 +64,8 @@ export class Frame {
   }
 
   /** Frames nested directly inside this one. */
-  async childFrames(): Promise<Frame[]> {
-    const all = await this.owner.frames();
+  childFrames(): Frame[] {
+    const all = this.owner.frames();
     return all.filter((f) => f.parent === this || (f.parent && this.same(f.parent)));
   }
 
