@@ -277,12 +277,12 @@ const MIME: Record<string, string> = {
 export class Locator {
   private readonly owner: Page;
   private readonly steps: Step[];
-  private readonly description: string | undefined;
+  private readonly desc: string | undefined;
 
   constructor(page: Page, steps: Step[] | LocatorQuery, description?: string) {
     this.owner = page;
     this.steps = Array.isArray(steps) ? steps : [step(steps)];
-    this.description = description;
+    this.desc = description;
   }
 
   /** The owning page's expect timeout, used as the assertion default. */
@@ -395,12 +395,17 @@ export class Locator {
   }
 
   /** The same locator, shown as `description` in errors and toString(). */
+  /** The text given to describe(), or null. */
+  description(): string | null {
+    return this.desc ?? null;
+  }
+
   describe(description: string): Locator {
     return new Locator(this.owner, this.steps, description);
   }
 
   toString(): string {
-    if (this.description) return this.description;
+    if (this.desc) return this.desc;
     const out: string[] = [];
     for (const s of this.steps) {
       let part = describeQuery(s.query);
@@ -433,6 +438,7 @@ export class Locator {
     const deadline = Date.now() + budget;
     let why = '';
     for (let i = 0; ; i++) {
+      await this.owner.runLocatorHandlers();
       const r = await this.run<T>(op, args, {}, fn);
       if (r.strict) throw this.strictError(apiName, r);
       if (!r.none) {

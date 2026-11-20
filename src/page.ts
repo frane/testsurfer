@@ -780,6 +780,47 @@ export class Page {
     return (await this.engineCall(`E.run(${JSON.stringify(req)}${fn ? `,(${fn})` : ''})`)) as T;
   }
 
+  private locatorHandlers: {
+    locator: Locator;
+    handler: (l: Locator) => unknown;
+    times: number | null;
+    noWaitAfter: boolean;
+  }[] = [];
+  private handlingLocators = false;
+
+  /**
+   * Run `handler` whenever `locator` becomes visible while an action or
+   * assertion is waiting (a cookie banner, a newsletter dialog). By
+   * default the wait resumes once the locator is hidden again.
+   */
+  async addLocatorHandler(
+    locator: Locator,
+    handler: (locator: Locator) => unknown,
+    options: { times?: number; noWaitAfter?: boolean } = {},
+  ): Promise<void> {
+    this.locatorHandlers.push({ locator, handler, times: options.times ?? null, noWaitAfter: options.noWaitAfter ?? false });
+  }
+
+  async removeLocatorHandler(locator: Locator): Promise<void> {
+    this.locatorHandlers = this.locatorHandlers.filter((h) => h.locator.toString() !== locator.toString());
+  }
+
+  /** @internal Run the handlers whose locator is visible now. Called on each action and assertion retry. */
+  async runLocatorHandlers(): Promise<void> {
+    if (this.handlingLocators || this.locatorHandlers.length === 0) return;
+    this.handlingLocators = true;
+    try {
+      for (const h of [...this.locatorHandlers]) {
+        if (!(await h.locator.isVisible().catch(() => false))) continue;
+        await h.handler(h.locator);
+        if (h.times !== null && --h.times <= 0) this.locatorHandlers = this.locatorHandlers.filter((x) => x !== h);
+        if (!h.noWaitAfter) await h.locator.waitFor({ state: 'hidden', timeout: this.timeouts.action }).catch(() => {});
+      }
+    } finally {
+      this.handlingLocators = false;
+    }
+  }
+
   /** Poll `fn(arg)` in the page until it returns a truthy value, and return that value. */
   async waitForFunction<T = unknown, A = unknown>(
     fn: string | ((arg: A) => unknown),

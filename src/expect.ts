@@ -252,6 +252,7 @@ export class LocatorAssertions {
   private run(spec: Spec, options: ExpectOptions | undefined, sample: () => Promise<Sample>): Promise<void> {
     return poll('locator', this.locator.toString(), spec, this.negated, options?.timeout ?? this.defaultTimeout, this.custom, async () => {
       this.lastPreview = undefined;
+      await this.locator.page().runLocatorHandlers();
       const s = await sample();
       if (!s.log && this.lastPreview) s.log = [`locator resolved to ${this.lastPreview}`];
       return s;
@@ -302,9 +303,10 @@ export class LocatorAssertions {
     const want: boolean | 'mixed' = options.indeterminate ? 'mixed' : (options.checked ?? true);
     const word = (v: unknown) => (v === 'mixed' ? 'indeterminate' : v ? 'checked' : 'unchecked');
     await this.run({ name: 'toBeChecked', arg: optArg(options), expected: word(want) }, options, async () => {
-      const r = await this.peekEl<boolean | 'mixed'>('expect.toBeChecked', 'checkedMixed');
-      if (!r.found) return { pass: false, found: false };
-      return { pass: r.v === want, found: true, received: word(r.v) };
+      const r = await this.peekEl<{ c: boolean; m: boolean }>('expect.toBeChecked', 'checkedMixed');
+      if (!r.found || !r.v) return { pass: false, found: false };
+      const state = want === 'mixed' ? (r.v.m ? 'mixed' : r.v.c) : r.v.c;
+      return { pass: state === want, found: true, received: word(state) };
     });
   }
 
@@ -735,6 +737,20 @@ export interface Expect {
   arrayContaining: typeof asymmetric.arrayContaining;
 }
 
+/** Web-first assertions that also answer the generic matchers (toBe, toEqual, ...) for the same target. */
+function withValueMatchers<T extends object>(a: T, values: ValueAssertions): T {
+  return new Proxy(a, {
+    get(obj, prop, recv) {
+      if (prop === 'not') {
+        return withValueMatchers(Reflect.get(obj, prop, recv) as object, (values as unknown as { not: ValueAssertions }).not);
+      }
+      if (prop in obj) return Reflect.get(obj, prop, recv);
+      const v = Reflect.get(values, prop);
+      return typeof v === 'function' ? v.bind(values) : v;
+    },
+  }) as T;
+}
+
 function makeExpect(config: ExpectConfig): Expect {
   const fn = ((target: unknown, message?: string | { message?: string }): AnyAssertions => {
     const custom = (typeof message === 'string' ? message : message?.message) ?? config.message;
@@ -748,6 +764,7 @@ function makeExpect(config: ExpectConfig): Expect {
     } else {
       a = new ValueAssertions(target);
     }
+    if (!(a instanceof ValueAssertions)) a = withValueMatchers(a, new ValueAssertions(target));
     return config.soft ? softly(a) : a;
   }) as Expect;
   fn.poll = (pollFn, options = {}) =>

@@ -975,6 +975,7 @@ export function installEngine(SER) {
   }
 
   function checkedState(e) {
+    if (tag(e) === 'input' && /^(checkbox|radio)$/i.test(e.type)) return e.checked;
     const c = ariaChecked(e);
     if (c === undefined) {
       const role = roleOf(e);
@@ -1053,7 +1054,10 @@ export function installEngine(SER) {
   const ONE = {
     text: (e) => e.textContent || '',
     elText: (e) => elementText(e),
-    innerText: (e) => (e.innerText !== undefined ? e.innerText : e.textContent || ''),
+    innerText: (e) => {
+      if (!(e instanceof (e.ownerDocument.defaultView || window).HTMLElement)) throw new Error('Error: Node is not an HTMLElement');
+      return e.innerText;
+    },
     innerHTML: (e) => e.innerHTML,
     attr: (e, a) => attr(e, a.name),
     value: (e) => inputValue(retarget(e)),
@@ -1149,9 +1153,10 @@ export function installEngine(SER) {
     },
     checkedMixed: (e) => {
       e = retarget(e);
+      if (tag(e) === 'input' && /^(checkbox|radio)$/i.test(e.type)) return { c: e.checked, m: e.indeterminate };
       const c = ariaChecked(e);
       if (c === undefined) checkedState(e);
-      return c === undefined ? false : c;
+      return { c: c === true, m: c === 'mixed' };
     },
     css: (e, a) => styleOf(e).getPropertyValue(a.name) || styleOf(e)[a.name] || '',
     prop: (e, a) => a.name.split('.').reduce((o, k) => (o == null ? undefined : o[k]), e),
