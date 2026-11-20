@@ -108,9 +108,20 @@ export class NetHub {
     return h;
   }
 
+  private closed = false;
+  private opening: Promise<WireClient> | null = null;
+
   private async conn(): Promise<WireClient> {
-    this.client ??= await this.open();
-    return this.client;
+    if (this.client) return this.client;
+    this.opening ??= this.open();
+    const c = await this.opening;
+    // Closed while the connection was opening: do not keep it.
+    if (this.closed) {
+      c.close();
+      throw new Error('network hub closed');
+    }
+    this.client = c;
+    return c;
   }
 
   private call(prim: string, args: string[], flags: Record<string, string> = {}) {
@@ -136,9 +147,11 @@ export class NetHub {
   }
 
   private close(): void {
+    this.closed = true;
     this.running = false;
     this.client?.close();
     this.client = null;
+    void this.opening?.then((c) => c.close(), () => {});
     hubs.delete(this.sessionId);
   }
 

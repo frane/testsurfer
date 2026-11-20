@@ -97,7 +97,8 @@ export class TestServer {
     for (const w of this.waiters.get(pathname) ?? []) w(req);
     this.waiters.delete(pathname);
     for (const [k, v] of Object.entries(this.extra.get(pathname) ?? {})) res.setHeader(k, v);
-    const route = this.routes.get(pathname);
+    // Playwright's TestServer keys routes by path plus query.
+    const route = this.routes.get(req.url ?? pathname) ?? this.routes.get(pathname);
     if (route) {
       route(req, res);
       return;

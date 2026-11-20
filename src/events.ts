@@ -713,9 +713,18 @@ export class PageEvents {
     this.routingOn = false;
   }
 
+  private closedEvents = false;
+
   private client(): Promise<WireClient> {
     if (this.poller) return Promise.resolve(this.poller);
-    this.pollerP ??= this.host.openPoller().then((c) => (this.poller = c));
+    this.pollerP ??= this.host.openPoller().then((c) => {
+      // Closed while the connection was opening: do not keep it.
+      if (this.closedEvents) {
+        c.close();
+        throw new Error('page closed');
+      }
+      return (this.poller = c);
+    });
     return this.pollerP;
   }
 
@@ -915,6 +924,8 @@ export class PageEvents {
   }
 
   close(): void {
+    this.closedEvents = true;
+    void this.pollerP?.then((c) => c.close(), () => {});
     this.hub?.detach(this);
     this.hub = null;
     if (this.timer) clearInterval(this.timer);

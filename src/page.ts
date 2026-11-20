@@ -420,6 +420,8 @@ export class Page {
       return;
     }
     await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
+    // Like Playwright, return once the new document (stylesheets, images) has loaded.
+    await this.waitForFunction("document.readyState === 'complete'", undefined, { timeout: this.timeouts.navigation }).catch(() => {});
     await this.refreshFrames();
     this.snapshot = null;
     this.synced = false;
