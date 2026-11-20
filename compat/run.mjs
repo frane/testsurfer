@@ -11,7 +11,7 @@
 // compat/pageTest.ts and compat/utils.ts instead of Playwright's
 // fixtures.
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -73,35 +73,60 @@ const only = process.argv.slice(2);
 const specs = only.length ? SPECS.filter((s) => only.includes(s)) : SPECS;
 const rows = [];
 const failures = [];
-for (const name of specs) {
+const JOBS = Number(process.env.COMPAT_JOBS ?? 3);
+
+/** Run one spec file in its own node:test process. */
+function runSpec(name) {
   const file = prepare(name);
   const dest = path.join(work, `${name}.jsonl`);
-  const r = spawnSync(
-    process.execPath,
-    [
-      '--test',
-      '--test-concurrency=1',
-      '--test-timeout=30000',
-      `--test-reporter=${path.join(here, 'reporter.mjs')}`,
-      `--test-reporter-destination=${dest}`,
-      file,
-    ],
-    { cwd: work, env: { ...process.env, COMPAT_ASSETS: path.join(cache, 'tests', 'assets') }, encoding: 'utf8' },
-  );
-  const results = fs.existsSync(dest)
-    ? fs.readFileSync(dest, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    : [];
-  // A spec that cannot load reports one failure named after the file.
-  const tests = results.filter((t) => !t.name.endsWith('.spec.ts'));
-  const loadError = results.find((t) => t.name.endsWith('.spec.ts') && t.status === 'failed');
-  const count = (s) => tests.filter((t) => t.status === s).length;
-  const row = { name, passed: count('passed'), failed: count('failed'), skipped: count('skipped') };
-  if (loadError && tests.length === 0) row.loadError = loadError.error ?? (r.stderr || '').split('\n')[0];
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--test',
+        '--test-concurrency=1',
+        '--test-timeout=30000',
+        `--test-reporter=${path.join(here, 'reporter.mjs')}`,
+        `--test-reporter-destination=${dest}`,
+        file,
+      ],
+      { cwd: work, env: { ...process.env, COMPAT_ASSETS: path.join(cache, 'tests', 'assets') } },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    child.stdout.resume();
+    child.on('exit', () => {
+      const results = fs.existsSync(dest)
+        ? fs.readFileSync(dest, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+        : [];
+      // A spec that cannot load reports one failure named after the file.
+      const tests = results.filter((t) => !t.name.endsWith('.spec.ts'));
+      const loadError = results.find((t) => t.name.endsWith('.spec.ts') && t.status === 'failed');
+      const count = (s) => tests.filter((t) => t.status === s).length;
+      const row = { name, passed: count('passed'), failed: count('failed'), skipped: count('skipped') };
+      if (loadError && tests.length === 0) row.loadError = loadError.error ?? stderr.split('\n')[0];
+      console.log(
+        `${name}: ${row.passed} passed, ${row.failed} failed, ${row.skipped} skipped${row.loadError ? ` (load error: ${row.loadError})` : ''}`,
+      );
+      resolve({ row, tests });
+    });
+  });
+}
+
+// A few spec files at a time; results are kept in the SPECS order.
+const results = new Array(specs.length);
+let next = 0;
+await Promise.all(
+  Array.from({ length: Math.min(JOBS, specs.length) }, async () => {
+    while (next < specs.length) {
+      const i = next++;
+      results[i] = await runSpec(specs[i]);
+    }
+  }),
+);
+for (const { row, tests } of results) {
   rows.push(row);
-  for (const t of tests.filter((t) => t.status === 'failed')) failures.push({ spec: name, test: t.name, error: t.error });
-  console.log(
-    `${name}: ${row.passed} passed, ${row.failed} failed, ${row.skipped} skipped${row.loadError ? ` (load error: ${row.loadError})` : ''}`,
-  );
+  for (const t of tests.filter((t) => t.status === 'failed')) failures.push({ spec: row.name, test: t.name, error: t.error });
 }
 
 const total = rows.reduce(
