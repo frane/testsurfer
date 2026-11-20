@@ -52,6 +52,8 @@ export interface RunnerOptions extends LaunchOptions {
    * sharing the engine's persistent jar.
    */
   isolate?: boolean;
+  /** Where toMatchSnapshot(name) keeps baselines; Playwright's tokens. */
+  snapshotPathTemplate?: string;
 }
 
 type Fixtures = Record<string, unknown>;
@@ -226,6 +228,7 @@ function runWith(
       snapshotIndex: 0,
       outputDir,
       updateSnapshots: updateSnapshotsFromEnv() ?? options.updateSnapshots ?? 'missing',
+      snapshotPathTemplate: options.snapshotPathTemplate,
       annotations: [],
       attachments: [],
       softErrors: [],

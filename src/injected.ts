@@ -16,6 +16,26 @@
 export function installEngine(SER) {
   if (window.__tse) return window.__tse;
 
+  // Page script may have replaced built-ins (window.Map = 1). Use the
+  // page's own when they are native, else a clean realm's.
+  const isNative = (f) => typeof f === 'function' && /\[native code\]/.test(Function.prototype.toString.call(f));
+  let cleanRealm = null;
+  const pristine = (name) => {
+    if (isNative(window[name])) return window[name];
+    if (!cleanRealm) {
+      const f = document.createElement('iframe');
+      f.style.display = 'none';
+      (document.documentElement || document).appendChild(f);
+      cleanRealm = f.contentWindow;
+      f.remove();
+    }
+    return cleanRealm[name];
+  };
+  const Map = pristine('Map');
+  const Set = pristine('Set');
+  const WeakMap = pristine('WeakMap');
+  const WeakRef = pristine('WeakRef');
+
   // --- basics ---------------------------------------------------------
 
   const N = (s) => String(s == null ? '' : s).replace(/[\u200b\u00ad]/g, '').trim().replace(/\s+/g, ' ');
@@ -551,9 +571,12 @@ export function installEngine(SER) {
     return out;
   }
 
+  /** A CSS string's value: `\a ` is a newline, `\"` a quote. */
+  const cssUnescape = (s) =>
+    s.replace(/\\([0-9a-fA-F]{1,6})\s?|\\([\s\S])/g, (_, hex, ch) => (hex ? String.fromCodePoint(parseInt(hex, 16)) : ch));
   const unq = (v) => {
     const m = /^\s*(["'])([\s\S]*)\1\s*$/.exec(v);
-    return m ? m[2].replace(/\\(.)/g, '$1') : v.trim();
+    return m ? cssUnescape(m[2]) : v.trim();
   };
 
   /** One compound: native part for matches(), plus Playwright's own pseudos. */
@@ -665,16 +688,16 @@ export function installEngine(SER) {
         return e === scope;
       case 'is':
       case 'where':
-        return c.list.some((parts) => matchComplex(e, parts, parts.length - 1, scope));
+        return c.list.some((parts) => matchComplex(e, parts, parts.length - 1, scope, null, false));
       case 'not':
-        return !c.list.some((parts) => matchComplex(e, parts, parts.length - 1, scope));
+        return !c.list.some((parts) => matchComplex(e, parts, parts.length - 1, scope, null, false));
       case 'has':
         // Inside :has(), :scope is the element being tested.
         {
           // Sibling combinators can reach outside the element, so search its whole tree then.
           const wide = c.list.some((parts) => parts.includes('+') || parts.includes('~'));
-          const pool = wide ? allUnder(e.getRootNode()) : allUnder(e);
-          return pool.some((d) => c.list.some((parts) => matchComplex(d, parts, parts.length - 1, e)));
+          const pool = wide ? allUnder(e.getRootNode()) : [e, ...allUnder(e)];
+          return pool.some((d) => c.list.some((parts) => matchComplex(d, parts, parts.length - 1, e, e, false)));
         }
     }
     if (/^(has-text|text|text-is)$/.test(c.name)) {
@@ -720,22 +743,55 @@ export function installEngine(SER) {
     return new Error(`Error: Unexpected token "${bad}" while parsing css selector "${sel}". Did you mean to CSS.escape it?`);
   }
 
-  /** Does `el` match compound i of `parts`, walking combinators leftward? */
-  function matchComplex(el, parts, i, scope) {
+  /** A compound that names :scope, directly or inside :is()/:not()/... */
+  function hasScope(c) {
+    // A :scope inside :has() is :has's own element, not this one.
+    return c.custom.some(
+      (x) => x.name === 'scope' || (x.name !== 'has' && (x.list || []).some((parts) => parts.some((p) => typeof p === 'object' && hasScope(p)))),
+    );
+  }
+
+  /** Index of the first compound naming :scope at its top level, or -1. Cached on the parts array. */
+  function scopeIndex(parts) {
+    if (parts.sIdx === undefined) {
+      parts.sIdx = -1;
+      for (let i = 0; i < parts.length; i += 2) {
+        if (parts[i].custom.some((x) => x.name === 'scope')) {
+          parts.sIdx = i;
+          break;
+        }
+      }
+    }
+    return parts.sIdx;
+  }
+
+  /**
+   * Does `el` match compound i of `parts`, walking combinators
+   * leftward? With `bound`, matching starts at that element, as in
+   * jQuery and Playwright: a compound that does not name :scope must
+   * match inside it when it is the subject or an ancestor step (`>`,
+   * descendant); sibling steps may leave it, so `:scope ~ div` and
+   * `#a ~ :scope` work.
+   */
+  function matchComplex(el, parts, i, scope, bound, viaAncestor) {
     const c = parts[i];
     if (!el || el.nodeType !== 1 || !el.matches(c.native)) return false;
+    // The subject is bounded unless the selector names :scope (then
+    // :scope fixes where matching starts); ancestor steps always are.
+    const subjectBound = i === parts.length - 1 && scopeIndex(parts) < 0;
+    if (bound && (subjectBound || viaAncestor) && !(contains(bound, el) && (el !== bound || hasScope(c)))) return false;
     for (const x of c.custom) if (!customOk(el, x, scope)) return false;
     if (i === 0) return true;
     switch (parts[i - 1]) {
       case '>':
-        return matchComplex(parentOf(el), parts, i - 2, scope);
+        return matchComplex(parentOf(el), parts, i - 2, scope, bound, true);
       case '+':
-        return matchComplex(el.previousElementSibling, parts, i - 2, scope);
+        return matchComplex(el.previousElementSibling, parts, i - 2, scope, bound, false);
       case '~':
-        for (let s = el.previousElementSibling; s; s = s.previousElementSibling) if (matchComplex(s, parts, i - 2, scope)) return true;
+        for (let s = el.previousElementSibling; s; s = s.previousElementSibling) if (matchComplex(s, parts, i - 2, scope, bound, false)) return true;
         return false;
       default:
-        for (let p = parentOf(el); p; p = parentOf(p)) if (matchComplex(p, parts, i - 2, scope)) return true;
+        for (let p = parentOf(el); p; p = parentOf(p)) if (matchComplex(p, parts, i - 2, scope, bound, true)) return true;
         return false;
     }
   }
@@ -766,7 +822,10 @@ export function installEngine(SER) {
       pool = allUnder(top);
       if (top.nodeType === 11) pool.unshift(top.host);
     } else pool = allUnder(root);
-    return pool.filter((e) => parsed.some((parts) => matchComplex(e, parts, parts.length - 1, scopeEl)));
+    // Chained off an element (or a shadow root), matching is bounded by it.
+    const bound = root.nodeType === 9 ? null : scopeEl;
+    if (bound && root.nodeType === 1) pool = [root, ...pool.filter((x) => x !== root)];
+    return pool.filter((e) => parsed.some((parts) => matchComplex(e, parts, parts.length - 1, scopeEl, bound, false)));
   }
 
   function xpathQuery(root, q) {
@@ -877,6 +936,8 @@ export function installEngine(SER) {
 
   /** An element as Playwright previews it in logs and strict-mode errors. */
   function preview(e) {
+    if (e.nodeType === 9) return '#document';
+    if (e.nodeType === 11) return '#document-fragment';
     const name = tag(e);
     const attrs = [...e.attributes]
       .filter((a) => a.name !== 'style' && a.name !== 'data-vs-ref')
@@ -936,6 +997,8 @@ export function installEngine(SER) {
   function keyInfo(k, shift) {
     if (k === 'ControlOrMeta') k = isMac ? 'Meta' : 'Control';
     if (KEYS[k]) return { key: k, ...KEYS[k] };
+    if (k.length === 1 && k.charCodeAt(0) > 126) throw new Error(`Error: Unknown key: "${k}"`);
+    if ([...k].length === 1 && k.length > 1) throw new Error(`Error: Unknown key: "${k}"`);
     if (k.length === 1) {
       const ch = shift && /[a-z]/.test(k) ? k.toUpperCase() : k;
       const up = k.toUpperCase();
@@ -1543,7 +1606,8 @@ export function installEngine(SER) {
     return id;
   };
   SER.H.get = (id) => HANDLES.get(id);
-  const isEl = (v) => !!v && typeof v === 'object' && v.nodeType === 1;
+  // Elements, documents and shadow roots come back as element handles.
+  const isEl = (v) => !!v && typeof v === 'object' && (v.nodeType === 1 || v.nodeType === 9 || v.nodeType === 11);
 
   const api = {
     /** Identifies this document: a new document installs a new engine. */

@@ -57,3 +57,4 @@ export const devices: Record<string, { viewport: { width: number; height: number
   'iPhone 13': { viewport: { width: 390, height: 664 }, deviceScaleFactor: 3, defaultBrowserType: 'webkit' },
   'Pixel 5': { viewport: { width: 393, height: 727 }, deviceScaleFactor: 2.75, defaultBrowserType: 'chromium' },
 };
+export { selectors } from './selectors.ts';

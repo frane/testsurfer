@@ -67,7 +67,7 @@ export class Browser {
   private readonly clickVia: ClickVia;
   private readonly protocol: ProtocolOptions;
   private readonly baseURL: string | undefined;
-  private testIdAttribute = 'data-testid';
+  private testIdAttribute: string | null = null;
   private viewport: { width: number; height: number } | null = { width: 1280, height: 720 };
   private deviceScaleFactor = 1;
 
@@ -188,7 +188,7 @@ export class Browser {
       this.protocol,
       this.baseURL,
     );
-    page.testIdAttribute = this.testIdAttribute;
+    if (this.testIdAttribute) page.testIdAttribute = this.testIdAttribute;
     page.initialViewport(this.viewport, this.deviceScaleFactor);
     return page;
   }

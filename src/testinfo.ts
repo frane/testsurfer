@@ -27,6 +27,8 @@ export interface TestInfo {
   project: { name: string; use: Record<string, unknown> };
   /** Milliseconds; informational, node:test owns the actual timeout. */
   timeout: number;
+  /** Where toMatchSnapshot keeps baselines (see snapshotPath in screenshot.ts). */
+  snapshotPathTemplate?: string | undefined;
   /** expect.soft() failures, thrown together when the test body ends. */
   softErrors: unknown[];
   /** Set by fail(): the test is expected to throw. */

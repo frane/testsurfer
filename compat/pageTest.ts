@@ -6,13 +6,17 @@
 
 import * as path from 'node:path';
 import { after } from 'node:test';
-import { configure, expect as tsExpect, test as tsTest } from '../src/index.ts';
-
-// Playwright's own test config gives expect() 10 seconds.
-configure({ timeouts: { expect: 10_000 } });
+import { configure, expect as tsExpect, selectors, test as tsTest } from '../src/index.ts';
 import { TestServer } from './server.ts';
 
 const ASSETS = path.resolve(process.env['COMPAT_ASSETS'] ?? path.join(import.meta.dirname, '.cache/playwright/tests/assets'));
+
+// Playwright's own test config gives expect() 10 seconds.
+configure({
+  timeouts: { expect: 10_000 },
+  // Playwright's own WebKit baselines, next to the original specs.
+  snapshotPathTemplate: path.join(ASSETS, '..', 'page', '{testFileName}-snapshots', '{arg}-{projectName}{ext}'),
+});
 
 let server: TestServer | null = null;
 // Registered at load time: a hook added inside a test would attach to
@@ -41,6 +45,7 @@ export const test = tsTest.extend<{
   isMac: boolean;
   mode: string;
   asset: (p: string) => string;
+  playwright: { selectors: typeof selectors };
 }>({
   server: async (_f, use) => use(await sharedServer()),
   browserName: 'webkit',
@@ -55,6 +60,10 @@ export const test = tsTest.extend<{
   isMac: process.platform === 'darwin',
   mode: 'default',
   asset: async (_f, use) => use((p: string) => path.join(ASSETS, p)),
+  playwright: async (_f, use) => {
+    await use({ selectors });
+    selectors.setTestIdAttribute('data-testid');
+  },
 });
 
 export const it = test;

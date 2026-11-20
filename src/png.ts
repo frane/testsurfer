@@ -129,6 +129,27 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, body, crc]);
 }
 
+/** Shrink by an integer factor, averaging each factor x factor block (RGBA). */
+export function downscale(img: Image, factor: number): Image {
+  if (factor <= 1) return img;
+  const w = Math.floor(img.width / factor);
+  const h = Math.floor(img.height / factor);
+  const data = new Uint8Array(w * h * 4);
+  const n = factor * factor;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      for (let c = 0; c < 4; c++) {
+        let sum = 0;
+        for (let dy = 0; dy < factor; dy++) {
+          for (let dx = 0; dx < factor; dx++) sum += img.data[((y * factor + dy) * img.width + (x * factor + dx)) * 4 + c]!;
+        }
+        data[(y * w + x) * 4 + c] = Math.round(sum / n);
+      }
+    }
+  }
+  return { width: w, height: h, data };
+}
+
 export function encodePng(img: Image): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(img.width, 0);

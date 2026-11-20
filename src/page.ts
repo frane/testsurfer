@@ -51,9 +51,10 @@ import {
 } from './locator.ts';
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
+import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
-import { decodePng, encodePng } from './png.ts';
+import { decodePng, downscale, encodePng } from './png.ts';
 
 /** The engine install expression: defines window.__tse and yields it. */
 const ENGINE_JS = `(${installEngine.toString()})(${SERIALIZE_JS})`;
@@ -170,8 +171,15 @@ export class Page {
   readonly baseURL: string | undefined;
   /** HTTP requests from the test process (not the browser). */
   readonly request: APIRequestContext;
-  /** Attribute getByTestId matches. Set with the `testIdAttribute` launch option. */
-  testIdAttribute = 'data-testid';
+  private testIdOption: string | null = null;
+
+  /** Attribute getByTestId matches: the `testIdAttribute` launch option, else selectors.setTestIdAttribute(), else `data-testid`. */
+  get testIdAttribute(): string {
+    return this.testIdOption ?? selectorSettings.testIdAttribute ?? 'data-testid';
+  }
+  set testIdAttribute(name: string) {
+    this.testIdOption = name;
+  }
   /** Document-start scripts, replayed into the web view when it is created. */
   private initScripts: string[] = [];
   private shimInstalled = false;
@@ -855,6 +863,7 @@ export class Page {
     if (!r || r.gone || r.noengine) {
       throw new Error('Execution context was destroyed, most likely because of a navigation');
     }
+    if (this.events.hasBindings && !body.startsWith('E.doc')) await this.events.flush();
     if (r.e) {
       const err = new Error(r.e.message);
       err.name = r.e.name ?? 'Error';
@@ -1221,7 +1230,9 @@ export class Page {
       const src = ((y0 + y) * img.width + x0) * 4;
       data.set(img.data.subarray(src, src + w * 4), y * w * 4);
     }
-    const out = encodePng({ width: w, height: h, data });
+    // The engine captures at the screen's scale; deliver the configured device scale factor.
+    const factor = Math.round(scale / this.dpr);
+    const out = encodePng(factor > 1 ? downscale({ width: w, height: h, data }, factor) : { width: w, height: h, data });
     if (path) {
       const nodePath = await import('node:path');
       await fs.mkdir(nodePath.dirname(path), { recursive: true });
@@ -1268,8 +1279,19 @@ export class Page {
    */
   async screenshot(options: { path?: string; fullPage?: boolean; clip?: BoundingBox } = {}): Promise<Buffer> {
     if (options.clip) return this.screenshotClip(options.clip, options.path);
-    const file = await this.capture(null, options);
-    return (await import('node:fs/promises')).readFile(file);
+    const file = await this.capture(null, options.fullPage ? { fullPage: true } : {});
+    const fs = await import('node:fs/promises');
+    let buf: Buffer = await fs.readFile(file);
+    const img = decodePng(buf);
+    const cssWidth = await this.evaluate<number>('window.innerWidth');
+    const factor = Math.round(img.width / (cssWidth || img.width) / this.dpr);
+    if (factor > 1) buf = encodePng(downscale(img, factor));
+    if (options.path) {
+      const nodePath = await import('node:path');
+      await fs.mkdir(nodePath.dirname(options.path), { recursive: true });
+      await fs.writeFile(options.path, buf);
+    }
+    return buf;
   }
 
   /** PNG of the page, or of one element when `ref` is given. Returns the file path. */

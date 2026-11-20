@@ -83,7 +83,20 @@ export const asymmetric = {
 
 type Check = { pass: boolean; message: string };
 
+import { matchSnapshot, type ScreenshotOptions } from './screenshot.ts';
+
 export class ValueAssertions {
+  /** The value (a PNG buffer, a Buffer or a string) equals its stored baseline. */
+  toMatchSnapshot(nameOrOptions?: string | (ScreenshotOptions & { name?: string }), options: ScreenshotOptions = {}): void {
+    const opts = typeof nameOrOptions === 'object' ? nameOrOptions : options;
+    const name = typeof nameOrOptions === 'string' ? nameOrOptions : (opts as { name?: string }).name;
+    if (!name) throw new Error('toMatchSnapshot needs a snapshot name');
+    if (!Buffer.isBuffer(this.actual) && typeof this.actual !== 'string') {
+      throw new Error('toMatchSnapshot works on a Buffer or a string');
+    }
+    matchSnapshot(this.actual, name, opts);
+  }
+
   /** Only APIResponse has toBeOK; Playwright says so for anything else. */
   async toBeOK(): Promise<never> {
     throw new Error('toBeOK can be only used with APIResponse object');

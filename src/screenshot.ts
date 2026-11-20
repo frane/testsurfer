@@ -110,3 +110,70 @@ export async function assertScreenshot(
   }
   throw new TimeoutError(`${target} does not match ${file}: ${detail}; actual: ${actualFile} (waited ${budget}ms)`);
 }
+
+/**
+ * Where toMatchSnapshot(name) keeps its baseline, from Playwright's
+ * snapshotPathTemplate tokens: {testDir}, {testFileDir}, {testFileName},
+ * {testFilePath}, {arg}, {ext}, {projectName}, {platform}. The default
+ * is `{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}-{platform}{ext}`.
+ */
+export function snapshotPath(name: string): string {
+  const info = currentTestInfo();
+  const testFile = info?.file ?? process.argv[1] ?? 'test';
+  const template = info?.snapshotPathTemplate ?? '{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}-{platform}{ext}';
+  const ext = path.extname(name);
+  const arg = ext ? name.slice(0, -ext.length) : name;
+  return template
+    .replace(/\{testDir\}/g, path.dirname(testFile))
+    .replace(/\{testFileDir\}/g, path.dirname(testFile))
+    .replace(/\{testFileName\}/g, path.basename(testFile))
+    .replace(/\{testFilePath\}/g, testFile)
+    .replace(/\{arg\}/g, arg)
+    .replace(/\{ext\}/g, ext)
+    .replace(/\{projectName\}/g, info?.project.name ?? 'webkit')
+    .replace(/\{platform\}/g, process.platform);
+}
+
+const PNG = Buffer.from([137, 80, 78, 71]);
+
+/**
+ * expect(value).toMatchSnapshot(name): a PNG buffer compares as an
+ * image (threshold, maxDiffPixels, maxDiffPixelRatio), anything else
+ * byte for byte. A missing baseline is written and fails the test.
+ */
+export function matchSnapshot(value: Buffer | string, name: string, options: ScreenshotOptions = {}): void {
+  const file = snapshotPath(name);
+  const mode = currentTestInfo()?.updateSnapshots ?? 'missing';
+  const buf = typeof value === 'string' ? Buffer.from(value) : value;
+  if (mode === 'all' || !fs.existsSync(file)) {
+    if (!fs.existsSync(file) && mode === 'none') throw new Error(`toMatchSnapshot: no baseline at ${file} (updateSnapshots is none)`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const existed = fs.existsSync(file);
+    fs.writeFileSync(file, buf);
+    if (mode === 'all' && existed) return;
+    if (mode === 'all') return;
+    throw new Error(`A snapshot doesn't exist at ${file}, writing actual.`);
+  }
+  const want = fs.readFileSync(file);
+  if (buf.subarray(0, 4).equals(PNG) && want.subarray(0, 4).equals(PNG)) {
+    const expected = decodePng(want);
+    const actual = decodePng(buf);
+    const total = expected.width * expected.height;
+    const allowed = Math.max(options.maxDiffPixels ?? 0, Math.floor((options.maxDiffPixelRatio ?? 0) * total));
+    if (actual.width !== expected.width || actual.height !== expected.height) {
+      throw new Error(`Expected an image ${expected.width}px by ${expected.height}px, received ${actual.width}px by ${actual.height}px. (${file})`);
+    }
+    const d = diffImages(expected, actual, options.threshold ?? 0.2);
+    if (d.diffPixels > allowed) {
+      const info = currentTestInfo();
+      const out = info?.outputDir ?? 'test-results';
+      fs.mkdirSync(out, { recursive: true });
+      const base = safe(path.basename(file, '.png'));
+      fs.writeFileSync(path.join(out, `${base}-actual.png`), buf);
+      if (d.diff) fs.writeFileSync(path.join(out, `${base}-diff.png`), encodePng(d.diff));
+      throw new Error(`${d.diffPixels} pixels (ratio ${(d.diffPixels / total).toFixed(2)} of all image pixels) are different. (${file})`);
+    }
+    return;
+  }
+  if (!buf.equals(want)) throw new Error(`Snapshot comparison failed: ${file} differs from the received value.`);
+}

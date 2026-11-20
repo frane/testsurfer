@@ -412,7 +412,6 @@ export class PageEvents {
   private requests = new Map<number, Request>();
   private pendingFetch = new Map<number, (row: ShimRow) => void>();
   private timer: NodeJS.Timeout | null = null;
-  private ticking = false;
   private poller: WireClient | null = null;
   private pollerP: Promise<WireClient> | null = null;
   private routingOn = false;
@@ -446,13 +445,18 @@ export class PageEvents {
     );
   }
 
+  private bindingDepth = 0;
+
   private async runBinding(e: ShimEvent): Promise<void> {
     const fn = this.bindings.get(e.name ?? '');
     let d: { ok: boolean; v?: unknown; e?: string };
+    this.bindingDepth++;
     try {
       d = { ok: true, v: fn ? await fn(...(e.args ?? [])) : undefined };
     } catch (err) {
       d = { ok: false, e: err instanceof Error ? err.message : String(err) };
+    } finally {
+      this.bindingDepth--;
     }
     if (d.v === undefined) delete d.v;
     await this.evalPage(`window.__ts ? window.__ts.settle(${JSON.stringify(e.id)}, ${JSON.stringify(d)}) : 'gone'`).catch(() => {});
@@ -547,9 +551,17 @@ export class PageEvents {
     return line === undefined ? null : (JSON.parse(line.slice('result='.length)) as T);
   }
 
-  private async tick(): Promise<void> {
-    if (this.ticking) return;
-    this.ticking = true;
+  private tickP: Promise<void> | null = null;
+  private pendingBindings: Promise<void>[] = [];
+
+  private tick(): Promise<void> {
+    this.tickP ??= this.drain().finally(() => {
+      this.tickP = null;
+    });
+    return this.tickP;
+  }
+
+  private async drain(): Promise<void> {
     try {
       const got = await this.evalPage<{ q: ShimRow[]; ev: ShimEvent[] } | null>(
         `window.__ts ? window.__ts.take() : null`,
@@ -559,15 +571,30 @@ export class PageEvents {
       for (const row of got.q) void this.onHeld(row);
     } catch {
       /* page closing or navigating; try again next tick */
-    } finally {
-      this.ticking = false;
     }
+  }
+
+  get hasBindings(): boolean {
+    return this.bindings.size > 0;
+  }
+
+  /**
+   * Take the page's queue now and wait for the exposed functions it
+   * called, so a binding fired by an action has run when the action
+   * returns, as in Playwright.
+   */
+  async flush(): Promise<void> {
+    await this.tick();
+    // A binding that itself calls into the page must not wait for itself.
+    if (this.bindingDepth > 0) return;
+    const running = this.pendingBindings.splice(0);
+    await Promise.all(running);
   }
 
   private onEvent(e: ShimEvent): void {
     switch (e.t) {
       case 'call':
-        void this.runBinding(e);
+        this.pendingBindings.push(this.runBinding(e));
         break;
       case 'console':
         this.emit('console', new ConsoleMessage(e.type ?? 'log', e.text ?? ''));

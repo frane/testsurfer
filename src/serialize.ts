@@ -13,18 +13,18 @@ if(typeof v==='number'){if(Number.isNaN(v))return {$t:'n',v:'NaN'};if(v===Infini
 if(typeof v==='bigint')return {$t:'b',v:String(v)};
 if(v===null||typeof v==='string'||typeof v==='boolean')return v;
 if(typeof v==='function'||typeof v==='symbol')return {$t:'u'};
-if(v instanceof Date)return {$t:'d',v:v.toISOString()};
-if(v instanceof RegExp)return {$t:'r',v:[v.source,v.flags]};
-if(typeof URL!=='undefined'&&v instanceof URL)return {$t:'url',v:v.href};
-if(v instanceof Error)return {$t:'e',v:{name:v.name,message:v.message,stack:v.stack}};
-if(typeof Node!=='undefined'&&v instanceof Node)return {$t:'node',v:v.nodeName};
-if(typeof Window!=='undefined'&&v instanceof Window)return {$t:'win'};
+if(typeof Date==='function'&&v instanceof Date)return {$t:'d',v:v.toISOString()};
+if(typeof RegExp==='function'&&v instanceof RegExp)return {$t:'r',v:[v.source,v.flags]};
+if(typeof URL==='function'&&v instanceof URL)return {$t:'url',v:v.href};
+if(typeof Error==='function'&&v instanceof Error)return {$t:'e',v:{name:v.name,message:v.message,stack:v.stack}};
+if(typeof Node==='function'&&v instanceof Node)return {$t:'node',v:v.nodeName};
+if(typeof Window==='function'&&v instanceof Window)return {$t:'win'};
 if(seen.indexOf(v)>=0)return {$t:'cyc'};
 seen.push(v);
 try{
-if(Array.isArray(v)||(typeof v.length==='number'&&typeof v!=='string'&&(v instanceof NodeList||v instanceof HTMLCollection)))return Array.prototype.map.call(v,function(x){return ser(x,seen);});
-if(v instanceof Map)return {$t:'map',v:Array.from(v.entries()).map(function(e){return [ser(e[0],seen),ser(e[1],seen)];})};
-if(v instanceof Set)return {$t:'set',v:Array.from(v).map(function(x){return ser(x,seen);})};
+if(Array.isArray(v)||(typeof v.length==='number'&&typeof v!=='string'&&((typeof NodeList==='function'&&v instanceof NodeList)||(typeof HTMLCollection==='function'&&v instanceof HTMLCollection))))return Array.prototype.map.call(v,function(x){return ser(x,seen);});
+if(typeof Map==='function'&&v instanceof Map)return {$t:'map',v:Array.from(v.entries()).map(function(e){return [ser(e[0],seen),ser(e[1],seen)];})};
+if(typeof Set==='function'&&v instanceof Set)return {$t:'set',v:Array.from(v).map(function(x){return ser(x,seen);})};
 if(ArrayBuffer.isView(v))return Array.from(v);
 var o={};for(var k in v){try{o[k]=ser(v[k],seen);}catch(e){}}
 return {$t:'o',v:o};
