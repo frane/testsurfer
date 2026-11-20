@@ -16,19 +16,22 @@ import { renderSnapshot } from './aria.ts';
 import { serializeValue } from './serialize.ts';
 import type { Snapshot } from './tree.ts';
 import type { Page } from './page.ts';
+import type { Frame as FrameType } from './frame.ts';
 
 export interface ByRoleOptions {
   /** Accessible name. String: case-insensitive substring (whole string and case-sensitive with exact). RegExp: tested as-is. */
   name?: string | RegExp;
   exact?: boolean;
-  checked?: boolean;
+  checked?: boolean | 'mixed';
   disabled?: boolean;
   expanded?: boolean;
   includeHidden?: boolean;
   /** Heading level, from h1-h6 or aria-level. */
   level?: number;
-  pressed?: boolean;
+  pressed?: boolean | 'mixed';
   selected?: boolean;
+  /** @internal role= selector `[name="x"]`: whole string, case-insensitive. */
+  nameFull?: boolean;
 }
 
 export interface ByTextOptions {
@@ -165,8 +168,9 @@ const wm = (v: string | RegExp, exact = false): WireMatcher =>
 function wireQuery(query: LocatorQuery): Record<string, unknown> {
   switch (query.kind) {
     case 'role': {
-      const { name, exact, ...rest } = query.options;
-      return { k: 'role', role: query.role, o: { ...rest, ...(name !== undefined ? { name: wm(name, exact) } : {}) } };
+      const { name, exact, nameFull, ...rest } = query.options;
+      const nm = name === undefined ? undefined : nameFull && typeof name === 'string' ? { s: name, full: true } : wm(name, exact);
+      return { k: 'role', role: query.role, o: { ...rest, ...(nm ? { name: nm } : {}) } };
     }
     case 'text':
       return { k: 'text', t: wm(query.text, query.options.exact), light: query.light, legacy: query.legacy };
@@ -951,6 +955,24 @@ export class ElementHandle extends Locator {
 
   asElement(): ElementHandle {
     return this;
+  }
+
+  /**
+   * The frame this <iframe> element hosts. Playwright gives handles an
+   * async contentFrame() returning a Frame, unlike Locator's, which
+   * returns a FrameLocator; the override is deliberately incompatible.
+   */
+  // @ts-expect-error see above
+  override async contentFrame(): Promise<FrameType | null> {
+    const isFrame = await this.evaluate((e: { nodeName: string }) => e.nodeName === 'IFRAME' || e.nodeName === 'FRAME');
+    if (!isFrame) return null;
+    const { Frame } = await import('./frame.ts');
+    return new Frame(this.page(), this, this.page().mainFrame());
+  }
+
+  /** The frame the element is in (the main frame for top-level elements). */
+  async ownerFrame(): Promise<FrameType> {
+    return this.page().mainFrame();
   }
 
   /** The first element matching `selector` inside this one, or null. */

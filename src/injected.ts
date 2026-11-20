@@ -105,6 +105,7 @@ export function installEngine(SER) {
     }
     const want = N(m.s);
     if (m.exact) return (t) => N(t) === want;
+    if (m.full) return (t) => N(t).toLowerCase() === want.toLowerCase();
     if (caseSensitiveDefault) return (t) => N(t).includes(want);
     const lw = want.toLowerCase();
     return (t) => N(t).toLowerCase().includes(lw);
@@ -164,7 +165,15 @@ export function installEngine(SER) {
   }
 
   function hiddenForAria(e) {
-    if (styleOf(e).visibility === 'hidden') return true;
+    if (tag(e) !== 'option' && styleOf(e).visibility === 'hidden') return true;
+    // Not rendered: display:none somewhere above, unslotted shadow-host
+    // children, closed <details> content. <option> renders inside its
+    // select's popup, so only its own display counts.
+    if (tag(e) === 'option') {
+      if (styleOf(e).display === 'none') return true;
+    } else if (typeof e.checkVisibility === 'function' && !e.checkVisibility()) {
+      return true;
+    }
     for (let a = e; a; a = parentOf(a)) {
       if (a.getAttribute && a.getAttribute('aria-hidden') === 'true') return true;
       if (a.nodeType === 1 && styleOf(a).display === 'none') return true;
@@ -408,9 +417,20 @@ export function installEngine(SER) {
         if (!lg || !lg.contains(e)) return true;
       }
     }
-    for (let a = e; a; a = parentOf(a)) if (attr(a, 'aria-disabled') === 'true') return true;
+    // aria-disabled reaches down only to elements that can be disabled.
+    if (attr(e, 'aria-disabled') === 'true') return true;
+    const native = /^(button|input|select|textarea|option|optgroup|fieldset)$/.test(tag(e));
+    if (!native && !DISABLEABLE.has(roleOf(e) || '')) return false;
+    for (let a = parentOf(e); a; a = parentOf(a)) if (attr(a, 'aria-disabled') === 'true') return true;
     return false;
   }
+
+  const DISABLEABLE = new Set([
+    'application', 'button', 'checkbox', 'columnheader', 'combobox', 'grid', 'gridcell', 'group', 'link',
+    'listbox', 'menu', 'menubar', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'radio',
+    'radiogroup', 'row', 'rowheader', 'scrollbar', 'searchbox', 'separator', 'slider', 'spinbutton',
+    'switch', 'tab', 'tablist', 'textbox', 'toolbar', 'tree', 'treegrid', 'treeitem',
+  ]);
 
   function roleQuery(root, q) {
     const o = q.o || {};
@@ -418,9 +438,12 @@ export function installEngine(SER) {
     return allUnder(root).filter((e) => {
       if (roleOf(e) !== q.role) return false;
       if (!o.includeHidden && hiddenForAria(e)) return false;
-      if (o.checked !== undefined && ariaChecked(e) !== o.checked) return false;
+      if (o.checked !== undefined && (ariaChecked(e) ?? false) !== o.checked) return false;
       if (o.disabled !== undefined && isDisabled(e) !== o.disabled) return false;
-      if (o.expanded !== undefined && (attr(e, 'aria-expanded') === 'true') !== o.expanded) return false;
+      if (o.expanded !== undefined) {
+        const x = attr(e, 'aria-expanded');
+        if (x === null || (x === 'true') !== o.expanded) return false;
+      }
       if (o.pressed !== undefined) {
         const p = attr(e, 'aria-pressed');
         const v = p === 'mixed' ? 'mixed' : p === 'true';
@@ -1531,6 +1554,28 @@ export function installEngine(SER) {
     adoptValue(v) {
       const done = (x) => ({ id: adopt(x), el: isEl(x) });
       return v && typeof v.then === 'function' ? v.then(done) : done(v);
+    },
+    /** Same-origin and cross-origin iframes, depth first: [id, parentId, name, url]. */
+    frames() {
+      const out = [];
+      const walk = (doc, parent) => {
+        for (const f of allUnder(doc)) {
+          if (f.nodeName !== 'IFRAME' && f.nodeName !== 'FRAME') continue;
+          const id = adopt(f);
+          let d = null;
+          let url = '';
+          try {
+            d = f.contentDocument;
+            url = d ? d.location.href : f.src;
+          } catch (_) {
+            url = f.src;
+          }
+          out.push([id, parent, attr(f, 'name') || '', url]);
+          if (d) walk(d, id);
+        }
+      };
+      walk(document, null);
+      return out;
     },
     props(id) {
       const v = HANDLES.get(id);

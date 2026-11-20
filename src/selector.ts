@@ -86,22 +86,72 @@ function textPart(body: string): BasePart {
   return { kind: 'text', text: q.value, exact: q.quoted && q.flag !== 'i', legacy: true };
 }
 
-function rolePart(body: string): ParsedPart {
-  const m = /^([a-z]+)((?:\[[^\]]*\])*)$/i.exec(body.trim());
-  if (!m) throw new Error(`unsupported role selector "role=${body}"`);
-  const options: ByRoleOptions = {};
-  for (const [, key, raw] of m[2]!.matchAll(/\[\s*([\w-]+)\s*(?:=\s*([^\]]*))?\]/g)) {
-    if (key === 'name' && raw !== undefined) {
-      const re = parseRegex(raw);
+const ROLE_ATTRS = ['checked', 'disabled', 'expanded', 'include-hidden', 'level', 'name', 'pressed', 'selected'];
+const ROLE_SUPPORT: Record<string, string[]> = {
+  checked: ['checkbox', 'menuitemcheckbox', 'option', 'radio', 'switch', 'menuitemradio', 'treeitem'],
+  pressed: ['button'],
+  selected: ['row', 'gridcell', 'tab', 'option', 'columnheader', 'rowheader', 'treeitem'],
+  level: ['heading', 'listitem', 'row', 'treeitem'],
+};
+
+/** `role=button[name="OK"i][pressed]`, with Playwright's attribute grammar and errors. */
+function rolePart(body: string): BasePart {
+  const src = body.trim();
+  const m = /^([a-zA-Z]*)([\s\S]*)$/.exec(src)!;
+  const role = m[1]!.toLowerCase();
+  if (!role) throw new Error('Error: Role must not be empty');
+  const options: ByRoleOptions & { nameFull?: boolean } = {};
+  let rest = m[2]!.trim();
+  while (rest) {
+    const a = /^\[\s*([^\]=*~^$|]*?)\s*(?:(\*=|~=|\^=|\$=|\|=|=)\s*((?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\/(?:[^/\\]|\\.)*\/[a-z]*|[^\]\s]*))\s*([is])?)?\s*\]/.exec(rest);
+    if (!a) throw new Error(`Error: Unexpected token while parsing role selector "role=${src}"`);
+    rest = rest.slice(a[0].length).trim();
+    const key = a[1]!.replace(/\s+/g, '');
+    const op = a[2];
+    const raw = a[3];
+    const flag = a[4];
+    if (!ROLE_ATTRS.includes(key)) {
+      throw new Error(`Error: Unknown attribute "${key}", must be one of ${ROLE_ATTRS.map((x) => `"${x}"`).join(', ')}.`);
+    }
+    const supported = ROLE_SUPPORT[key];
+    if (supported && !supported.includes(role)) {
+      throw new Error(`Error: "${key}" attribute is only supported for roles: ${supported.map((x) => `"${x}"`).join(', ')}`);
+    }
+    const quoted = raw !== undefined && /^["']/.test(raw);
+    const value = raw === undefined ? undefined : quoted ? unquote(raw).value : raw;
+    if (op && op !== '=' && !(key === 'name' && op === '*=')) {
+      if (key !== 'name') throw new Error(`Error: cannot use ${op} in attribute with non-string matching value`);
+    }
+    if (key === 'name') {
+      if (value === undefined) throw new Error('Error: "name" attribute must have a value');
+      const re = !quoted ? parseRegex(raw!) : null;
       if (re) options.name = re;
+      else if (op === '*=') options.name = value;
       else {
-        const q = unquote(raw);
-        options.name = q.value;
-        if (q.flag === 's') options.exact = true;
+        options.name = value;
+        if (flag === 's') options.exact = true;
+        else options.nameFull = true;
       }
-    } else if (key === 'level' && raw !== undefined) options.level = Number(raw);
+      continue;
+    }
+    if (key === 'level') {
+      const n = Number(value);
+      if (value === undefined || quoted || !Number.isInteger(n)) throw new Error('Error: "level" attribute must be compared to a number');
+      options.level = n;
+      continue;
+    }
+    // Boolean states: bare means true.
+    let v: boolean | 'mixed';
+    if (value === undefined) v = true;
+    else if (value === 'true' && !quoted) v = true;
+    else if (value === 'false' && !quoted) v = false;
+    else if (value === 'mixed' && (key === 'checked' || key === 'pressed')) v = 'mixed';
+    else if (key === 'checked' || key === 'pressed') throw new Error(`Error: "${key}" must be one of true, false, "mixed"`);
+    else throw new Error(`Error: "${key}" must be one of true, false`);
+    if (key === 'include-hidden') options.includeHidden = v === true;
+    else (options as Record<string, unknown>)[key] = v;
   }
-  return { kind: 'role', role: m[1]!.toLowerCase(), options };
+  return { kind: 'role', role, options };
 }
 
 const PSEUDO = /:(has-text|text-is|text-matches|text|visible)(?:\(((?:[^()"']|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*)\))?$/;

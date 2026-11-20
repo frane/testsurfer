@@ -23,7 +23,9 @@ test('CSS passes through whole, pseudos and all', () => {
 
 test('engines: nth, role, id, xpath', () => {
   assert.deepEqual(parseSelector('div >> nth=1')[1], { kind: 'nth', index: 1 });
-  assert.deepEqual(parseSelector('role=button[name="OK"]'), [{ kind: 'role', role: 'button', options: { name: 'OK' } }]);
+  assert.deepEqual(parseSelector('role=button[name="OK"]'), [
+    { kind: 'role', role: 'button', options: { name: 'OK', nameFull: true } },
+  ]);
   assert.deepEqual(parseSelector('id=foo'), [{ kind: 'attr', attr: 'id', value: 'foo' }]);
   assert.equal(parseSelector('xpath=//a')[0]?.kind, 'xpath');
   assert.throws(() => parseSelector('nope=1'), /Unknown engine "nope"/);

@@ -42,3 +42,4 @@ export {
 } from './events.ts';
 export type { TestInfo } from './testinfo.ts';
 export { APIRequestContext, type RequestOptions } from './request.ts';
+export { Frame } from './frame.ts';

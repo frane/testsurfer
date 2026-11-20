@@ -51,6 +51,7 @@ import {
 } from './locator.ts';
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
+import { Frame } from './frame.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
 import { decodePng, encodePng } from './png.ts';
 
@@ -867,6 +868,47 @@ export class Page {
   /** Every element matching `selector`. */
   async $$(selector: string): Promise<ElementHandle[]> {
     return this.locator(selector).elementHandles();
+  }
+
+  private main: Frame | null = null;
+
+  /** The page's top frame. */
+  mainFrame(): Frame {
+    this.main ??= new Frame(this, null, null);
+    return this.main;
+  }
+
+  /** The main frame, then every iframe, depth first. */
+  async frames(): Promise<Frame[]> {
+    const rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string][];
+    const out: Frame[] = [this.mainFrame()];
+    const byId = new Map<number, Frame>();
+    for (const [id, parent, name, url] of rows) {
+      const f = new Frame(this, new ElementHandle(this, id), parent === null ? this.mainFrame() : (byId.get(parent) ?? this.mainFrame()));
+      f.frameName = name;
+      f.frameUrl = url;
+      byId.set(id, f);
+      out.push(f);
+    }
+    return out;
+  }
+
+  /** A frame by name, or by URL (string, RegExp or predicate). */
+  async frame(match: string | { name?: string; url?: string | RegExp | ((u: URL) => boolean) }): Promise<Frame | null> {
+    const all = await this.frames();
+    const m = typeof match === 'string' ? { name: match } : match;
+    return (
+      all.find((f) => {
+        if (m.name !== undefined && f.name() !== m.name) return false;
+        if (m.url !== undefined) {
+          const u = f === this.main ? '' : f.frameUrl;
+          if (typeof m.url === 'string' && u !== m.url) return false;
+          if (m.url instanceof RegExp && !m.url.test(u)) return false;
+          if (typeof m.url === 'function' && !(u && m.url(new URL(u)))) return false;
+        }
+        return true;
+      }) ?? null
+    );
   }
 
   /** Like evaluate(), but keeps the result in the page and returns a handle to it. */
