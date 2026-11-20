@@ -1,35 +1,34 @@
 /**
- * Locators: lazy, re-resolving element handles over the a11y tree.
+ * Locators: lazy, re-resolving element queries.
  *
- * A locator stores a chain of queries, not a ref. Every action and
- * assertion re-resolves the chain against a fresh view, so locators
- * survive re-renders and navigation. Actions retry on STALE_TOKEN and
- * NOT_FOUND until the action timeout elapses.
- *
- * Role, text and label queries match the tree directly. CSS and
- * attribute queries (locator(), getByTestId, getByPlaceholder,
- * getByAltText, getByTitle) run in the page and map each element to
- * its tree node through the `data-vs-ref` attribute vibesurfer puts on
- * every element it reports. An element the tree does not report
- * resolves to the first reported element inside it (a wrapper div),
- * or, with nothing reported inside, to its nearest reported ancestor
- * (a span whose text the tree folded into its parent).
+ * A locator stores a chain of queries, never an element. Every action
+ * and read resolves the chain again, in the page, through the engine
+ * in src/injected.ts, so locators survive re-renders and navigation.
+ * Single-element operations are strict: more than one match is an
+ * error unless first(), last() or nth() picks one. Actions wait until
+ * the element is attached, visible, enabled and not covered, then
+ * click with trusted native input at its center.
  */
 
-import { StrictModeError, TimeoutError, WireError } from './errors.ts';
-import { isHidden, walk, type Snapshot, type TreeNode } from './tree.ts';
+import { parseSelector, type CssExtras } from './selector.ts';
+import { StrictModeError, TimeoutError } from './errors.ts';
 import { renderSnapshot } from './aria.ts';
-import { ROLE_TO_CODES } from './roles.ts';
-import type { LayoutRect, Page } from './page.ts';
-
-const FIELD_CODES = new Set(['tf', 'ta', 'sel', 'chk', 'rad']);
+import { serializeValue } from './serialize.ts';
+import type { Snapshot } from './tree.ts';
+import type { Page } from './page.ts';
 
 export interface ByRoleOptions {
-  /** Accessible name. String: whole-string, case-insensitive (case-sensitive with exact). RegExp: tested as-is. */
+  /** Accessible name. String: case-insensitive substring (whole string and case-sensitive with exact). RegExp: tested as-is. */
   name?: string | RegExp;
   exact?: boolean;
-  /** Heading level, matched against the node's level attribute. */
+  checked?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  includeHidden?: boolean;
+  /** Heading level, from h1-h6 or aria-level. */
   level?: number;
+  pressed?: boolean;
+  selected?: boolean;
 }
 
 export interface ByTextOptions {
@@ -38,9 +37,9 @@ export interface ByTextOptions {
 }
 
 export interface FilterOptions {
-  /** Keep matches whose subtree text contains this (substring, case-insensitive) or matches the RegExp. */
+  /** Keep matches whose text contains this (substring, case-insensitive) or matches the RegExp. */
   hasText?: string | RegExp;
-  /** Drop matches whose subtree text contains this. */
+  /** Drop matches whose text contains this. */
   hasNotText?: string | RegExp;
   /** Keep matches that contain an element matching this locator. */
   has?: Locator;
@@ -50,224 +49,238 @@ export interface FilterOptions {
   visible?: boolean;
 }
 
+/** page.locator() / locator.locator() options: the same filters, minus visible. */
+export type LocatorOptions = Omit<FilterOptions, 'visible'>;
+
 export type LocatorQuery =
   | { kind: 'role'; role: string; options: ByRoleOptions }
   | { kind: 'text'; text: string | RegExp; options: ByTextOptions }
   | { kind: 'label'; text: string | RegExp; options: ByTextOptions }
-  | { kind: 'css'; selector: string }
+  | { kind: 'css'; selector: string; extras?: CssExtras }
+  | { kind: 'xpath'; xpath: string }
   | { kind: 'attr'; method: string; attr: string; value: string | RegExp; exact: boolean }
-  | { kind: 'and' | 'or'; left: Locator; right: Locator };
+  | { kind: 'and' | 'or'; left: Locator; right: Locator }
+  | { kind: 'frame' }
+  /** The previous step's matches themselves, so an index or filter can apply after an index. */
+  | { kind: 'self' };
 
 /** One link of a chain: a query, its filters, and an optional index. */
-interface Step {
+export interface Step {
   query: LocatorQuery;
   filters: FilterOptions[];
   /** nth() index; negative counts from the end (last() is -1). */
   index: number | null;
 }
 
-const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
-
-function matchesName(label: string, expected: string | RegExp, exact: boolean): boolean {
-  const norm = normalize(label);
-  if (expected instanceof RegExp) return expected.test(norm);
-  const want = normalize(expected);
-  return exact ? norm === want : norm.toLowerCase() === want.toLowerCase();
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
-function matchesText(label: string, expected: string | RegExp, exact: boolean): boolean {
-  const norm = normalize(label);
-  if (expected instanceof RegExp) return expected.test(norm);
-  const want = normalize(expected);
-  return exact ? norm === want : norm.toLowerCase().includes(want.toLowerCase());
+export interface ActionOptions {
+  timeout?: number;
+  force?: boolean;
+  noWaitAfter?: boolean;
+  trial?: boolean;
 }
 
-/** A node's label plus, for a labelled form field, its <label> text. */
-function names(node: TreeNode): string[] {
-  const lbl = node.attrs['lbl'];
-  return lbl ? [node.label, lbl] : [node.label];
+export interface ClickOptions extends ActionOptions {
+  button?: 'left' | 'right' | 'middle';
+  clickCount?: number;
+  delay?: number;
+  modifiers?: ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[];
+  position?: { x: number; y: number };
 }
 
-export type TreeQuery = Extract<LocatorQuery, { kind: 'role' | 'text' | 'label' }>;
+export type SelectOptionValue = string | { value?: string; label?: string; index?: number };
 
-function matchesQuery(node: TreeNode, query: TreeQuery): boolean {
-  switch (query.kind) {
-    case 'role': {
-      const codes = ROLE_TO_CODES[query.role] ?? [query.role];
-      if (!codes.includes(node.role)) return false;
-      const { name, exact = false, level } = query.options;
-      if (level !== undefined && node.attrs['level'] !== String(level)) return false;
-      if (name !== undefined && !names(node).some((n) => matchesName(n, name, exact))) return false;
-      return true;
-    }
-    case 'text':
-      return node.label !== '' && matchesText(node.label, query.text, query.options.exact ?? false);
-    case 'label': {
-      // The field's <label> text (lbl=, vibesurfer 0.2.12+) is the
-      // label; aria-label lands in the node label itself.
-      if (!FIELD_CODES.has(node.role)) return false;
-      const exact = query.options.exact ?? false;
-      return names(node).some((n) => matchesText(n, query.text, exact));
-    }
-  }
+export type InputFile = string | { name: string; mimeType: string; buffer: Buffer };
+
+// --- describing ----------------------------------------------------------
+
+/** A string in Playwright's locator notation: single quotes, escaped. */
+const q = (s: string) => `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+const lit = (v: string | RegExp) => (v instanceof RegExp ? String(v) : q(v));
+
+function describeOptions(o: Record<string, unknown>): string {
+  const parts = Object.entries(o)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}: ${typeof v === 'string' || v instanceof RegExp ? lit(v) : String(v)}`);
+  return parts.length ? `, { ${parts.join(', ')} }` : '';
 }
-
-const str = (v: string | RegExp) => (v instanceof RegExp ? String(v) : JSON.stringify(v));
 
 export function describeQuery(query: LocatorQuery): string {
   switch (query.kind) {
     case 'role':
-      return `getByRole(${JSON.stringify(query.role)}${
-        query.options.name !== undefined ? `, { name: ${str(query.options.name)} }` : ''
-      })`;
+      return `getByRole(${q(query.role)}${describeOptions({ ...query.options })})`;
     case 'text':
-      return `getByText(${str(query.text)})`;
+      return `getByText(${lit(query.text)}${query.options.exact ? ', { exact: true }' : ''})`;
     case 'label':
-      return `getByLabel(${str(query.text)})`;
+      return `getByLabel(${lit(query.text)}${query.options.exact ? ', { exact: true }' : ''})`;
     case 'css':
-      return `locator(${JSON.stringify(query.selector)})`;
+      return `locator(${q(query.selector)})`;
+    case 'xpath':
+      return `locator(${q(`xpath=${query.xpath}`)})`;
     case 'attr':
-      return `${query.method}(${str(query.value)})`;
+      return query.method === 'locator'
+        ? `locator(${q(`${query.attr}=${String(query.value)}`)})`
+        : `${query.method}(${lit(query.value)}${!query.exact || query.method === 'getByTestId' ? '' : ', { exact: true }'})`;
     case 'and':
     case 'or':
       return `${query.left.toString()}.${query.kind}(${query.right.toString()})`;
+    case 'frame':
+      return 'contentFrame()';
+    case 'self':
+      return '';
   }
 }
 
 function describeFilter(f: FilterOptions): string {
   const parts: string[] = [];
-  if (f.hasText !== undefined) parts.push(`hasText: ${str(f.hasText)}`);
-  if (f.hasNotText !== undefined) parts.push(`hasNotText: ${str(f.hasNotText)}`);
+  if (f.hasText !== undefined) parts.push(`hasText: ${lit(f.hasText)}`);
+  if (f.hasNotText !== undefined) parts.push(`hasNotText: ${lit(f.hasNotText)}`);
   if (f.has) parts.push(`has: ${f.has.toString()}`);
   if (f.hasNot) parts.push(`hasNot: ${f.hasNot.toString()}`);
   if (f.visible !== undefined) parts.push(`visible: ${f.visible}`);
   return `filter({ ${parts.join(', ')} })`;
 }
 
-/** Tree-query matches over the whole snapshot, in document order. */
-export function findMatches(snap: Snapshot, query: TreeQuery): TreeNode[] {
-  const out: TreeNode[] = [];
-  for (const node of walk(snap)) {
-    if (matchesQuery(node, query)) out.push(node);
+// --- wire form -------------------------------------------------------------
+
+type WireMatcher = { s: string; exact: boolean } | { re: [string, string] };
+
+const wm = (v: string | RegExp, exact = false): WireMatcher =>
+  v instanceof RegExp ? { re: [v.source, v.flags] } : { s: v, exact };
+
+function wireQuery(query: LocatorQuery): Record<string, unknown> {
+  switch (query.kind) {
+    case 'role': {
+      const { name, exact, ...rest } = query.options;
+      return { k: 'role', role: query.role, o: { ...rest, ...(name !== undefined ? { name: wm(name, exact) } : {}) } };
+    }
+    case 'text':
+      return { k: 'text', t: wm(query.text, query.options.exact) };
+    case 'label':
+      return { k: 'label', t: wm(query.text, query.options.exact) };
+    case 'css':
+      return { k: 'css', sel: query.selector, x: query.extras && Object.keys(query.extras).length ? query.extras : undefined };
+    case 'xpath':
+      return { k: 'xpath', xp: query.xpath };
+    case 'attr':
+      return { k: 'attr', a: query.attr, t: wm(query.value, query.exact), testid: query.method === 'getByTestId' || query.method === 'locator' };
+    case 'and':
+    case 'or':
+      return { k: query.kind, l: query.left.wire(), r: query.right.wire() };
+    case 'frame':
+      return { k: 'frame' };
+    case 'self':
+      return { k: 'self' };
   }
-  return out;
 }
 
-/** Refs strictly below `node` in the tree. */
-function treeDescendants(snap: Snapshot, node: TreeNode, into: Set<number>): void {
-  for (const c of node.children) {
-    into.add(c);
-    const child = snap.nodes.get(c);
-    if (child) treeDescendants(snap, child, into);
-  }
+function wireFilter(f: FilterOptions): Record<string, unknown> {
+  return {
+    hasText: f.hasText !== undefined ? wm(f.hasText) : undefined,
+    hasNotText: f.hasNotText !== undefined ? wm(f.hasNotText) : undefined,
+    has: f.has ? f.has.wire() : undefined,
+    hasNot: f.hasNot ? f.hasNot.wire() : undefined,
+    visible: f.visible,
+  };
 }
 
-const orderCache = new WeakMap<Snapshot, Map<number, number>>();
-function docOrder(snap: Snapshot): Map<number, number> {
-  let m = orderCache.get(snap);
-  if (!m) {
-    m = new Map();
-    let i = 0;
-    for (const n of walk(snap)) m.set(n.ref, i++);
-    orderCache.set(snap, m);
-  }
-  return m;
-}
-
-/**
- * Matches of one resolution pass. `inner` holds, for a match found by
- * a DOM query, the refs inside its element: that is the scope a chained
- * query searches.
- */
-interface Found {
-  nodes: TreeNode[];
-  inner: Map<number, number[]>;
-}
-
-/**
- * Page-side querySelectorAll that also searches open shadow roots, as
- * Playwright's CSS engine does. vibesurfer's walker reports elements
- * inside open shadow roots, so they have refs too.
- */
-const DEEP_JS =
-  `function deep(root,sel){var out=[].slice.call(root.querySelectorAll(sel));` +
-  `var hosts=[root].concat([].slice.call(root.querySelectorAll('*')));` +
-  `for(var i=0;i<hosts.length;i++){var h=hosts[i];if(h.shadowRoot)out=out.concat(deep(h.shadowRoot,sel));` +
-  `if(h.tagName==='IFRAME'||h.tagName==='FRAME'){var d=null;try{d=h.contentDocument;}catch(e){}if(d)out=out.concat(deep(d,sel));}}return out;}`;
-
-/** Parent element, stepping out of a shadow root to its host and out of a frame to its iframe. */
-const PARENT_JS =
-  `function up(e){var r=e.getRootNode&&e.getRootNode();return e.parentElement||(r&&r.host)||` +
-  `(e.ownerDocument&&e.ownerDocument.defaultView&&e.ownerDocument.defaultView.frameElement)||null;}`;
-
-/** The element carrying `ref`, wherever it is. */
-export const FIND_REF_JS = (ref: number) =>
-  `(window.__vsFindRef?window.__vsFindRef(${ref}):document.querySelector('[data-vs-ref="${ref}"]'))`;
-
-/** Page-side collector: element -> [target ref, refs inside, mapped up]. */
-const COLLECT_JS =
-  `function(els){var deep=${DEEP_JS};var up=${PARENT_JS};var out=[];for(var i=0;i<els.length;i++){var el=els[i];` +
-  `var inner=deep(el,'[data-vs-ref]').map(function(e){return +e.getAttribute('data-vs-ref')});` +
-  `var t=el.getAttribute('data-vs-ref');var climbed=0;if(t!==null){t=+t;}else if(inner.length){t=inner[0];}` +
-  `else{var a=up(el);while(a&&!a.hasAttribute('data-vs-ref'))a=up(a);if(!a)continue;t=+a.getAttribute('data-vs-ref');climbed=1;}` +
-  `out.push([t,inner,climbed]);}return out;}`;
-
-function domQueryJs(query: Extract<LocatorQuery, { kind: 'css' | 'attr' }>): string {
-  if (query.kind === 'css') {
-    return `(function(){var c=${COLLECT_JS};var deep=${DEEP_JS};return c(deep(document,${JSON.stringify(query.selector)}));})()`;
-  }
-  const v = query.value;
-  const test =
-    v instanceof RegExp
-      ? `var re=new RegExp(${JSON.stringify(v.source)},${JSON.stringify(v.flags.replace('g', ''))});var ok=function(s){return re.test(n(s));};`
-      : query.exact
-        ? `var w=n(${JSON.stringify(v)});var ok=function(s){return n(s)===w;};`
-        : `var w=n(${JSON.stringify(v)}).toLowerCase();var ok=function(s){return n(s).toLowerCase().indexOf(w)>=0;};`;
-  return (
-    `(function(){var c=${COLLECT_JS};var n=function(s){return String(s).replace(/\\s+/g,' ').trim();};${test}` +
-    `var deep=${DEEP_JS};var a=${JSON.stringify(query.attr)};var all=deep(document,'['+CSS.escape(a)+']');var els=[];` +
-    `for(var i=0;i<all.length;i++){if(ok(all[i].getAttribute(a)))els.push(all[i]);}return c(els);})()`
-  );
-}
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const POLL_MS = 10;
-
-/** Drop hid-marked matches when at least one unmarked match exists. */
-function preferVisible(snap: Snapshot, all: TreeNode[]): TreeNode[] {
-  const visible = all.filter((n) => !isHidden(snap, n));
-  return visible.length > 0 ? visible : all;
-}
-
-function pickIndex<T>(items: T[], index: number): T[] {
-  const item = index < 0 ? items[items.length + index] : items[index];
-  return item === undefined ? [] : [item];
-}
-
-interface DomState {
-  disabled: boolean;
-  editable: boolean;
-  focused: boolean;
-}
+// --- selectors -----------------------------------------------------------
 
 export function byAttr(method: string, attr: string, value: string | RegExp, exact: boolean): LocatorQuery {
   return { kind: 'attr', method, attr, value, exact };
 }
 
-export class Locator {
-  private readonly page: Page;
-  private readonly steps: Step[];
-  /** Refs from the previous visibility resolve, used as the composite layout hint. */
-  private layoutHint: number[] = [];
+const step = (query: LocatorQuery): Step => ({ query, filters: [], index: null });
 
-  constructor(page: Page, steps: Step[] | LocatorQuery) {
-    this.page = page;
-    this.steps = Array.isArray(steps) ? steps : [{ query: steps, filters: [], index: null }];
+/** A Playwright selector string as chain steps. */
+export function selectorSteps(selector: string): Step[] {
+  const steps: Step[] = [];
+  const last = (what: string): Step => {
+    const s = steps[steps.length - 1];
+    if (!s) throw new Error(`"${what}" cannot start a selector`);
+    return s;
+  };
+  for (const p of parseSelector(selector)) {
+    switch (p.kind) {
+      case 'nth':
+        last('nth=').index = p.index;
+        break;
+      case 'visible':
+        last('visible=').filters.push({ visible: p.visible });
+        break;
+      case 'css':
+        steps.push(step({ kind: 'css', selector: p.selector, extras: p.extras }));
+        break;
+      case 'xpath':
+        steps.push(step(p));
+        break;
+      case 'text':
+        steps.push(step({ kind: 'text', text: p.text, options: { exact: p.exact } }));
+        break;
+      case 'attr':
+        steps.push(step(byAttr('locator', p.attr, p.value, true)));
+        break;
+      case 'role':
+        steps.push(step({ kind: 'role', role: p.role, options: p.options }));
+        break;
+    }
+  }
+  if (steps.length === 0) throw new Error(`empty selector "${selector}"`);
+  return steps;
+}
+
+// --- resolution ----------------------------------------------------------
+
+interface RunResult<T> {
+  v?: T;
+  n?: number;
+  none?: boolean;
+  strict?: string[];
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Retry cadence, as Playwright's: fast at first, then backing off. */
+const BACKOFF = [0, 20, 50, 100, 100, 250];
+
+const isRetry = (v: unknown): v is { retry: string } =>
+  typeof v === 'object' && v !== null && 'retry' in v && typeof (v as { retry: unknown }).retry === 'string';
+
+const MIME: Record<string, string> = {
+  '.txt': 'text/plain', '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
+  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.webp': 'image/webp', '.csv': 'text/csv', '.zip': 'application/zip',
+};
+
+export class Locator {
+  private readonly owner: Page;
+  private readonly steps: Step[];
+  private readonly description: string | undefined;
+
+  constructor(page: Page, steps: Step[] | LocatorQuery, description?: string) {
+    this.owner = page;
+    this.steps = Array.isArray(steps) ? steps : [step(steps)];
+    this.description = description;
   }
 
   /** The owning page's expect timeout, used as the assertion default. */
   get expectTimeout(): number {
-    return this.page.timeouts.expect;
+    return this.owner.timeouts.expect;
+  }
+
+  /** The page this locator belongs to. */
+  page(): Page {
+    return this.owner;
+  }
+
+  /** The chain in the engine's wire form. */
+  wire(): unknown[] {
+    return this.steps.map((s) => ({ q: wireQuery(s.query), f: s.filters.map(wireFilter), i: s.index }));
   }
 
   private get tail(): Step {
@@ -276,54 +289,54 @@ export class Locator {
     return s;
   }
 
-  private get index(): number | null {
-    return this.tail.index;
+  private withTail(change: Partial<Step>): Locator {
+    return new Locator(this.owner, [...this.steps.slice(0, -1), { ...this.tail, ...change }]);
   }
 
-  private withTail(change: Partial<Step>): Locator {
-    return new Locator(this.page, [...this.steps.slice(0, -1), { ...this.tail, ...change }]);
+  /** This chain followed by `more`. */
+  extendWith(more: Step[]): Locator {
+    return new Locator(this.owner, [...this.steps, ...more]);
   }
 
   private chain(query: LocatorQuery): Locator {
-    return new Locator(this.page, [...this.steps, { query, filters: [], index: null }]);
+    return this.extendWith([step(query)]);
   }
 
   // --- building -------------------------------------------------------
 
-  /** Pick the first match instead of failing on multiple matches. */
   first(): Locator {
     return this.nth(0);
   }
 
-  /** Pick the last match. */
   last(): Locator {
     return this.nth(-1);
   }
 
-  /** Pick the i-th match (0-based; negative counts from the end). */
+  /** The i-th match (0-based; negative counts from the end). */
   nth(index: number): Locator {
+    // An index after an index picks among that one match.
+    if (this.tail.index !== null) return this.extendWith([{ query: { kind: 'self' }, filters: [], index }]);
     return this.withTail({ index });
   }
 
-  /** Narrow the matches by text, by a contained element, or by visibility. */
   filter(options: FilterOptions): Locator {
+    // A filter after an index filters that one match.
+    if (this.tail.index !== null) return this.extendWith([{ query: { kind: 'self' }, filters: [options], index: null }]);
     return this.withTail({ filters: [...this.tail.filters, options] });
   }
 
-  /** Elements matching both this locator and `other`. */
   and(other: Locator): Locator {
-    return new Locator(this.page, { kind: 'and', left: this, right: other });
+    return new Locator(this.owner, { kind: 'and', left: this, right: other });
   }
 
-  /** Elements matching either this locator or `other`, in document order. */
   or(other: Locator): Locator {
-    return new Locator(this.page, { kind: 'or', left: this, right: other });
+    return new Locator(this.owner, { kind: 'or', left: this, right: other });
   }
 
-  /** A CSS selector (or another locator) searched inside this locator's matches. */
-  locator(selector: string | Locator): Locator {
-    if (typeof selector !== 'string') return new Locator(this.page, [...this.steps, ...selector.steps]);
-    return this.chain({ kind: 'css', selector });
+  /** A selector (or another locator) searched inside this locator's matches. */
+  locator(selector: string | Locator, options?: LocatorOptions): Locator {
+    const l = typeof selector !== 'string' ? this.extendWith(selector.steps) : this.extendWith(selectorSteps(selector));
+    return options && Object.keys(options).length ? l.filter(options) : l;
   }
 
   getByRole(role: string, options: ByRoleOptions = {}): Locator {
@@ -338,9 +351,8 @@ export class Locator {
     return this.chain({ kind: 'label', text, options });
   }
 
-  /** Exact match on the test-id attribute (`data-testid` unless configured otherwise). */
   getByTestId(id: string | RegExp): Locator {
-    return this.chain(byAttr('getByTestId', this.page.testIdAttribute, id, true));
+    return this.chain(byAttr('getByTestId', this.owner.testIdAttribute, id, true));
   }
 
   getByPlaceholder(text: string | RegExp, options: ByTextOptions = {}): Locator {
@@ -355,439 +367,7 @@ export class Locator {
     return this.chain(byAttr('getByTitle', 'title', text, options.exact ?? false));
   }
 
-  toString(): string {
-    return this.steps
-      .map((s) => {
-        let out = describeQuery(s.query);
-        for (const f of s.filters) out += `.${describeFilter(f)}`;
-        if (s.index !== null) out += s.index === -1 ? '.last()' : `.nth(${s.index})`;
-        return out;
-      })
-      .join('.');
-  }
-
-  // --- resolving ------------------------------------------------------
-
-  /** Candidates for one query inside `scope` (null: the whole page). */
-  private async candidates(
-    snap: Snapshot,
-    query: LocatorQuery,
-    scope: Set<number> | null,
-    owners: Set<number>,
-  ): Promise<Found> {
-    const inScope = (n: TreeNode) => scope === null || scope.has(n.ref);
-    switch (query.kind) {
-      case 'role':
-      case 'text':
-      case 'label':
-        return { nodes: findMatches(snap, query).filter(inScope), inner: new Map() };
-      case 'css':
-      case 'attr': {
-        const rows = await this.page.evaluate<[number, number[], number][] | null>(domQueryJs(query));
-        const nodes: TreeNode[] = [];
-        const inner = new Map<number, number[]>();
-        for (const [ref, refs, up] of rows ?? []) {
-          const node = snap.nodes.get(ref);
-          // An element mapped up to its ancestor may land on the
-          // element the chain is searching inside.
-          const ok = node !== undefined && (inScope(node) || (up === 1 && owners.has(ref)));
-          if (!node || !ok || inner.has(ref)) continue;
-          nodes.push(node);
-          inner.set(ref, refs);
-        }
-        return { nodes, inner };
-      }
-      case 'and': {
-        const a = await query.left.matchIn(snap, scope);
-        const b = new Set((await query.right.matchIn(snap, scope)).nodes.map((n) => n.ref));
-        return { nodes: a.nodes.filter((n) => b.has(n.ref)), inner: a.inner };
-      }
-      case 'or': {
-        const a = await query.left.matchIn(snap, scope);
-        const b = await query.right.matchIn(snap, scope);
-        const seen = new Map<number, TreeNode>();
-        for (const n of [...a.nodes, ...b.nodes]) seen.set(n.ref, n);
-        const order = docOrder(snap);
-        const nodes = [...seen.values()].sort((x, y) => (order.get(x.ref) ?? 0) - (order.get(y.ref) ?? 0));
-        return { nodes, inner: new Map([...b.inner, ...a.inner]) };
-      }
-    }
-  }
-
-  /** What a chained query searches inside `nodes`. */
-  private static scopeOf(snap: Snapshot, found: Found, nodes: TreeNode[]): Set<number> {
-    const scope = new Set<number>();
-    for (const n of nodes) {
-      treeDescendants(snap, n, scope);
-      // `inner` never holds an element's own ref; when it holds the
-      // match's ref, the match stands in for a wrapper without one and
-      // must stay searchable.
-      for (const r of found.inner.get(n.ref) ?? []) {
-        scope.add(r);
-        const node = snap.nodes.get(r);
-        if (node) treeDescendants(snap, node, scope);
-      }
-    }
-    return scope;
-  }
-
-  private async applyFilter(snap: Snapshot, found: Found, f: FilterOptions): Promise<TreeNode[]> {
-    let nodes = found.nodes;
-    const subtree = (n: TreeNode) => Locator.scopeOf(snap, found, [n]);
-    const text = (n: TreeNode) =>
-      [n.label, ...[...subtree(n)].map((r) => snap.nodes.get(r)?.label ?? '')].filter(Boolean).join(' ');
-    if (f.hasText !== undefined) {
-      const want = f.hasText;
-      nodes = nodes.filter((n) => matchesText(text(n), want, false));
-    }
-    if (f.hasNotText !== undefined) {
-      const want = f.hasNotText;
-      nodes = nodes.filter((n) => !matchesText(text(n), want, false));
-    }
-    if (f.has || f.hasNot) {
-      const kept: TreeNode[] = [];
-      for (const n of nodes) {
-        const scope = subtree(n);
-        if (f.has && (await f.has.matchIn(snap, scope)).nodes.length === 0) continue;
-        if (f.hasNot && (await f.hasNot.matchIn(snap, scope)).nodes.length > 0) continue;
-        kept.push(n);
-      }
-      nodes = kept;
-    }
-    if (f.visible !== undefined) {
-      const shown = nodes.filter((n) => !isHidden(snap, n));
-      const rects: Map<number, LayoutRect> =
-        shown.length > 0 ? await this.page.layout(shown.map((n) => n.ref)) : new Map();
-      const isShown = (n: TreeNode) => !isHidden(snap, n) && rects.get(n.ref)?.visible === true;
-      nodes = nodes.filter((n) => isShown(n) === f.visible);
-    }
-    return nodes;
-  }
-
-  /**
-   * Matches of the whole chain inside `scope`. Each step searches the
-   * previous step's matches. The outermost locator's own index is left
-   * to the caller (strict mode or count); inside a nested locator
-   * (has:, and/or) it applies here.
-   */
-  async matchIn(snap: Snapshot, scope: Set<number> | null): Promise<Found> {
-    let current = scope;
-    let owners = new Set<number>();
-    let found: Found = { nodes: [], inner: new Map() };
-    for (let i = 0; i < this.steps.length; i++) {
-      const step = this.steps[i];
-      if (!step) break;
-      found = await this.candidates(snap, step.query, current, owners);
-      for (const f of step.filters) found = { ...found, nodes: await this.applyFilter(snap, found, f) };
-      if (i === this.steps.length - 1) {
-        if (scope !== null && step.index !== null) found = { ...found, nodes: pickIndex(found.nodes, step.index) };
-        break;
-      }
-      const picked = step.index === null ? found.nodes : pickIndex(found.nodes, step.index);
-      current = Locator.scopeOf(snap, found, picked);
-      owners = new Set(picked.map((n) => n.ref));
-    }
-    return found;
-  }
-
-  /**
-   * All current matches against a fresh view. Visible matches are
-   * preferred, judged from the tree alone (hid=1 on self or ancestor):
-   * hidden duplicates of interactive elements are dropped when a
-   * visible one exists. No layout round trip.
-   */
-  async resolveAll(): Promise<TreeNode[]> {
-    const snap = await this.page.view();
-    return preferVisible(snap, (await this.matchIn(snap, null)).nodes);
-  }
-
-  /**
-   * Matches that are currently visible. Interactive refs carry hid=1
-   * in the tree, but hidden non-interactive elements (a heading inside
-   * a `hidden` container) do not, so survivors are verified against
-   * vs_layout's per-ref visible flag.
-   */
-  async resolveVisible(): Promise<TreeNode[]> {
-    // Polling assertions resolve the same query repeatedly; the ref
-    // set from the previous poll rides along as a --layout composite
-    // hint, making the steady-state poll a single round trip. Refs
-    // that changed since last time are fetched separately.
-    const { snap, rects } = await this.page.viewWithLayout(this.layoutHint);
-    const candidates = (await this.matchIn(snap, null)).nodes.filter((n) => !isHidden(snap, n));
-    this.layoutHint = candidates.map((n) => n.ref);
-    if (candidates.length === 0) return [];
-    const missing = candidates.filter((n) => !rects.has(n.ref));
-    if (missing.length > 0) {
-      const more = await this.page.layout(missing.map((n) => n.ref));
-      for (const [ref, rect] of more) rects.set(ref, rect);
-    }
-    return candidates.filter((n) => rects.get(n.ref)?.visible === true);
-  }
-
-  /** Strict-mode selection: exactly one node, nth() overrides, null when none. */
-  private pickOne(matches: TreeNode[]): TreeNode | null {
-    if (this.index !== null) return pickIndex(matches, this.index)[0] ?? null;
-    if (matches.length === 0) return null;
-    if (matches.length > 1) {
-      const list = matches
-        .slice(0, 5)
-        .map((m) => `  ref=${m.ref} ${m.role} ${JSON.stringify(m.label)}`)
-        .join('\n');
-      throw new StrictModeError(
-        `${this.toString()} matched ${matches.length} elements:\n${list}\nNarrow the query or use .first() / .nth(i).`,
-      );
-    }
-    return matches[0] ?? null;
-  }
-
-  /**
-   * Resolve an action target against the cached snapshot when it is
-   * still baseline-synced. Optimistic concurrency covers the race: if
-   * the page changed since, the act fails with STALE_TOKEN, the retry
-   * loop refreshes, and we re-resolve.
-   */
-  private async resolveForAction(): Promise<TreeNode | null> {
-    const snap = await this.page.actionSnapshot();
-    return this.pickOne(preferVisible(snap, (await this.matchIn(snap, null)).nodes));
-  }
-
-  /** Wait until the locator resolves to one node, then run the action, retrying on staleness. */
-  private async withResolved<T>(
-    actionName: string,
-    action: (node: TreeNode) => Promise<T>,
-    timeout?: number,
-  ): Promise<T> {
-    const budget = timeout ?? this.page.timeouts.action;
-    const deadline = Date.now() + budget;
-    let lastNote = 'no matching element';
-    for (;;) {
-      let stale = false;
-      try {
-        const node = await this.resolveForAction();
-        if (node) return await action(node);
-      } catch (e) {
-        if (e instanceof WireError && (e.code === 'STALE_TOKEN' || e.code === 'NOT_FOUND')) {
-          lastNote = `retrying after ${e.code}`;
-          stale = true;
-        } else {
-          throw e;
-        }
-      }
-      if (Date.now() >= deadline) {
-        throw new TimeoutError(`${actionName} on ${this.toString()} timed out after ${budget}ms (${lastNote})`);
-      }
-      // A staleness rejection means the page just changed; retry
-      // immediately against a fresh view. Only a missing element earns
-      // a poll-tick sleep.
-      if (!stale) await sleep(POLL_MS);
-    }
-  }
-
-  // --- actions --------------------------------------------------------
-
-  /**
-   * Click the element. Visible targets get a trusted native click at
-   * their rect center via vs_click_at, which honors the page's input
-   * mode (robotic by default; the humanized path behind plain
-   * `vs_act click` costs seconds per click). Zero-size or hidden
-   * targets cannot be hit by coordinates and fall back to vs_act,
-   * whose JS path dispatches regardless of geometry.
-   */
-  async click(options?: { timeout?: number }): Promise<void> {
-    await this.withResolved(
-      'click',
-      async (n) => {
-        if (this.page.clickVia === 'act') {
-          await this.page.act(n.ref, 'click', undefined, { mode: this.page.inputMode });
-          return;
-        }
-        const rects = await this.page.layout([n.ref]);
-        const r = rects.get(n.ref);
-        if (r && r.visible && r.w > 1 && r.h > 1) {
-          await this.page.clickAt(r.x + r.w / 2, r.y + r.h / 2);
-        } else {
-          await this.page.act(n.ref, 'click');
-        }
-      },
-      options?.timeout,
-    );
-  }
-
-  /** Replace the field's text via the engine's fill path. */
-  async fill(value: string, options?: { timeout?: number }): Promise<void> {
-    await this.withResolved('fill', (n) => this.page.act(n.ref, 'fill', value), options?.timeout);
-  }
-
-  /**
-   * Focus the element, then send real per-character key events
-   * (isTrusted=true), for rich-text editors and inputs that ignore a
-   * programmatic fill. Use fill() for plain inputs.
-   */
-  async type(text: string, options?: { timeout?: number }): Promise<void> {
-    await this.withResolved(
-      'type',
-      async (n) => {
-        await this.page.act(n.ref, 'focus');
-        await this.page.typeTrusted(text);
-      },
-      options?.timeout,
-    );
-  }
-
-  /** Send a key chord to the element, e.g. `Enter` or `Ctrl+K`. */
-  async press(key: string, options?: { timeout?: number }): Promise<void> {
-    await this.withResolved('press', (n) => this.page.act(n.ref, 'key', key), options?.timeout);
-  }
-
-  async hover(options?: { timeout?: number }): Promise<void> {
-    await this.withResolved('hover', (n) => this.page.act(n.ref, 'hover'), options?.timeout);
-  }
-
-  async focus(options?: { timeout?: number }): Promise<void> {
-    await this.withResolved('focus', (n) => this.page.act(n.ref, 'focus'), options?.timeout);
-  }
-
-  /** Click a checkbox or radio unless it is already checked. */
-  async check(options?: { timeout?: number }): Promise<void> {
-    if (!(await this.isChecked(options))) await this.click(options);
-  }
-
-  /** Click a checkbox unless it is already unchecked. */
-  async uncheck(options?: { timeout?: number }): Promise<void> {
-    if (await this.isChecked(options)) await this.click(options);
-  }
-
-  /**
-   * Drag this element onto `target` with a trusted press, move and
-   * release from center to center. vibesurfer also fires the HTML5
-   * drag events, so native draggable and react-dnd lists see the drop.
-   */
-  async dragTo(target: Locator, options?: { timeout?: number }): Promise<void> {
-    const from = await this.boundingBox(options);
-    if (!from) throw new TimeoutError(`dragTo: ${this.toString()} is not rendered`);
-    const to = await target.boundingBox(options);
-    if (!to) throw new TimeoutError(`dragTo: ${target.toString()} is not rendered`);
-    await this.page.mouse.drag(from.x + from.w / 2, from.y + from.h / 2, to.x + to.w / 2, to.y + to.h / 2);
-  }
-
-  // --- reading --------------------------------------------------------
-
-  /** Full text content of the element via vs_read. */
-  async textContent(options?: { timeout?: number }): Promise<string> {
-    return this.withResolved('textContent', (n) => this.page.readRef(n.ref), options?.timeout);
-  }
-
-  /** Same as textContent(): the tree carries rendered text only. */
-  async innerText(options?: { timeout?: number }): Promise<string> {
-    return this.textContent(options);
-  }
-
-  /** Number of current matches (no waiting). */
-  async count(): Promise<number> {
-    return (await this.resolveAll()).length;
-  }
-
-  /** One locator per current match, in document order (no waiting). */
-  async all(): Promise<Locator[]> {
-    const n = await this.count();
-    return Array.from({ length: n }, (_, i) => this.nth(i));
-  }
-
-  /** True if the locator has a visible match right now (no waiting). */
-  async isVisible(): Promise<boolean> {
-    const visible = await this.resolveVisible();
-    return this.index === null ? visible.length > 0 : pickIndex(visible, this.index).length > 0;
-  }
-
-  /** True if the locator has no visible match right now (no waiting). */
-  async isHidden(): Promise<boolean> {
-    return !(await this.isVisible());
-  }
-
-  /** Checked state of a checkbox or radio, from the tree (vibesurfer 0.2.12+). */
-  async isChecked(options?: { timeout?: number }): Promise<boolean> {
-    return this.withResolved('isChecked', async (n) => n.attrs['checked'] === '1', options?.timeout);
-  }
-
-  /** Disabled natively (`disabled`, a disabled fieldset) or with `aria-disabled="true"`. */
-  async isDisabled(options?: { timeout?: number }): Promise<boolean> {
-    return (await this.domState('isDisabled', options)).disabled;
-  }
-
-  async isEnabled(options?: { timeout?: number }): Promise<boolean> {
-    return !(await this.isDisabled(options));
-  }
-
-  /** An enabled, writable text control or contenteditable element. */
-  async isEditable(options?: { timeout?: number }): Promise<boolean> {
-    return (await this.domState('isEditable', options)).editable;
-  }
-
-  /** Whether the element has focus. */
-  async isFocused(options?: { timeout?: number }): Promise<boolean> {
-    return (await this.domState('isFocused', options)).focused;
-  }
-
-  /** An attribute's value, or null when absent. */
-  async getAttribute(name: string, options?: { timeout?: number }): Promise<string | null> {
-    return this.withResolved(
-      'getAttribute',
-      async (n) => {
-        const got = await this.page.evaluate<{ v: string | null } | null>(
-          `(function(){var e=${FIND_REF_JS(n.ref)};return e?{v:e.getAttribute(${JSON.stringify(name)})}:null;})()`,
-        );
-        if (!got) throw new WireError('NOT_FOUND', [`ref=${n.ref} is gone`]);
-        return got.v;
-      },
-      options?.timeout,
-    );
-  }
-
-  /** DOM state the tree does not carry. */
-  private async domState(actionName: string, options?: { timeout?: number }): Promise<DomState> {
-    return this.withResolved(
-      actionName,
-      async (n) => {
-        const state = await this.page.evaluate<DomState | null>(
-          `(function(){var e=${FIND_REF_JS(n.ref)};if(!e)return null;` +
-            `var dis=!!(e.matches(':disabled')||e.closest('[aria-disabled="true"]'));` +
-            `var tag=e.tagName;var t=(e.getAttribute('type')||'').toLowerCase();` +
-            `var text=tag==='TEXTAREA'||tag==='SELECT'||(tag==='INPUT'&&['button','checkbox','radio','submit','reset','image','file','hidden','range','color'].indexOf(t)<0);` +
-            `var ro=e.readOnly===true||e.getAttribute('aria-readonly')==='true';` +
-            `return {disabled:dis,editable:!dis&&!ro&&(text||e.isContentEditable),focused:document.activeElement===e};})()`,
-        );
-        if (!state) throw new WireError('NOT_FOUND', [`ref=${n.ref} is gone`]);
-        return state;
-      },
-      options?.timeout,
-    );
-  }
-
-  /**
-   * Current value of a text field or select. The tree labels a field
-   * with its value; a password field reads `***` once filled.
-   */
-  async inputValue(options?: { timeout?: number }): Promise<string> {
-    return this.withResolved('inputValue', async (n) => n.label, options?.timeout);
-  }
-
-  /** Viewport rect in CSS px, or null when the element is not rendered. */
-  async boundingBox(options?: { timeout?: number }): Promise<LayoutRect | null> {
-    return this.withResolved(
-      'boundingBox',
-      async (n) => {
-        const r = (await this.page.layout([n.ref])).get(n.ref);
-        return r && r.w > 0 && r.h > 0 ? r : null;
-      },
-      options?.timeout,
-    );
-  }
-
-  /**
-   * Content of the iframe this locator matches. vibesurfer reports a
-   * same-origin frame's content as the iframe's children; a
-   * cross-origin frame has none.
-   */
+  /** The content of the iframe this locator matches. */
   contentFrame(): FrameLocator {
     return new FrameLocator(this);
   }
@@ -797,29 +377,390 @@ export class Locator {
     return new FrameLocator(this.locator(selector));
   }
 
-  /** PNG of the element. Returns the file path (`path` when given). */
-  async screenshot(options: { path?: string; timeout?: number } = {}): Promise<string> {
-    return this.withResolved(
-      'screenshot',
-      (n) => this.page.capture(n.ref, options.path ? { path: options.path } : {}),
+  /** The same locator, shown as `description` in errors and toString(). */
+  describe(description: string): Locator {
+    return new Locator(this.owner, this.steps, description);
+  }
+
+  toString(): string {
+    if (this.description) return this.description;
+    const out: string[] = [];
+    for (const s of this.steps) {
+      let part = describeQuery(s.query);
+      for (const f of s.filters) part += `.${describeFilter(f)}`;
+      if (s.index !== null) part += s.index === 0 ? '.first()' : s.index === -1 ? '.last()' : `.nth(${s.index})`;
+      out.push(part);
+    }
+    return out.reduce((acc, p) => (acc === '' ? p : p.startsWith('.') ? acc + p : `${acc}.${p}`), '');
+  }
+
+  // --- engine calls ---------------------------------------------------
+
+  private run<T>(op: string, args?: unknown, opts: { many?: boolean; first?: boolean } = {}, fn?: string): Promise<RunResult<T>> {
+    return this.owner.engineRun<RunResult<T>>({ steps: this.wire(), op, args, ...opts }, fn);
+  }
+
+  private strictError(apiName: string, r: RunResult<unknown>): StrictModeError {
+    const list = (r.strict ?? []).map((p, i) => `    ${i + 1}) ${p}`).join('\n');
+    return new StrictModeError(
+      `${apiName}: Error: strict mode violation: ${this.toString()} resolved to ${r.n} elements:\n${list}\n`,
+    );
+  }
+
+  /**
+   * Run a one-element op, waiting until something matches and the op
+   * stops asking to retry. Strict-mode violations fail at once.
+   */
+  private async waitOne<T>(apiName: string, op: string, args: unknown, timeout?: number, fn?: string): Promise<T> {
+    const budget = timeout ?? this.owner.timeouts.action;
+    const deadline = Date.now() + budget;
+    let why = '';
+    for (let i = 0; ; i++) {
+      const r = await this.run<T>(op, args, {}, fn);
+      if (r.strict) throw this.strictError(apiName, r);
+      if (!r.none) {
+        if (!isRetry(r.v)) return r.v as T;
+        why = r.v.retry;
+      }
+      if (budget > 0 && Date.now() >= deadline) {
+        throw new TimeoutError(
+          `${apiName}: Timeout ${budget}ms exceeded.\nCall log:\n  - waiting for ${this.toString()}` +
+            (why ? `\n  - ${why}` : ''),
+        );
+      }
+      await sleep(BACKOFF[Math.min(i, BACKOFF.length - 1)]!);
+    }
+  }
+
+  /** One-element op with no waiting: undefined when nothing matches. */
+  async peek<T>(apiName: string, op: string, args?: unknown): Promise<{ found: boolean; v?: T }> {
+    const r = await this.run<T>(op, args);
+    if (r.strict) throw this.strictError(apiName, r);
+    if (r.none) return { found: false };
+    return { found: true, v: r.v as T };
+  }
+
+  /** A multi-element op over the current matches. */
+  async many<T>(op: string, args?: unknown, fn?: string): Promise<T> {
+    return (await this.run<T>(op, args, { many: true }, fn)).v as T;
+  }
+
+  // --- actions --------------------------------------------------------
+
+  /**
+   * Click the element. A left click without modifiers is a trusted
+   * native click at the element's center; other buttons, modifiers and
+   * multi-clicks are dispatched in the page.
+   */
+  async click(options: ClickOptions = {}): Promise<void> {
+    const pt = await this.waitOne<{ x: number; y: number }>(
+      'locator.click',
+      'clickPoint',
+      { position: options.position, force: options.force },
       options.timeout,
     );
+    if (options.trial) return;
+    if (options.delay) await sleep(options.delay);
+    const synthetic =
+      (options.button && options.button !== 'left') ||
+      (options.modifiers && options.modifiers.length > 0) ||
+      (options.clickCount ?? 1) > 1 ||
+      this.owner.clickVia === 'act';
+    if (synthetic) {
+      await this.waitOne('locator.click', 'synthClick', options, options.timeout);
+    } else {
+      await this.owner.clickAt(pt.x, pt.y);
+    }
   }
 
-  /** The matched element's subtree as template text (see toMatchAriaSnapshot). */
-  async ariaSnapshot(options?: { timeout?: number }): Promise<string> {
-    return this.withResolved(
-      'ariaSnapshot',
-      async (n) => renderSnapshot(await this.page.actionSnapshot(), [n.ref]),
-      options?.timeout,
+  async dblclick(options: Omit<ClickOptions, 'clickCount'> = {}): Promise<void> {
+    await this.click({ ...options, clickCount: 2 });
+  }
+
+  async tap(options: ClickOptions = {}): Promise<void> {
+    await this.click(options);
+  }
+
+  /** Move the pointer over the element with trusted input. */
+  async hover(options: ActionOptions & { position?: { x: number; y: number } } = {}): Promise<void> {
+    const pt = await this.waitOne<{ x: number; y: number }>(
+      'locator.hover',
+      'clickPoint',
+      { position: options.position, force: options.force, enabled: false },
+      options.timeout,
+    );
+    if (options.trial) return;
+    await this.owner.mouse.move(pt.x, pt.y);
+  }
+
+  /** Replace the field's value (inputs, textareas, contenteditable). */
+  async fill(value: string, options: ActionOptions = {}): Promise<void> {
+    await this.waitOne('locator.fill', 'fill', { value, force: options.force }, options.timeout);
+  }
+
+  async clear(options: ActionOptions = {}): Promise<void> {
+    await this.fill('', options);
+  }
+
+  /**
+   * Focus the element, then type with trusted per-character key events
+   * (isTrusted=true), for editors that ignore fill().
+   */
+  async pressSequentially(text: string, options: { delay?: number; timeout?: number } = {}): Promise<void> {
+    await this.waitOne('locator.pressSequentially', 'focus', {}, options.timeout);
+    await this.owner.typeTrusted(text);
+  }
+
+  /** Same as pressSequentially(). */
+  async type(text: string, options: { delay?: number; timeout?: number } = {}): Promise<void> {
+    await this.pressSequentially(text, options);
+  }
+
+  /** Focus the element and press a key or chord, e.g. `Enter` or `Control+A`. */
+  async press(key: string, options: { delay?: number; timeout?: number } = {}): Promise<void> {
+    await this.waitOne('locator.press', 'press', { key }, options.timeout);
+  }
+
+  async focus(options: { timeout?: number } = {}): Promise<void> {
+    await this.waitOne('locator.focus', 'focus', {}, options.timeout);
+  }
+
+  async blur(options: { timeout?: number } = {}): Promise<void> {
+    await this.waitOne('locator.blur', 'blur', {}, options.timeout);
+  }
+
+  async setChecked(checked: boolean, options: ClickOptions = {}): Promise<void> {
+    const state = await this.waitOne<boolean>('locator.setChecked', 'checked', {}, options.timeout);
+    if (state === checked) return;
+    await this.click(options);
+    if (options.trial) return;
+    const after = await this.peek<boolean>('locator.setChecked', 'checked');
+    if (after.found && after.v !== checked) throw new Error('Clicking the checkbox did not change its state');
+  }
+
+  async check(options: ClickOptions = {}): Promise<void> {
+    await this.setChecked(true, options);
+  }
+
+  async uncheck(options: ClickOptions = {}): Promise<void> {
+    await this.setChecked(false, options);
+  }
+
+  /** Select options by value or label (or `{ value, label, index }`). Returns the selected values. */
+  async selectOption(
+    values: SelectOptionValue | SelectOptionValue[] | null,
+    options: ActionOptions = {},
+  ): Promise<string[]> {
+    const list = values === null ? [] : Array.isArray(values) ? values : [values];
+    const wanted = list.map((v) => (typeof v === 'string' ? { valueOrLabel: v } : v));
+    const budget = options.timeout ?? this.owner.timeouts.action;
+    const deadline = Date.now() + budget;
+    for (let i = 0; ; i++) {
+      const r = await this.waitOne<{ values?: string[]; missing?: boolean }>(
+        'locator.selectOption',
+        'selectOption',
+        { values: wanted },
+        Math.max(1, deadline - Date.now()),
+      );
+      if (r.values) return r.values;
+      if (Date.now() >= deadline) {
+        throw new TimeoutError(`locator.selectOption: Timeout ${budget}ms exceeded.\n  - did not find some options`);
+      }
+      await sleep(BACKOFF[Math.min(i, BACKOFF.length - 1)]!);
+    }
+  }
+
+  async selectText(options: ActionOptions = {}): Promise<void> {
+    await this.waitOne('locator.selectText', 'selectText', {}, options.timeout);
+  }
+
+  /** Set the files of an `<input type=file>`: paths, or `{ name, mimeType, buffer }`. */
+  async setInputFiles(files: InputFile | InputFile[], options: ActionOptions = {}): Promise<void> {
+    const fs = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    const list = Array.isArray(files) ? files : [files];
+    const payload = await Promise.all(
+      list.map(async (f) => {
+        if (typeof f === 'string') {
+          const buf = await fs.readFile(f);
+          return {
+            name: nodePath.basename(f),
+            mimeType: MIME[nodePath.extname(f).toLowerCase()] ?? 'application/octet-stream',
+            b64: buf.toString('base64'),
+          };
+        }
+        return { name: f.name, mimeType: f.mimeType, b64: f.buffer.toString('base64') };
+      }),
+    );
+    await this.waitOne('locator.setInputFiles', 'setFiles', { files: payload }, options.timeout);
+  }
+
+  async dispatchEvent(type: string, eventInit: Record<string, unknown> = {}, options: { timeout?: number } = {}): Promise<void> {
+    await this.waitOne('locator.dispatchEvent', 'dispatch', { type, init: eventInit }, options.timeout);
+  }
+
+  async scrollIntoViewIfNeeded(options: { timeout?: number } = {}): Promise<void> {
+    await this.waitOne('locator.scrollIntoViewIfNeeded', 'scroll', {}, options.timeout);
+  }
+
+  /** Accepted for compatibility; there is no headed browser to highlight in. */
+  async highlight(): Promise<void> {}
+
+  /**
+   * Drag this element onto `target` with a trusted press, move and
+   * release from center to center. vibesurfer also fires the HTML5
+   * drag events, so native draggable and react-dnd lists see the drop.
+   */
+  async dragTo(target: Locator, options: { timeout?: number } = {}): Promise<void> {
+    const from = await this.boundingBox(options);
+    if (!from) throw new TimeoutError(`locator.dragTo: ${this.toString()} is not rendered`);
+    const to = await target.boundingBox(options);
+    if (!to) throw new TimeoutError(`locator.dragTo: ${target.toString()} is not rendered`);
+    await this.owner.mouse.drag(
+      from.x + from.width / 2,
+      from.y + from.height / 2,
+      to.x + to.width / 2,
+      to.y + to.height / 2,
     );
   }
 
-  /** Refs of the strict-mode match, for scoping a snapshot match. */
-  async resolveScope(): Promise<{ snap: Snapshot; refs: number[] }> {
-    const snap = await this.page.view();
-    const node = this.pickOne(preferVisible(snap, (await this.matchIn(snap, null)).nodes));
-    return { snap, refs: node ? [node.ref] : [] };
+  /** Wait for the locator to reach a state: attached, detached, visible (default) or hidden. */
+  async waitFor(options: { state?: 'attached' | 'detached' | 'visible' | 'hidden'; timeout?: number } = {}): Promise<void> {
+    const state = options.state ?? 'visible';
+    const budget = options.timeout ?? this.owner.timeouts.action;
+    const deadline = Date.now() + budget;
+    for (let i = 0; ; i++) {
+      let ok: boolean;
+      if (state === 'attached' || state === 'detached') {
+        const n = await this.count();
+        ok = state === 'attached' ? n > 0 : n === 0;
+      } else {
+        const r = await this.peek<boolean>('locator.waitFor', 'visible');
+        const visible = r.found && r.v === true;
+        ok = state === 'visible' ? visible : !visible;
+      }
+      if (ok) return;
+      if (Date.now() >= deadline) {
+        throw new TimeoutError(
+          `locator.waitFor: Timeout ${budget}ms exceeded.\nCall log:\n  - waiting for ${this.toString()} to be ${state}`,
+        );
+      }
+      await sleep(BACKOFF[Math.min(i, BACKOFF.length - 1)]!);
+    }
+  }
+
+  // --- reading --------------------------------------------------------
+
+  async textContent(options: { timeout?: number } = {}): Promise<string> {
+    return this.waitOne('locator.textContent', 'text', {}, options.timeout);
+  }
+
+  async innerText(options: { timeout?: number } = {}): Promise<string> {
+    return this.waitOne('locator.innerText', 'innerText', {}, options.timeout);
+  }
+
+  async innerHTML(options: { timeout?: number } = {}): Promise<string> {
+    return this.waitOne('locator.innerHTML', 'innerHTML', {}, options.timeout);
+  }
+
+  /** An attribute's value, or null when absent. */
+  async getAttribute(name: string, options: { timeout?: number } = {}): Promise<string | null> {
+    return this.waitOne('locator.getAttribute', 'attr', { name }, options.timeout);
+  }
+
+  /** Current value of an input, textarea or select. */
+  async inputValue(options: { timeout?: number } = {}): Promise<string> {
+    return this.waitOne('locator.inputValue', 'value', {}, options.timeout);
+  }
+
+  async isChecked(options: { timeout?: number } = {}): Promise<boolean> {
+    return this.waitOne('locator.isChecked', 'checked', {}, options.timeout);
+  }
+
+  /** Disabled natively (`disabled`, a disabled fieldset) or with `aria-disabled="true"`. */
+  async isDisabled(options: { timeout?: number } = {}): Promise<boolean> {
+    return this.waitOne('locator.isDisabled', 'disabled', {}, options.timeout);
+  }
+
+  async isEnabled(options: { timeout?: number } = {}): Promise<boolean> {
+    return !(await this.isDisabled(options));
+  }
+
+  async isEditable(options: { timeout?: number } = {}): Promise<boolean> {
+    return this.waitOne('locator.isEditable', 'editable', {}, options.timeout);
+  }
+
+  async isFocused(options: { timeout?: number } = {}): Promise<boolean> {
+    return this.waitOne('locator.isFocused', 'focused', {}, options.timeout);
+  }
+
+  /** True if the locator's element is visible right now (no waiting). */
+  async isVisible(): Promise<boolean> {
+    const r = await this.peek<boolean>('locator.isVisible', 'visible');
+    return r.found && r.v === true;
+  }
+
+  async isHidden(): Promise<boolean> {
+    return !(await this.isVisible());
+  }
+
+  /** Number of current matches (no waiting). */
+  async count(): Promise<number> {
+    return (await this.run<number>('count', {}, { many: true })).n ?? 0;
+  }
+
+  /** One locator per current match, in document order (no waiting). */
+  async all(): Promise<Locator[]> {
+    const n = await this.count();
+    return Array.from({ length: n }, (_, i) => this.nth(i));
+  }
+
+  async allTextContents(): Promise<string[]> {
+    return this.many('texts');
+  }
+
+  async allInnerTexts(): Promise<string[]> {
+    return this.many('innerTexts');
+  }
+
+  /** Rect in CSS px relative to the main frame's viewport, or null when not rendered. */
+  async boundingBox(options: { timeout?: number } = {}): Promise<BoundingBox | null> {
+    return this.waitOne('locator.boundingBox', 'box', {}, options.timeout);
+  }
+
+  /** Call `fn(element, arg)` in the page and return its result. */
+  async evaluate<R, A = unknown>(
+    fn: string | ((el: any, arg: A) => R | Promise<R>),
+    arg?: A,
+    options: { timeout?: number } = {},
+  ): Promise<R> {
+    return this.waitOne('locator.evaluate', 'eval', { arg: serializeValue(arg) }, options.timeout, fn.toString());
+  }
+
+  /** Call `fn(elements, arg)` with every match and return its result. */
+  async evaluateAll<R, A = unknown>(fn: string | ((els: any[], arg: A) => R | Promise<R>), arg?: A): Promise<R> {
+    return this.many('evalAll', { arg: serializeValue(arg) }, fn.toString());
+  }
+
+  /** PNG of the element. Returns the bytes; with `path`, also writes the file. */
+  async screenshot(options: { path?: string; timeout?: number } = {}): Promise<Buffer> {
+    await this.scrollIntoViewIfNeeded(options);
+    const box = await this.boundingBox(options);
+    if (!box) throw new Error(`locator.screenshot: ${this.toString()} is not visible`);
+    return this.owner.screenshotClip(box, options.path);
+  }
+
+  /** The matched element's accessibility subtree as template text (see toMatchAriaSnapshot). */
+  async ariaSnapshot(options: { timeout?: number } = {}): Promise<string> {
+    const { snap, refs } = await this.resolveScope(options.timeout);
+    return renderSnapshot(snap, refs);
+  }
+
+  /** Tree refs of the strict-mode match, for scoping a snapshot match. */
+  async resolveScope(timeout?: number): Promise<{ snap: Snapshot; refs: number[] }> {
+    const refs = await this.waitOne<number[]>('locator.ariaSnapshot', 'refs', {}, timeout);
+    const snap = await this.owner.view();
+    return { snap, refs };
   }
 }
 
@@ -836,34 +777,10 @@ export class FrameLocator {
     return this.frame;
   }
 
-  locator(selector: string | Locator): Locator {
-    return this.frame.locator(selector);
+  private inside(): Locator {
+    return this.frame.extendWith([step({ kind: 'frame' })]);
   }
-  getByRole(role: string, options: ByRoleOptions = {}): Locator {
-    return this.frame.getByRole(role, options);
-  }
-  getByText(text: string | RegExp, options: ByTextOptions = {}): Locator {
-    return this.frame.getByText(text, options);
-  }
-  getByLabel(text: string | RegExp, options: ByTextOptions = {}): Locator {
-    return this.frame.getByLabel(text, options);
-  }
-  getByTestId(id: string | RegExp): Locator {
-    return this.frame.getByTestId(id);
-  }
-  getByPlaceholder(text: string | RegExp, options: ByTextOptions = {}): Locator {
-    return this.frame.getByPlaceholder(text, options);
-  }
-  getByAltText(text: string | RegExp, options: ByTextOptions = {}): Locator {
-    return this.frame.getByAltText(text, options);
-  }
-  getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
-    return this.frame.getByTitle(text, options);
-  }
-  /** A frame nested inside this one. */
-  frameLocator(selector: string): FrameLocator {
-    return new FrameLocator(this.frame.locator(selector));
-  }
+
   first(): FrameLocator {
     return new FrameLocator(this.frame.first());
   }
@@ -872,5 +789,32 @@ export class FrameLocator {
   }
   nth(index: number): FrameLocator {
     return new FrameLocator(this.frame.nth(index));
+  }
+  locator(selector: string | Locator, options?: LocatorOptions): Locator {
+    return this.inside().locator(selector, options);
+  }
+  frameLocator(selector: string): FrameLocator {
+    return new FrameLocator(this.inside().locator(selector));
+  }
+  getByRole(role: string, options: ByRoleOptions = {}): Locator {
+    return this.inside().getByRole(role, options);
+  }
+  getByText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.inside().getByText(text, options);
+  }
+  getByLabel(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.inside().getByLabel(text, options);
+  }
+  getByTestId(id: string | RegExp): Locator {
+    return this.inside().getByTestId(id);
+  }
+  getByPlaceholder(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.inside().getByPlaceholder(text, options);
+  }
+  getByAltText(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.inside().getByAltText(text, options);
+  }
+  getByTitle(text: string | RegExp, options: ByTextOptions = {}): Locator {
+    return this.inside().getByTitle(text, options);
   }
 }

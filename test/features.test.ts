@@ -126,8 +126,10 @@ test.describe('settings page', () => {
     await expect(page).toHaveURL(`${base}/settings`);
     assert(await page.evaluate<number>('document.querySelectorAll("li").length') === 3);
     assert(await page.evaluate<string>(() => (globalThis as unknown as { document: { title: string } }).document.title) === 'Features');
-    const file = await page.screenshot({ path: path.join(outputDir, 'shot.png') });
-    const head = fs.readFileSync(file).subarray(0, 4).toString('hex');
+    const file = path.join(outputDir, 'shot.png');
+    const buf = await page.screenshot({ path: file });
+    assert(fs.readFileSync(file).equals(buf), 'path and returned bytes differ');
+    const head = buf.subarray(0, 4).toString('hex');
     assert(head === '89504e47', `not a PNG: ${head}`);
   });
 

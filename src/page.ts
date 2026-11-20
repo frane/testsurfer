@@ -34,7 +34,35 @@ function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
 }
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
-import { byAttr, FrameLocator, Locator, type ByRoleOptions, type ByTextOptions } from './locator.ts';
+import {
+  byAttr,
+  FrameLocator,
+  selectorSteps,
+  Locator,
+  type BoundingBox,
+  type ByRoleOptions,
+  type ByTextOptions,
+  type ClickOptions,
+  type InputFile,
+  type LocatorOptions,
+  type SelectOptionValue,
+} from './locator.ts';
+import { installEngine } from './injected.ts';
+import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
+import { decodePng, encodePng } from './png.ts';
+
+/** The engine install expression: defines window.__tse and yields it. */
+const ENGINE_JS = `(${installEngine.toString()})(${SERIALIZE_JS})`;
+
+interface EngineReply {
+  v?: unknown;
+  e?: { name?: string; message: string; stack?: string };
+  p?: number;
+  gone?: boolean;
+  noengine?: boolean;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 import { renderSnapshot } from './aria.ts';
 import { PAGE_SHIM } from './shim.ts';
 import {
@@ -407,6 +435,23 @@ export class Page {
   }
 
   /**
+   * A new page starts at about:blank, as in Playwright: the first call
+   * that needs a document opens one (with the init scripts installed).
+   */
+  private async ensureOpen(): Promise<void> {
+    if (this.pageId) return;
+    const resp = await this.client.call('vs_open', ['about:blank'], { session: this.sessionId });
+    const id = resp.body[0];
+    if (!id) throw new Error('vs_open returned no page id for about:blank');
+    this.pageId = id;
+    this.token = resp.token;
+    for (const src of this.initScripts) {
+      await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
+    }
+    this.events.documentChanged();
+  }
+
+  /**
    * Navigate to a URL, relative to the baseURL launch option when set.
    * Navigates in place on protocol-v1 daemons; older ones close the
    * page and open a new one.
@@ -466,6 +511,7 @@ export class Page {
    * either way.
    */
   async view(): Promise<Snapshot> {
+    await this.ensureOpen();
     const canDelta = this.synced && this.snapshot !== null;
     const flags: Record<string, string | true> = { session: this.sessionId };
     if (!canDelta) flags['full'] = true;
@@ -562,12 +608,12 @@ export class Page {
    * click's effects) but `fresh` does not.
    */
   async clickAt(x: number, y: number, mode?: InputMode): Promise<void> {
-    if (this.token === null) await this.view();
+    await this.ensureOpen();
     try {
       const resp = await this.client.call(
         'vs_click_at',
         [this.id, String(Math.round(x)), String(Math.round(y))],
-        { session: this.sessionId, token: this.token ?? '', mode: mode ?? this.inputMode },
+        { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode },
       );
       this.token = resp.token;
       if (this.actDeltas) {
@@ -604,6 +650,7 @@ export class Page {
 
   /** Trusted per-character typing into the focused element. */
   async typeTrusted(text: string, options?: { secret?: boolean; mode?: InputMode }): Promise<void> {
+    await this.ensureOpen();
     const flags: Record<string, string | true> = {
       session: this.sessionId,
       token: this.token ?? '',
@@ -670,8 +717,18 @@ export class Page {
    * arguments. Runs through vs_inspect eval, which reads the page
    * without mutating the daemon's state token.
    */
-  async evaluate<T = unknown>(fnOrExpr: string | (() => unknown)): Promise<T> {
-    const src = typeof fnOrExpr === 'function' ? `(${fnOrExpr.toString()})()` : `(${fnOrExpr})`;
+  async evaluate<T = unknown, A = unknown>(fn: string | ((arg: A) => unknown), arg?: A): Promise<T> {
+    const a = JSON.stringify(serializeValue(arg));
+    // A function, or a string holding one, is called with `arg`; any
+    // other string is an expression. Promises are awaited.
+    const src = typeof fn === 'function' ? fn.toString() : fn;
+    const body = `(function(){var v=(${src});return typeof v==='function'?v(E.des(${a})):v;})()`;
+    return (await this.engineCall(body)) as T;
+  }
+
+  /** Raw evaluate through vs_inspect: JSON in, JSON out, no promise handling. */
+  private async rawEval<T>(src: string): Promise<T> {
+    await this.ensureOpen();
     const resp = await this.client.call(
       'vs_inspect',
       ['eval', this.id, `JSON.stringify(${src}) ?? "null"`],
@@ -684,6 +741,219 @@ export class Page {
     return JSON.parse(line.slice('result='.length)) as T;
   }
 
+  /**
+   * Run `body` (an expression that may use the engine as `E`) in the
+   * page. Installs the engine on first use in each document, waits out
+   * promises, and turns page exceptions into thrown Errors.
+   */
+  async engineCall(body: string): Promise<unknown> {
+    const call = (install: boolean) =>
+      `(function(){var E=${install ? ENGINE_JS : 'window.__tse'};if(!E)return {noengine:1};return E.exec(function(){return ${body};});})()`;
+    let r = await this.rawEval<EngineReply | null>(call(false));
+    if (r && r.noengine) r = await this.rawEval<EngineReply | null>(call(true));
+    for (let i = 0; r && r.p !== undefined; i++) {
+      await sleep(i < 5 ? 2 : i < 20 ? 10 : 25);
+      r = await this.rawEval<EngineReply | null>(`(function(){var E=window.__tse;return E?E.take(${r.p}):{gone:1};})()`);
+    }
+    if (!r || r.gone || r.noengine) {
+      throw new Error('Execution context was destroyed, most likely because of a navigation');
+    }
+    if (r.e) {
+      const err = new Error(r.e.message);
+      err.name = r.e.name ?? 'Error';
+      throw err;
+    }
+    return deserializeValue(r.v);
+  }
+
+  /** One locator-engine request (see src/injected.ts). `fn` is a function source passed alongside. */
+  async engineRun<T>(req: Record<string, unknown>, fn?: string): Promise<T> {
+    return (await this.engineCall(`E.run(${JSON.stringify(req)}${fn ? `,(${fn})` : ''})`)) as T;
+  }
+
+  /** Poll `fn(arg)` in the page until it returns a truthy value, and return that value. */
+  async waitForFunction<T = unknown, A = unknown>(
+    fn: string | ((arg: A) => unknown),
+    arg?: A,
+    options: { timeout?: number; polling?: number | 'raf' } = {},
+  ): Promise<T> {
+    const budget = options.timeout ?? this.timeouts.action;
+    const deadline = Date.now() + budget;
+    const every = typeof options.polling === 'number' ? options.polling : 16;
+    for (;;) {
+      const v = await this.evaluate<T, A>(fn, arg);
+      if (v) return v;
+      if (budget > 0 && Date.now() >= deadline) {
+        throw new Error(`page.waitForFunction: Timeout ${budget}ms exceeded.`);
+      }
+      await sleep(every);
+    }
+  }
+
+  /** `fn(element, arg)` on the first element matching `selector`; throws when there is none. */
+  async $eval<R, A = unknown>(selector: string, fn: string | ((el: any, arg: A) => R | Promise<R>), arg?: A): Promise<R> {
+    const r = await this.engineRun<{ v?: R; none?: boolean }>(
+      { steps: this.locator(selector).wire(), op: 'eval', args: { arg: serializeValue(arg) }, first: true },
+      fn.toString(),
+    );
+    if (r.none) throw new Error(`page.$eval: Error: failed to find element matching selector "${selector}"`);
+    return r.v as R;
+  }
+
+  /** `fn(elements, arg)` with every element matching `selector`. */
+  async $$eval<R, A = unknown>(selector: string, fn: string | ((els: any[], arg: A) => R | Promise<R>), arg?: A): Promise<R> {
+    return this.locator(selector).evaluateAll(fn, arg);
+  }
+
+  /** The first element matching `selector` as a locator, or null. Locators stand in for element handles. */
+  async $(selector: string): Promise<Locator | null> {
+    const l = this.locator(selector);
+    return (await l.count()) > 0 ? l.first() : null;
+  }
+
+  /** One locator per element matching `selector`. */
+  async $$(selector: string): Promise<Locator[]> {
+    return this.locator(selector).all();
+  }
+
+  /** Wait for `selector` to reach a state (visible by default); returns the element as a locator. */
+  async waitForSelector(
+    selector: string,
+    options: { state?: 'attached' | 'detached' | 'visible' | 'hidden'; timeout?: number } = {},
+  ): Promise<Locator | null> {
+    const l = this.locator(selector);
+    await l.first().waitFor(options);
+    return options.state === 'detached' || options.state === 'hidden' ? null : l.first();
+  }
+
+  // Selector shorthands (Playwright's page.click(selector) family).
+  click(selector: string, options?: ClickOptions): Promise<void> {
+    return this.locator(selector).click(options);
+  }
+  dblclick(selector: string, options?: ClickOptions): Promise<void> {
+    return this.locator(selector).dblclick(options);
+  }
+  tap(selector: string, options?: ClickOptions): Promise<void> {
+    return this.locator(selector).tap(options);
+  }
+  hover(selector: string, options?: { timeout?: number; force?: boolean }): Promise<void> {
+    return this.locator(selector).hover(options);
+  }
+  focus(selector: string, options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).focus(options);
+  }
+  fill(selector: string, value: string, options?: { timeout?: number; force?: boolean }): Promise<void> {
+    return this.locator(selector).fill(value, options);
+  }
+  type(selector: string, text: string, options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).type(text, options);
+  }
+  press(selector: string, key: string, options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).press(key, options);
+  }
+  check(selector: string, options?: ClickOptions): Promise<void> {
+    return this.locator(selector).check(options);
+  }
+  uncheck(selector: string, options?: ClickOptions): Promise<void> {
+    return this.locator(selector).uncheck(options);
+  }
+  setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
+    return this.locator(selector).setChecked(checked, options);
+  }
+  selectOption(selector: string, values: SelectOptionValue | SelectOptionValue[] | null, options?: { timeout?: number }): Promise<string[]> {
+    return this.locator(selector).selectOption(values, options);
+  }
+  setInputFiles(selector: string, files: InputFile | InputFile[], options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).setInputFiles(files, options);
+  }
+  dispatchEvent(selector: string, type: string, eventInit?: Record<string, unknown>, options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).dispatchEvent(type, eventInit, options);
+  }
+  textContent(selector: string, options?: { timeout?: number }): Promise<string> {
+    return this.locator(selector).textContent(options);
+  }
+  innerText(selector: string, options?: { timeout?: number }): Promise<string> {
+    return this.locator(selector).innerText(options);
+  }
+  innerHTML(selector: string, options?: { timeout?: number }): Promise<string> {
+    return this.locator(selector).innerHTML(options);
+  }
+  getAttribute(selector: string, name: string, options?: { timeout?: number }): Promise<string | null> {
+    return this.locator(selector).getAttribute(name, options);
+  }
+  inputValue(selector: string, options?: { timeout?: number }): Promise<string> {
+    return this.locator(selector).inputValue(options);
+  }
+  isVisible(selector: string): Promise<boolean> {
+    return this.locator(selector).isVisible();
+  }
+  isHidden(selector: string): Promise<boolean> {
+    return this.locator(selector).isHidden();
+  }
+  isChecked(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isChecked(options);
+  }
+  isDisabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isDisabled(options);
+  }
+  isEnabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isEnabled(options);
+  }
+  isEditable(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isEditable(options);
+  }
+
+  /**
+   * Keyboard input to the focused element. press/down/up dispatch key
+   * events with the browser's default action (typing, Enter submits,
+   * Backspace deletes, Tab moves focus); type() sends trusted
+   * per-character input.
+   */
+  readonly keyboard = {
+    press: async (key: string, _options?: { delay?: number }): Promise<void> => {
+      await this.engineCall(`E.key(${JSON.stringify(key)})`);
+    },
+    down: async (key: string): Promise<void> => {
+      await this.engineCall(`E.key(${JSON.stringify(key)},'down')`);
+    },
+    up: async (key: string): Promise<void> => {
+      await this.engineCall(`E.key(${JSON.stringify(key)},'up')`);
+    },
+    type: async (text: string, _options?: { delay?: number }): Promise<void> => {
+      await this.typeTrusted(text);
+    },
+    insertText: async (text: string): Promise<void> => {
+      await this.engineCall(`E.insertText(${JSON.stringify(text)})`);
+    },
+  };
+
+  /** Viewport crop of the page around `box` (CSS px), as PNG bytes; written to `path` when given. */
+  async screenshotClip(box: BoundingBox, path?: string): Promise<Buffer> {
+    const file = await this.capture(null);
+    const fs = await import('node:fs/promises');
+    const img = decodePng(await fs.readFile(file));
+    const cssWidth = await this.evaluate<number>('window.innerWidth');
+    const scale = img.width / (cssWidth || img.width);
+    const x0 = Math.max(0, Math.floor(box.x * scale));
+    const y0 = Math.max(0, Math.floor(box.y * scale));
+    const x1 = Math.min(img.width, Math.ceil((box.x + box.width) * scale));
+    const y1 = Math.min(img.height, Math.ceil((box.y + box.height) * scale));
+    const w = Math.max(1, x1 - x0);
+    const h = Math.max(1, y1 - y0);
+    const data = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const src = ((y0 + y) * img.width + x0) * 4;
+      data.set(img.data.subarray(src, src + w * 4), y * w * 4);
+    }
+    const out = encodePng({ width: w, height: h, data });
+    if (path) {
+      const nodePath = await import('node:path');
+      await fs.mkdir(nodePath.dirname(path), { recursive: true });
+      await fs.writeFile(path, out);
+    }
+    return out;
+  }
+
   /** The page's current URL. */
   async url(): Promise<string> {
     return this.evaluate<string>('location.href');
@@ -693,12 +963,15 @@ export class Page {
    * Save a PNG of the viewport (or the whole page with `fullPage`).
    * Returns the file path; with `path`, the file is copied there.
    */
-  async screenshot(options: { path?: string; fullPage?: boolean } = {}): Promise<string> {
-    return this.capture(null, options);
+  async screenshot(options: { path?: string; fullPage?: boolean; clip?: BoundingBox } = {}): Promise<Buffer> {
+    if (options.clip) return this.screenshotClip(options.clip, options.path);
+    const file = await this.capture(null, options);
+    return (await import('node:fs/promises')).readFile(file);
   }
 
   /** PNG of the page, or of one element when `ref` is given. Returns the file path. */
   async capture(ref: number | null, options: { path?: string; fullPage?: boolean } = {}): Promise<string> {
+    await this.ensureOpen();
     const flags: Record<string, string | true> = { session: this.sessionId };
     if (options.fullPage) flags['full-page'] = true;
     const args = ref === null ? [this.id] : [this.id, String(ref)];
@@ -762,9 +1035,9 @@ export class Page {
   };
 
   private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
-    if (this.token === null) await this.view();
+    await this.ensureOpen();
     const flags: Record<string, string> = { session: this.sessionId, mode: mode ?? this.inputMode };
-    if (mutates) flags['token'] = this.token ?? '';
+    if (mutates) flags['token'] = this.token ?? '0';
     try {
       const resp = await this.client.call(op, [this.id, ...coords.map((c) => String(Math.round(c)))], flags);
       if (resp.token && !/^0+$/.test(resp.token)) this.token = resp.token;
@@ -786,13 +1059,9 @@ export class Page {
     return renderSnapshot(snap, snap.roots);
   }
 
-  /** The document title (the doc node's label). */
+  /** The document title. */
   async title(): Promise<string> {
-    const snap = await this.view();
-    for (const node of walk(snap)) {
-      if (node.role === 'doc') return node.label;
-    }
-    return '';
+    return this.evaluate<string>('document.title');
   }
 
   getByRole(role: string, options: ByRoleOptions = {}): Locator {
@@ -813,8 +1082,9 @@ export class Page {
   }
 
   /** Elements matching a CSS selector, mapped to their tree nodes. */
-  locator(selector: string): Locator {
-    return new Locator(this, { kind: 'css', selector });
+  locator(selector: string, options?: LocatorOptions): Locator {
+    const l = new Locator(this, selectorSteps(selector));
+    return options && Object.keys(options).length ? l.filter(options) : l;
   }
 
   /** Exact match on the test-id attribute (`data-testid` by default). */

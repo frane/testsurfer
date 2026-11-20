@@ -11,13 +11,36 @@ export type UpdateSnapshots = 'all' | 'missing' | 'none';
 
 export interface TestInfo {
   title: string;
+  /** Describe titles, then the test title. */
+  titlePath: string[];
   file: string;
   /** Screenshots taken so far without an explicit name. */
   snapshotIndex: number;
   outputDir: string;
   updateSnapshots: UpdateSnapshots;
+  annotations: { type: string; description?: string | undefined }[];
+  attachments: { name: string; contentType: string; path?: string | undefined; body?: Buffer | undefined }[];
+  /** Always 0: testsurfer does not retry. */
+  retry: number;
+  workerIndex: number;
+  parallelIndex: number;
+  project: { name: string; use: Record<string, unknown> };
+  /** Milliseconds; informational, node:test owns the actual timeout. */
+  timeout: number;
+  /** expect.soft() failures, thrown together when the test body ends. */
+  softErrors: unknown[];
+  /** Set by fail(): the test is expected to throw. */
+  expectedStatus: 'passed' | 'failed' | 'skipped';
   /** Stop the running test and mark it skipped. */
-  skip: (reason?: string) => never;
+  skip: (condition?: boolean | string, reason?: string) => void;
+  fixme: (condition?: boolean | string, reason?: string) => void;
+  /** Mark the test as expected to fail; it passes only if its body throws. */
+  fail: (condition?: boolean | string, reason?: string) => void;
+  slow: (condition?: boolean | string, reason?: string) => void;
+  setTimeout: (ms: number) => void;
+  /** A path under this test's output directory. */
+  outputPath: (...parts: string[]) => string;
+  attach: (name: string, o?: { body?: string | Buffer; path?: string; contentType?: string }) => Promise<void>;
 }
 
 export const testInfoStore = new AsyncLocalStorage<TestInfo>();

@@ -49,7 +49,7 @@ export const test = tsTest.extend<{
   isWindows: process.platform === 'win32',
   isMac: process.platform === 'darwin',
   mode: 'default',
-  asset: (p: string) => path.join(ASSETS, p),
+  asset: async (_f, use) => use((p: string) => path.join(ASSETS, p)),
 });
 
 export const it = test;

@@ -1,177 +1,471 @@
 /**
- * Web-first assertions. Every matcher polls against fresh views until
- * it passes or the expect timeout elapses, so tests never race the
- * page. Negate with `.not`.
+ * Web-first assertions. Every matcher polls the page until it passes
+ * or the expect timeout elapses, so tests never race the page. Negate
+ * with `.not`. Failure messages follow Playwright's layout.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { matchesTemplate, parseTemplate, renderSnapshot } from './aria.ts';
-import { TimeoutError } from './errors.ts';
+import { StrictModeError } from './errors.ts';
+import { APIResponse } from './events.ts';
 import { Locator } from './locator.ts';
 import { Page } from './page.ts';
 import { asymmetric, pollAssertions, ValueAssertions } from './values.ts';
 import { assertScreenshot, type ScreenshotOptions } from './screenshot.ts';
+import { currentTestInfo } from './testinfo.ts';
 
 export interface ExpectOptions {
   timeout?: number;
 }
 
-const POLL_MS = 10;
+interface TextOptions extends ExpectOptions {
+  ignoreCase?: boolean;
+  useInnerText?: boolean;
+}
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const BACKOFF = [0, 20, 50, 100, 100, 250];
 
-const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+const normalize = (s: string) => s.replace(/[\s​]+/g, ' ').trim();
+const show = (v: unknown): string =>
+  v instanceof RegExp ? String(v) : typeof v === 'string' ? JSON.stringify(v) : v === undefined ? 'undefined' : JSON.stringify(v);
 
-function textMatches(actual: string, expected: string | RegExp, substring: boolean): boolean {
-  const norm = normalize(actual);
-  if (expected instanceof RegExp) return expected.test(norm);
-  const want = normalize(expected);
-  return substring ? norm.includes(want) : norm === want;
+/** Playwright's text match: strings compare whitespace-normalized, RegExps test the raw text. */
+function textMatch(actual: string, expected: string | RegExp, o: { substring?: boolean | undefined; ignoreCase?: boolean | undefined; normalize?: boolean | undefined }): boolean {
+  if (expected instanceof RegExp) {
+    const re = o.ignoreCase && !expected.flags.includes('i') ? new RegExp(expected.source, expected.flags + 'i') : expected;
+    return re.test(actual);
+  }
+  let a = o.normalize === false ? actual : normalize(actual);
+  let e = o.normalize === false ? expected : normalize(expected);
+  if (o.ignoreCase) {
+    a = a.toLowerCase();
+    e = e.toLowerCase();
+  }
+  return o.substring ? a.includes(e) : a === e;
+}
+
+/** One observation of the page for a matcher. */
+interface Sample {
+  pass: boolean;
+  /** False when the locator matched nothing; the message then says so. */
+  found: boolean;
+  /** Received value, printed. */
+  received?: string;
+  /** Replaces the Expected/Received lines (array matchers). */
+  diff?: string;
+  log?: string[];
+}
+
+interface Spec {
+  /** Matcher name, e.g. toHaveText. */
+  name: string;
+  /** What goes in the parentheses of the header: `expected` or nothing. */
+  arg: string;
+  expectedLabel?: string;
+  receivedLabel?: string;
+  expected: string;
+}
+
+/** An assertion failure, carrying Playwright's matcherResult. */
+export class ExpectError extends Error {
+  matcherResult: { message: string; name: string; pass: boolean; log: string[]; timeout: number };
+  constructor(message: string, name: string, pass: boolean, log: string[], timeout: number) {
+    super(message);
+    this.name = 'Error';
+    this.matcherResult = { message, name, pass, log, timeout };
+  }
+}
+
+function render(
+  subject: string,
+  locator: string | null,
+  spec: Spec,
+  negated: boolean,
+  timeout: number,
+  last: Sample | null,
+  error: string | null,
+  custom: string | undefined,
+): { message: string; log: string[] } {
+  const not = negated ? 'not.' : '';
+  const out: string[] = [];
+  if (custom) out.push(custom, '');
+  out.push(`expect(${subject}).${not}${spec.name}(${spec.arg}) failed`, '');
+  const expected = `${negated ? 'not ' : ''}${spec.expected}`;
+  const loc = locator ? [['Locator', locator] as const] : [];
+  if (error) {
+    for (const [k, v] of loc) out.push(`${k}: ${v}`);
+    out.push(`Expected: ${expected}`, `Timeout: ${timeout}ms`, error);
+  } else if (!last || !last.found) {
+    for (const [k, v] of loc) out.push(`${k}: ${v}`);
+    out.push(`Expected: ${expected}`, `Timeout: ${timeout}ms`, 'Error: element(s) not found');
+  } else if (last.diff !== undefined) {
+    for (const [k, v] of loc) out.push(`${k}: ${v}`);
+    out.push(`Timeout: ${timeout}ms`, last.diff);
+  } else {
+    const el = spec.expectedLabel ?? 'Expected';
+    const rl = spec.receivedLabel ?? 'Received';
+    if (el === 'Expected' && rl === 'Received') {
+      for (const [k, v] of loc) out.push(`${k}:  ${v}`);
+      out.push(`Expected: ${expected}`, `Received: ${last.received ?? ''}`, `Timeout:  ${timeout}ms`);
+    } else {
+      const w = Math.max(el.length, rl.length) + 2;
+      for (const [k, v] of loc) out.push(`${k}: ${v}`);
+      out.push(`${`${el}:`.padEnd(w)}${expected}`, `${`${rl}:`.padEnd(w)}${last.received ?? ''}`, `Timeout: ${timeout}ms`);
+    }
+  }
+  const log = [`Expect "${negated ? 'not ' : ''}${spec.name}" with timeout ${timeout}ms`];
+  if (locator) log.push(`waiting for ${locator}`);
+  for (const l of last?.log ?? []) log.push(`  ${l}`);
+  out.push('', 'Call log:', ...log.map((l) => `  - ${l}`), '');
+  return { message: out.join('\n'), log };
 }
 
 /**
- * Poll `check` until it returns true or the budget elapses. `describe`
- * renders the failure message with the last observed state.
+ * Poll `sample` until its pass flag differs from `negated`. A strict
+ * mode violation, or an engine error about the element's type, fails
+ * at once; other errors are retried until the timeout.
  */
 async function poll(
-  budget: number,
+  subject: string,
+  locator: string | null,
+  spec: Spec,
   negated: boolean,
-  check: () => Promise<{ pass: boolean; actual: string }>,
-  describe: (actual: string) => string,
+  timeout: number,
+  custom: string | undefined,
+  sample: () => Promise<Sample>,
 ): Promise<void> {
-  const deadline = Date.now() + budget;
-  let lastActual = '<no observation>';
-  let lastError: unknown = null;
-  for (;;) {
+  const deadline = Date.now() + timeout;
+  let last: Sample | null = null;
+  let error: string | null = null;
+  for (let i = 0; ; i++) {
     try {
-      const { pass, actual } = await check();
-      lastActual = actual;
-      lastError = null;
-      if (pass !== negated) return;
+      last = await sample();
+      error = null;
+      if (last.pass !== negated) return;
     } catch (e) {
-      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const fatal = e instanceof StrictModeError || /^Error: /.test(msg);
+      error = /^Error: /.test(msg) ? msg : `Error: ${msg.replace(/^[\w.]+: /, '')}`;
+      if (fatal) {
+        const { message, log } = render(subject, locator, spec, negated, timeout, last, error, custom);
+        throw new ExpectError(message, spec.name, !negated, log, timeout);
+      }
     }
     if (Date.now() >= deadline) break;
-    await sleep(POLL_MS);
+    await sleep(BACKOFF[Math.min(i, BACKOFF.length - 1)]!);
   }
-  if (lastError) throw lastError;
-  throw new TimeoutError(`${describe(lastActual)} (waited ${budget}ms)`);
+  const { message, log } = render(subject, locator, spec, negated, timeout, last, error, custom);
+  throw new ExpectError(message, spec.name, !negated, log, timeout);
 }
+
+/** jest-style diff of two string lists, as Playwright prints array mismatches. */
+function arrayDiff(expected: (string | RegExp)[], received: string[], negated: boolean): string {
+  if (negated) {
+    return `Expected: not ${JSON.stringify(expected.map(String))}\nReceived: ${JSON.stringify(received)}`;
+  }
+  const lines: string[] = [];
+  let minus = 0;
+  let plus = 0;
+  const n = Math.max(expected.length, received.length);
+  for (let i = 0; i < n; i++) {
+    const e = expected[i];
+    const r = received[i];
+    const es = e === undefined ? undefined : show(e);
+    const rs = r === undefined ? undefined : show(r);
+    if (e !== undefined && r !== undefined && textMatch(r, e, { normalize: true })) {
+      lines.push(`    ${rs},`);
+      continue;
+    }
+    if (es !== undefined) {
+      lines.push(`-   ${es},`);
+      minus++;
+    }
+    if (rs !== undefined) {
+      lines.push(`+   ${rs},`);
+      plus++;
+    }
+  }
+  return [`- Expected  - ${minus}`, `+ Received  + ${plus}`, '', '  Array [', ...lines, '  ]'].join('\n');
+}
+
+const resolvedLog = (n: number) => [`locator resolved to ${n} element${n === 1 ? '' : 's'}`];
 
 export class LocatorAssertions {
   private readonly locator: Locator;
   private readonly negated: boolean;
   private readonly defaultTimeout: number;
+  private readonly custom: string | undefined;
 
-  constructor(locator: Locator, negated = false, defaultTimeout = 5_000) {
+  constructor(locator: Locator, negated = false, defaultTimeout = 5_000, custom?: string) {
     this.locator = locator;
     this.negated = negated;
     this.defaultTimeout = defaultTimeout;
+    this.custom = custom;
   }
 
   get not(): LocatorAssertions {
-    return new LocatorAssertions(this.locator, !this.negated, this.defaultTimeout);
+    return new LocatorAssertions(this.locator, !this.negated, this.defaultTimeout, this.custom);
   }
 
-  private budget(options?: ExpectOptions): number {
-    return options?.timeout ?? this.defaultTimeout;
+  private run(spec: Spec, options: ExpectOptions | undefined, sample: () => Promise<Sample>): Promise<void> {
+    return poll('locator', this.locator.toString(), spec, this.negated, options?.timeout ?? this.defaultTimeout, this.custom, sample);
   }
 
-  private msg(condition: string, actual: string): string {
-    const wanted = this.negated ? `not to ${condition}` : `to ${condition}`;
-    return `expected ${this.locator.toString()} ${wanted}, but ${actual}`;
+  /** A boolean element state: pass when `read` returns true. */
+  private state(name: string, yes: string, no: string, op: string, want: boolean, options?: ExpectOptions, args?: unknown): Promise<void> {
+    const expected = want ? yes : no;
+    return this.run({ name, arg: '', expected }, options, async () => {
+      const r = await this.locator.peek<boolean>(`expect.${name}`, op, args);
+      if (!r.found) return { pass: false, found: false };
+      return { pass: r.v === want, found: true, received: r.v ? yes : no };
+    });
   }
 
-  /** At least one visible match. */
-  async toBeVisible(options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const visible = await this.locator.resolveVisible();
-        return {
-          pass: visible.length > 0,
-          actual: visible.length > 0 ? `found ${visible.length} visible` : 'found none visible',
-        };
-      },
-      (actual) => this.msg('be visible', actual),
-    );
+  async toBeVisible(options: ExpectOptions & { visible?: boolean } = {}): Promise<void> {
+    const want = options.visible ?? true;
+    await this.run({ name: 'toBeVisible', arg: '', expected: want ? 'visible' : 'hidden' }, options, async () => {
+      const r = await this.locator.peek<boolean>('expect.toBeVisible', 'visible');
+      const visible = r.found && r.v === true;
+      return { pass: visible === want, found: r.found, received: visible ? 'visible' : 'hidden' };
+    });
   }
 
-  /** No visible match. */
-  async toBeHidden(options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const visible = await this.locator.resolveVisible();
-        return {
-          pass: visible.length === 0,
-          actual: visible.length === 0 ? 'found none visible' : `found ${visible.length} visible`,
-        };
-      },
-      (actual) => this.msg('be hidden', actual),
-    );
+  async toBeHidden(options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toBeHidden', arg: '', expected: 'hidden' }, options, async () => {
+      const r = await this.locator.peek<boolean>('expect.toBeHidden', 'visible');
+      const visible = r.found && r.v === true;
+      return { pass: !visible, found: r.found, received: visible ? 'visible' : 'hidden' };
+    });
   }
 
-  /** The element's full text equals the expected string (or matches the RegExp). */
-  async toHaveText(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await this.textAssertion(expected, false, 'have text', options);
+  async toBeAttached(options: ExpectOptions & { attached?: boolean } = {}): Promise<void> {
+    const want = options.attached ?? true;
+    await this.run({ name: 'toBeAttached', arg: '', expected: want ? 'attached' : 'detached' }, options, async () => {
+      const n = await this.locator.count();
+      return { pass: n > 0 === want, found: true, received: n > 0 ? 'attached' : 'detached' };
+    });
   }
 
-  /** The element's full text contains the expected substring (or matches the RegExp). */
-  async toContainText(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await this.textAssertion(expected, true, 'contain text', options);
+  async toBeChecked(options: ExpectOptions & { checked?: boolean; indeterminate?: boolean } = {}): Promise<void> {
+    const want: boolean | 'mixed' = options.indeterminate ? 'mixed' : (options.checked ?? true);
+    const word = (v: unknown) => (v === 'mixed' ? 'indeterminate' : v ? 'checked' : 'unchecked');
+    await this.run({ name: 'toBeChecked', arg: '', expected: word(want) }, options, async () => {
+      const r = await this.locator.peek<boolean | 'mixed'>('expect.toBeChecked', 'checkedMixed');
+      if (!r.found) return { pass: false, found: false };
+      return { pass: r.v === want, found: true, received: word(r.v) };
+    });
   }
 
-  private async textAssertion(
-    expected: string | RegExp,
-    substring: boolean,
-    condition: string,
-    options?: ExpectOptions,
-  ): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const matches = await this.locator.resolveAll();
-        const node = matches[0];
-        if (!node) return { pass: false, actual: 'no matching element' };
-        const text = await this.locator.textContent({ timeout: 1_000 }).catch(() => node.label);
-        return {
-          pass: textMatches(text, expected, substring),
-          actual: `text was ${JSON.stringify(normalize(text)).slice(0, 200)}`,
-        };
-      },
-      (actual) => this.msg(`${condition} ${String(expected)}`, actual),
-    );
+  async toBeDisabled(options: ExpectOptions = {}): Promise<void> {
+    await this.state('toBeDisabled', 'disabled', 'enabled', 'disabled', true, options);
   }
 
-  /** A checked checkbox or radio (vibesurfer 0.2.12+). */
-  async toBeChecked(options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const checked = await this.locator.isChecked({ timeout: 1_000 });
-        return { pass: checked, actual: checked ? 'it was checked' : 'it was not checked' };
-      },
-      (actual) => this.msg('be checked', actual),
-    );
+  async toBeEnabled(options: ExpectOptions & { enabled?: boolean } = {}): Promise<void> {
+    await this.state('toBeEnabled', 'disabled', 'enabled', 'disabled', !(options.enabled ?? true), options);
   }
 
-  /** A text field or select whose current value equals the string (or matches the RegExp). */
-  async toHaveValue(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const value = await this.locator.inputValue({ timeout: 1_000 });
-        return {
-          pass: textMatches(value, expected, false),
-          actual: `value was ${JSON.stringify(value)}`,
-        };
-      },
-      (actual) => this.msg(`have value ${String(expected)}`, actual),
-    );
+  async toBeEditable(options: ExpectOptions & { editable?: boolean } = {}): Promise<void> {
+    await this.state('toBeEditable', 'editable', 'readOnly', 'editable', options.editable ?? true, options);
+  }
+
+  async toBeFocused(options: ExpectOptions = {}): Promise<void> {
+    await this.state('toBeFocused', 'focused', 'inactive', 'focused', true, options);
+  }
+
+  async toBeEmpty(options: ExpectOptions = {}): Promise<void> {
+    await this.state('toBeEmpty', 'empty', 'notEmpty', 'empty', true, options);
+  }
+
+  async toBeInViewport(options: ExpectOptions & { ratio?: number } = {}): Promise<void> {
+    await this.run({ name: 'toBeInViewport', arg: '', expected: 'in viewport' }, options, async () => {
+      const r = await this.locator.peek<number>('expect.toBeInViewport', 'inViewport');
+      if (!r.found) return { pass: false, found: false };
+      const ratio = r.v ?? 0;
+      const pass = options.ratio !== undefined ? ratio >= options.ratio && ratio > 0 : ratio > 0;
+      return { pass, found: true, received: pass ? 'in viewport' : 'outside viewport' };
+    });
+  }
+
+  /** The element's text equals the string (whitespace-normalized) or matches the RegExp; an array checks each match. */
+  async toHaveText(expected: string | RegExp | (string | RegExp)[], options: TextOptions = {}): Promise<void> {
+    await this.text('toHaveText', expected, false, options);
+  }
+
+  /** The element's text contains the string or matches the RegExp; an array checks matches in order. */
+  async toContainText(expected: string | RegExp | (string | RegExp)[], options: TextOptions = {}): Promise<void> {
+    await this.text('toContainText', expected, true, options);
+  }
+
+  private async text(name: string, expected: string | RegExp | (string | RegExp)[], substring: boolean, options: TextOptions): Promise<void> {
+    const op = options.useInnerText ? 'innerText' : 'text';
+    if (Array.isArray(expected)) {
+      await this.run({ name, arg: 'expected', expected: JSON.stringify(expected.map(String)) }, options, async () => {
+        const texts = await this.locator.many<string[]>(op === 'text' ? 'texts' : 'innerTexts');
+        const ok = (t: string, e: string | RegExp) => textMatch(t, e, { substring, ignoreCase: options.ignoreCase });
+        let pass: boolean;
+        if (substring) {
+          let j = 0;
+          for (const t of texts) if (j < expected.length && ok(t, expected[j]!)) j++;
+          pass = j === expected.length;
+        } else {
+          pass = texts.length === expected.length && texts.every((t, i) => ok(t, expected[i]!));
+        }
+        return { pass, found: true, diff: arrayDiff(expected, texts, this.negated), log: resolvedLog(texts.length) };
+      });
+      return;
+    }
+    const labels =
+      expected instanceof RegExp
+        ? { expectedLabel: 'Expected pattern', receivedLabel: 'Received string' }
+        : substring
+          ? { expectedLabel: 'Expected substring', receivedLabel: 'Received string' }
+          : {};
+    await this.run({ name, arg: 'expected', expected: show(expected), ...labels }, options, async () => {
+      const r = await this.locator.peek<string>(`expect.${name}`, op);
+      if (!r.found) return { pass: false, found: false };
+      const t = r.v ?? '';
+      return {
+        pass: textMatch(t, expected, { substring, ignoreCase: options.ignoreCase }),
+        found: true,
+        received: show(expected instanceof RegExp ? t : normalize(t)),
+      };
+    });
+  }
+
+  /** The field's current value equals the string (exactly) or matches the RegExp. */
+  async toHaveValue(expected: string | RegExp, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveValue', arg: 'expected', expected: show(expected) }, options, async () => {
+      const r = await this.locator.peek<string>('expect.toHaveValue', 'value');
+      if (!r.found) return { pass: false, found: false };
+      return { pass: textMatch(r.v ?? '', expected, { normalize: false }), found: true, received: show(r.v) };
+    });
+  }
+
+  /** A multi-select's selected values. */
+  async toHaveValues(expected: (string | RegExp)[], options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveValues', arg: 'expected', expected: JSON.stringify(expected.map(String)) }, options, async () => {
+      const r = await this.locator.peek<string[]>('expect.toHaveValues', 'values');
+      if (!r.found) return { pass: false, found: false };
+      const v = r.v ?? [];
+      const pass = v.length === expected.length && v.every((x, i) => textMatch(x, expected[i]!, { normalize: false }));
+      return { pass, found: true, received: JSON.stringify(v) };
+    });
+  }
+
+  /** The attribute is present, and with `value`, equals it (or matches the RegExp). */
+  async toHaveAttribute(name: string, value?: string | RegExp | ExpectOptions, options: ExpectOptions & { ignoreCase?: boolean } = {}): Promise<void> {
+    if (typeof value === 'object' && !(value instanceof RegExp)) {
+      options = value;
+      value = undefined;
+    }
+    const want = value;
+    const spec: Spec =
+      want === undefined
+        ? { name: 'toHaveAttribute', arg: 'expected', expected: 'have attribute' }
+        : { name: 'toHaveAttribute', arg: 'expected', expected: show(want) };
+    await this.run(spec, options, async () => {
+      const r = await this.locator.peek<string | null>('expect.toHaveAttribute', 'attr', { name });
+      if (!r.found) return { pass: false, found: false };
+      const v = r.v ?? null;
+      if (want === undefined) return { pass: v !== null, found: true, received: v !== null ? 'have attribute' : 'not have attribute' };
+      if (v === null) return { pass: false, found: true, received: 'null' };
+      return { pass: textMatch(v, want, { normalize: false, ignoreCase: options.ignoreCase }), found: true, received: show(v) };
+    });
+  }
+
+  /** The class attribute equals the string (whitespace-normalized) or matches the RegExp; an array checks each match. */
+  async toHaveClass(expected: string | RegExp | (string | RegExp)[], options: ExpectOptions = {}): Promise<void> {
+    if (Array.isArray(expected)) {
+      await this.run({ name: 'toHaveClass', arg: 'expected', expected: JSON.stringify(expected.map(String)) }, options, async () => {
+        const list = await this.locator.evaluateAll((els: { getAttribute(n: string): string | null }[]) => els.map((e) => e.getAttribute('class') ?? ''));
+        const pass = list.length === expected.length && list.every((c, i) => textMatch(c, expected[i]!, {}));
+        return { pass, found: true, diff: arrayDiff(expected, list, this.negated), log: resolvedLog(list.length) };
+      });
+      return;
+    }
+    await this.run({ name: 'toHaveClass', arg: 'expected', expected: show(expected), ...(expected instanceof RegExp ? { expectedLabel: 'Expected pattern', receivedLabel: 'Received string' } : {}) }, options, async () => {
+      const r = await this.locator.peek<string | null>('expect.toHaveClass', 'attr', { name: 'class' });
+      if (!r.found) return { pass: false, found: false };
+      const v = r.v ?? '';
+      return { pass: textMatch(v, expected, {}), found: true, received: show(v) };
+    });
+  }
+
+  /** Every class in the expected string is present; an array checks each match. */
+  async toContainClass(expected: string | string[], options: ExpectOptions = {}): Promise<void> {
+    const has = (actual: string, want: string) => {
+      const set = new Set(actual.split(/\s+/).filter(Boolean));
+      return want.split(/\s+/).filter(Boolean).every((c) => set.has(c));
+    };
+    if (Array.isArray(expected)) {
+      await this.run({ name: 'toContainClass', arg: 'expected', expected: JSON.stringify(expected) }, options, async () => {
+        const list = await this.locator.evaluateAll((els: { getAttribute(n: string): string | null }[]) => els.map((e) => e.getAttribute('class') ?? ''));
+        const pass = list.length === expected.length && list.every((c, i) => has(c, expected[i]!));
+        return { pass, found: true, diff: arrayDiff(expected, list, this.negated), log: resolvedLog(list.length) };
+      });
+      return;
+    }
+    await this.run({ name: 'toContainClass', arg: 'expected', expected: show(expected), expectedLabel: 'Expected', receivedLabel: 'Received' }, options, async () => {
+      const r = await this.locator.peek<string | null>('expect.toContainClass', 'attr', { name: 'class' });
+      if (!r.found) return { pass: false, found: false };
+      return { pass: has(r.v ?? '', expected), found: true, received: show(r.v ?? '') };
+    });
+  }
+
+  async toHaveId(expected: string | RegExp, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveId', arg: 'expected', expected: show(expected) }, options, async () => {
+      const r = await this.locator.peek<string | null>('expect.toHaveId', 'attr', { name: 'id' });
+      if (!r.found) return { pass: false, found: false };
+      return { pass: textMatch(r.v ?? '', expected, { normalize: false }), found: true, received: show(r.v ?? '') };
+    });
+  }
+
+  async toHaveCSS(name: string, value: string | RegExp, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveCSS', arg: 'expected', expected: show(value) }, options, async () => {
+      const r = await this.locator.peek<string>('expect.toHaveCSS', 'css', { name });
+      if (!r.found) return { pass: false, found: false };
+      return { pass: textMatch(r.v ?? '', value, { normalize: false }), found: true, received: show(r.v) };
+    });
+  }
+
+  async toHaveJSProperty(name: string, value: unknown, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveJSProperty', arg: 'expected', expected: show(value) }, options, async () => {
+      const r = await this.locator.peek<unknown>('expect.toHaveJSProperty', 'prop', { name });
+      if (!r.found) return { pass: false, found: false };
+      return { pass: isDeepStrictEqual(r.v, value), found: true, received: show(r.v) };
+    });
+  }
+
+  async toHaveRole(role: string, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveRole', arg: 'expected', expected: show(role) }, options, async () => {
+      const r = await this.locator.peek<string>('expect.toHaveRole', 'role');
+      if (!r.found) return { pass: false, found: false };
+      return { pass: r.v === role, found: true, received: show(r.v) };
+    });
+  }
+
+  async toHaveAccessibleName(name: string | RegExp, options: ExpectOptions & { ignoreCase?: boolean } = {}): Promise<void> {
+    await this.run({ name: 'toHaveAccessibleName', arg: 'expected', expected: show(name) }, options, async () => {
+      const r = await this.locator.peek<string>('expect.toHaveAccessibleName', 'name');
+      if (!r.found) return { pass: false, found: false };
+      return { pass: textMatch(r.v ?? '', name, { ignoreCase: options.ignoreCase }), found: true, received: show(r.v) };
+    });
+  }
+
+  async toHaveAccessibleDescription(description: string | RegExp, options: ExpectOptions & { ignoreCase?: boolean } = {}): Promise<void> {
+    await this.run({ name: 'toHaveAccessibleDescription', arg: 'expected', expected: show(description) }, options, async () => {
+      const r = await this.locator.peek<string>('expect.toHaveAccessibleDescription', 'description');
+      if (!r.found) return { pass: false, found: false };
+      return { pass: textMatch(r.v ?? '', description, { ignoreCase: options.ignoreCase }), found: true, received: show(r.v) };
+    });
+  }
+
+  async toHaveCount(count: number, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveCount', arg: 'expected', expected: String(count) }, options, async () => {
+      const n = await this.locator.count();
+      return { pass: n === count, found: true, received: String(n) };
+    });
   }
 
   /**
@@ -179,103 +473,13 @@ export class LocatorAssertions {
    * src/aria.ts for the format; `locator.ariaSnapshot()` prints the
    * current tree in it, ready to paste and trim.
    */
-  async toMatchAriaSnapshot(template: string, options?: ExpectOptions): Promise<void> {
+  async toMatchAriaSnapshot(template: string, options: ExpectOptions = {}): Promise<void> {
     const parsed = parseTemplate(template);
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const { snap, refs } = await this.locator.resolveScope();
-        if (refs.length === 0) return { pass: false, actual: 'no matching element' };
-        return {
-          pass: matchesTemplate(snap, refs, parsed),
-          actual: `the tree was:\n${renderSnapshot(snap, refs)}`,
-        };
-      },
-      (actual) => this.msg(`match the aria snapshot\n${template.trim()}\n`, actual),
-    );
-  }
-
-  private async boolAssertion(
-    condition: string,
-    read: () => Promise<boolean>,
-    options?: ExpectOptions,
-  ): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const v = await read();
-        return { pass: v, actual: v ? `it was ${condition}` : `it was not ${condition}` };
-      },
-      (actual) => this.msg(`be ${condition}`, actual),
-    );
-  }
-
-  /** Not disabled (natively or with aria-disabled). */
-  async toBeEnabled(options?: ExpectOptions): Promise<void> {
-    await this.boolAssertion('enabled', () => this.locator.isEnabled({ timeout: 1_000 }), options);
-  }
-
-  /** Disabled natively (`disabled`, a disabled fieldset) or with `aria-disabled="true"`. */
-  async toBeDisabled(options?: ExpectOptions): Promise<void> {
-    await this.boolAssertion('disabled', () => this.locator.isDisabled({ timeout: 1_000 }), options);
-  }
-
-  /** An enabled, writable text control or contenteditable element. */
-  async toBeEditable(options?: ExpectOptions): Promise<void> {
-    await this.boolAssertion('editable', () => this.locator.isEditable({ timeout: 1_000 }), options);
-  }
-
-  /** The element has focus. */
-  async toBeFocused(options?: ExpectOptions): Promise<void> {
-    await this.boolAssertion('focused', () => this.locator.isFocused({ timeout: 1_000 }), options);
-  }
-
-  /** At least one match in the page, visible or not. */
-  async toBeAttached(options?: ExpectOptions): Promise<void> {
-    await this.boolAssertion('attached', async () => (await this.locator.count()) > 0, options);
-  }
-
-  /**
-   * The attribute is present, and with `value`, equals it (or matches
-   * the RegExp).
-   */
-  async toHaveAttribute(name: string, value?: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const v = await this.locator.getAttribute(name, { timeout: 1_000 });
-        if (v === null) return { pass: false, actual: `${name} was absent` };
-        const pass = value === undefined ? true : value instanceof RegExp ? value.test(v) : v === value;
-        return { pass, actual: `${name} was ${JSON.stringify(v)}` };
-      },
-      (actual) => this.msg(`have attribute ${name}${value === undefined ? '' : ` ${String(value)}`}`, actual),
-    );
-  }
-
-  /**
-   * The class attribute equals the string (or matches the RegExp).
-   * Like Playwright, a string must be the whole value; use a RegExp to
-   * check for one class among several.
-   */
-  async toHaveClass(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const v = (await this.locator.getAttribute('class', { timeout: 1_000 })) ?? '';
-        const pass = expected instanceof RegExp ? expected.test(v) : normalize(v) === normalize(expected);
-        return { pass, actual: `class was ${JSON.stringify(v)}` };
-      },
-      (actual) => this.msg(`have class ${String(expected)}`, actual),
-    );
-  }
-
-  /** The id attribute equals the string (or matches the RegExp). */
-  async toHaveId(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await this.toHaveAttribute('id', expected, options);
+    await this.run({ name: 'toMatchAriaSnapshot', arg: 'expected', expected: `\n${template.trim()}\n` }, options, async () => {
+      const { snap, refs } = await this.locator.resolveScope(1_000);
+      if (refs.length === 0) return { pass: false, found: false };
+      return { pass: matchesTemplate(snap, refs, parsed), found: true, received: `\n${renderSnapshot(snap, refs)}` };
+    });
   }
 
   /**
@@ -286,26 +490,12 @@ export class LocatorAssertions {
     if (this.negated) throw new Error('toHaveScreenshot cannot be negated');
     const name = typeof nameOrOptions === 'string' ? nameOrOptions : undefined;
     const opts = typeof nameOrOptions === 'object' ? nameOrOptions : options;
-    const fs = await import('node:fs/promises');
     await assertScreenshot(
-      async () => fs.readFile(await this.locator.screenshot({ timeout: 2_000 })),
+      () => this.locator.screenshot({ timeout: 2_000 }),
       name,
       opts,
       opts.timeout ?? this.defaultTimeout,
       this.locator.toString(),
-    );
-  }
-
-  /** Exactly `count` matches. */
-  async toHaveCount(count: number, options?: ExpectOptions): Promise<void> {
-    await poll(
-      this.budget(options),
-      this.negated,
-      async () => {
-        const n = await this.locator.count();
-        return { pass: n === count, actual: `found ${n}` };
-      },
-      (actual) => this.msg(`have count ${count}`, actual),
     );
   }
 }
@@ -314,46 +504,50 @@ export class PageAssertions {
   private readonly page: Page;
   private readonly negated: boolean;
   private readonly defaultTimeout: number;
+  private readonly custom: string | undefined;
 
-  constructor(page: Page, negated = false, defaultTimeout = 5_000) {
+  constructor(page: Page, negated = false, defaultTimeout = 5_000, custom?: string) {
     this.page = page;
     this.negated = negated;
     this.defaultTimeout = defaultTimeout;
+    this.custom = custom;
   }
 
   get not(): PageAssertions {
-    return new PageAssertions(this.page, !this.negated, this.defaultTimeout);
+    return new PageAssertions(this.page, !this.negated, this.defaultTimeout, this.custom);
   }
 
-  /** The page URL equals the string (or matches the RegExp). */
-  async toHaveURL(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await poll(
-      options?.timeout ?? this.defaultTimeout,
-      this.negated,
-      async () => {
-        const url = await this.page.url();
-        return { pass: textMatches(url, expected, false), actual: `URL was ${JSON.stringify(url)}` };
-      },
-      (actual) => `expected page ${this.negated ? 'not ' : ''}to have URL ${String(expected)}, but ${actual}`,
-    );
+  private run(spec: Spec, options: ExpectOptions | undefined, sample: () => Promise<Sample>): Promise<void> {
+    return poll('page', null, spec, this.negated, options?.timeout ?? this.defaultTimeout, this.custom, sample);
+  }
+
+  /** The page URL equals the string (resolved against baseURL), matches the RegExp, or satisfies the predicate. */
+  async toHaveURL(expected: string | RegExp | ((url: URL) => boolean), options: ExpectOptions & { ignoreCase?: boolean } = {}): Promise<void> {
+    const want =
+      typeof expected === 'string' && this.page.baseURL ? new URL(expected, this.page.baseURL).href : expected;
+    await this.run({ name: 'toHaveURL', arg: 'expected', expected: typeof want === 'function' ? 'predicate to succeed' : show(want) }, options, async () => {
+      const url = await this.page.url();
+      const pass =
+        typeof want === 'function' ? !!want(new URL(url)) : textMatch(url, want, { normalize: false, ignoreCase: options.ignoreCase });
+      return { pass, found: true, received: show(url) };
+    });
+  }
+
+  /** The document title equals the string (whitespace-normalized) or matches the RegExp. */
+  async toHaveTitle(expected: string | RegExp, options: ExpectOptions = {}): Promise<void> {
+    await this.run({ name: 'toHaveTitle', arg: 'expected', expected: show(expected) }, options, async () => {
+      const title = await this.page.title();
+      return { pass: textMatch(title, expected, {}), found: true, received: show(title) };
+    });
   }
 
   /** The whole page's accessibility tree matches a template (see LocatorAssertions.toMatchAriaSnapshot). */
-  async toMatchAriaSnapshot(template: string, options?: ExpectOptions): Promise<void> {
+  async toMatchAriaSnapshot(template: string, options: ExpectOptions = {}): Promise<void> {
     const parsed = parseTemplate(template);
-    await poll(
-      options?.timeout ?? this.defaultTimeout,
-      this.negated,
-      async () => {
-        const snap = await this.page.view();
-        return {
-          pass: matchesTemplate(snap, snap.roots, parsed),
-          actual: `the tree was:\n${renderSnapshot(snap, snap.roots)}`,
-        };
-      },
-      (actual) =>
-        `expected page ${this.negated ? 'not ' : ''}to match the aria snapshot\n${template.trim()}\nbut ${actual}`,
-    );
+    await this.run({ name: 'toMatchAriaSnapshot', arg: 'expected', expected: `\n${template.trim()}\n` }, options, async () => {
+      const snap = await this.page.view();
+      return { pass: matchesTemplate(snap, snap.roots, parsed), found: true, received: `\n${renderSnapshot(snap, snap.roots)}` };
+    });
   }
 
   /** The page looks like its stored baseline (see LocatorAssertions.toHaveScreenshot). */
@@ -361,61 +555,125 @@ export class PageAssertions {
     if (this.negated) throw new Error('toHaveScreenshot cannot be negated');
     const name = typeof nameOrOptions === 'string' ? nameOrOptions : undefined;
     const opts = typeof nameOrOptions === 'object' ? nameOrOptions : options;
-    const fs = await import('node:fs/promises');
     await assertScreenshot(
-      async () => fs.readFile(await this.page.screenshot(opts.fullPage ? { fullPage: true } : {})),
+      () => this.page.screenshot(opts.fullPage ? { fullPage: true } : {}),
       name,
       opts,
       opts.timeout ?? this.defaultTimeout,
       'page',
     );
   }
+}
 
-  /** The document title equals the string (or matches the RegExp). */
-  async toHaveTitle(expected: string | RegExp, options?: ExpectOptions): Promise<void> {
-    await poll(
-      options?.timeout ?? this.defaultTimeout,
-      this.negated,
-      async () => {
-        const title = await this.page.title();
-        return {
-          pass: textMatches(title, expected, false),
-          actual: `title was ${JSON.stringify(title)}`,
+export class ResponseAssertions {
+  private readonly response: APIResponse;
+  private readonly negated: boolean;
+
+  constructor(response: APIResponse, negated = false) {
+    this.response = response;
+    this.negated = negated;
+  }
+
+  get not(): ResponseAssertions {
+    return new ResponseAssertions(this.response, !this.negated);
+  }
+
+  /** Status in the 2xx range. */
+  async toBeOK(): Promise<void> {
+    const ok = this.response.ok();
+    if (ok !== this.negated) return;
+    const not = this.negated ? 'not.' : '';
+    let text = '';
+    if (!ok) {
+      const type = this.response.headers()['content-type'] ?? '';
+      if (/text|json|xml|javascript/.test(type) || type === '') text = await this.response.text().catch(() => '');
+    }
+    const lines = [
+      `expect(response).${not}toBeOK() failed`,
+      '',
+      `→ GET ${this.response.url()}`,
+      `← ${this.response.status()} ${this.response.statusText()}`,
+    ];
+    if (text) lines.push('', `Response text:\n${text.slice(0, 1000)}`);
+    throw new ExpectError(lines.join('\n'), 'toBeOK', ok, [], 0);
+  }
+}
+
+type AnyAssertions = LocatorAssertions | PageAssertions | ResponseAssertions | ValueAssertions;
+
+interface ExpectConfig {
+  timeout?: number;
+  soft?: boolean;
+  message?: string;
+}
+
+/** Record a soft failure on the running test, or throw when there is none. */
+function softly<T extends object>(target: T): T {
+  return new Proxy(target, {
+    get(obj, prop, recv) {
+      const v = Reflect.get(obj, prop, recv);
+      if (prop === 'not') return softly(v as object);
+      if (typeof v !== 'function') return v;
+      return (...args: unknown[]) => {
+        const record = (e: unknown) => {
+          const info = currentTestInfo();
+          if (!info) throw e;
+          info.softErrors.push(e);
         };
-      },
-      (actual) =>
-        `expected page ${this.negated ? 'not ' : ''}to have title ${String(expected)}, but ${actual}`,
-    );
-  }
+        try {
+          const r = (v as (...a: unknown[]) => unknown).apply(obj, args);
+          return r instanceof Promise ? r.catch(record) : r;
+        } catch (e) {
+          record(e);
+          return undefined;
+        }
+      };
+    },
+  });
 }
 
-export function expect(target: Locator, message?: string): LocatorAssertions;
-export function expect(target: Page, message?: string): PageAssertions;
-export function expect(target: unknown, message?: string): ValueAssertions;
-export function expect(target: unknown, _message?: string): LocatorAssertions | PageAssertions | ValueAssertions {
-  if (target instanceof Locator) {
-    return new LocatorAssertions(target, false, target.expectTimeout);
-  }
-  if (target instanceof Page) return new PageAssertions(target, false, target.timeouts.expect);
-  return new ValueAssertions(target);
+export interface Expect {
+  (target: Locator, message?: string): LocatorAssertions;
+  (target: Page, message?: string): PageAssertions;
+  (target: APIResponse, message?: string): ResponseAssertions;
+  (target: unknown, message?: string): ValueAssertions;
+  poll: (fn: () => unknown, options?: { timeout?: number; intervals?: number[]; message?: string }) => ValueAssertions;
+  soft: Expect;
+  configure: (config: ExpectConfig) => Expect;
+  any: typeof asymmetric.any;
+  anything: typeof asymmetric.anything;
+  stringContaining: typeof asymmetric.stringContaining;
+  stringMatching: typeof asymmetric.stringMatching;
+  objectContaining: typeof asymmetric.objectContaining;
+  arrayContaining: typeof asymmetric.arrayContaining;
 }
 
-/** Retry `fn` until its value passes the matcher: `await expect.poll(() => count()).toBe(3)`. */
-expect.poll = (fn: () => unknown, options: { timeout?: number; intervals?: number[] } = {}): ValueAssertions =>
-  pollAssertions(fn, options.timeout ?? 5_000, options.intervals ?? [100, 250, 500, 1000]) as ValueAssertions;
+function makeExpect(config: ExpectConfig): Expect {
+  const fn = ((target: unknown, message?: string | { message?: string }): AnyAssertions => {
+    const custom = (typeof message === 'string' ? message : message?.message) ?? config.message;
+    let a: AnyAssertions;
+    if (target instanceof Locator) {
+      a = new LocatorAssertions(target, false, config.timeout ?? target.expectTimeout, custom);
+    } else if (target instanceof Page) {
+      a = new PageAssertions(target, false, config.timeout ?? target.timeouts.expect, custom);
+    } else if (target instanceof APIResponse) {
+      a = new ResponseAssertions(target);
+    } else {
+      a = new ValueAssertions(target);
+    }
+    return config.soft ? softly(a) : a;
+  }) as Expect;
+  fn.poll = (pollFn, options = {}) =>
+    pollAssertions(pollFn, options.timeout ?? config.timeout ?? 5_000, options.intervals ?? [100, 250, 500, 1000]) as ValueAssertions;
+  Object.defineProperty(fn, 'soft', { get: () => makeExpect({ ...config, soft: true }) });
+  fn.configure = (more) => makeExpect({ ...config, ...more });
+  fn.any = asymmetric.any;
+  fn.anything = asymmetric.anything;
+  fn.stringContaining = asymmetric.stringContaining;
+  fn.stringMatching = asymmetric.stringMatching;
+  fn.objectContaining = asymmetric.objectContaining;
+  fn.arrayContaining = asymmetric.arrayContaining;
+  return fn;
+}
 
-/**
- * Playwright's soft assertions keep the test running after a failure.
- * Here they fail the test at once, like a plain expect.
- */
-expect.soft = expect;
-
-/** Accepted for compatibility; per-call timeouts go in each matcher's options. */
-expect.configure = (_options: { timeout?: number; soft?: boolean }) => expect;
-
-expect.any = asymmetric.any;
-expect.anything = asymmetric.anything;
-expect.stringContaining = asymmetric.stringContaining;
-expect.stringMatching = asymmetric.stringMatching;
-expect.objectContaining = asymmetric.objectContaining;
-expect.arrayContaining = asymmetric.arrayContaining;
+export const expect: Expect = makeExpect({});

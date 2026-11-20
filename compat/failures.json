@@ -1,0 +1,2047 @@
+[
+  {
+    "spec": "expect-misc",
+    "test": "toHaveCount pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass zero",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "eventually pass zero",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "eventually pass non-zero",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "eventually pass not non-zero",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail zero",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail zero 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass string",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail string",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass number",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail number",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass boolean",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail boolean",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass boolean 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail boolean 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass undefined",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass null",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass nested",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail nested",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass with SVGs",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass with array",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail with array",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass with SVGs",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass with array",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail with array",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail string",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail with invalid argument",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail with positive predicate",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "fail with negative predicate",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "resolve predicate on initial call",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "resolve predicate after retries",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "support ignoreCase",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "support URLPattern",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should not match missing attribute",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should match boolean attribute",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should match attribute without value",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should support boolean attribute with options",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "support ignoreCase",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "custom css properties",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should respect ratio option",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should have good stack",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "should report intersection even if fully covered by other element",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "toHaveCount should not produce logs twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "toHaveText should not produce logs twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "toHaveText that does not match should not produce logs twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "strict mode violation error format",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-misc",
+    "test": "invalid selector error format",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass contain",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass eventually",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "with userInnerText",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "in shadow dom",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail with impossible timeout",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "do not show \"element(s) not found\" when the real failure is a string mismatch",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "should work when selector does not match",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass lazy",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass empty",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass not empty",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass on empty",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail on not+empty",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass eventually empty",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail on repeating array matchers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "pass",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-text",
+    "test": "fail",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "should work with label",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "should work with regex",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "should support failure",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "works with text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "follows labels",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "exact match with text failure",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "works with regex",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "fails when items not selected",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "fails when multiple not specified",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-to-have-value",
+    "test": "fails when not a select element",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should print element not found",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should print timed out error message when value does not match",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should print timed out error message with impossible timeout",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should print timed out error message when value does not match with impossible timeout",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should have timeout error name",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should not throw when navigating during one-shot check",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should not throw when navigating during first locator handler check",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "expect-timeout",
+    "test": "should timeout during first locator handler check",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-click",
+    "test": "should work @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-click",
+    "test": "should work with Node removed",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-click",
+    "test": "should double click the button",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-click",
+    "test": "should click if the target element is removed in pointerup event",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-click",
+    "test": "should click if the target element is removed in pointerdown event",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "should have a nice preview",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "getAttribute should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "inputValue should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "innerHTML should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "innerText should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "innerText should throw",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "innerText should produce log",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "textContent should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "isEnabled and isDisabled should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "isEditable should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "isChecked should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "isChecked should work for indeterminate input",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "allTextContents should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "allInnerTexts should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "should return page",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "description should return null for locator without description",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "description should return description for locator with simple description",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "description should return description with special characters",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "description should return description for chained locators",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "description should return description for locator with multiple describe calls",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "toString() returns formatted locator",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-convenience",
+    "test": "toString() prefers description",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should work for iframe @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should work for nested iframe",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should work for $ and $$",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should wait for frame",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should wait for frame 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should wait for frame to go",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should not wait for frame",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should not wait for frame 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should not wait for frame 3",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should click in lazy iframe",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "waitFor should survive frame reattach",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "click should survive frame reattach",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "click should survive iframe navigation",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should non work for non-frame",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "locator.frameLocator should work for iframe",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "locator.frameLocator should throw on ambiguity",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "locator.frameLocator should not throw on first/last/nth",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "getBy coverage",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "wait for hidden should succeed when frame is not in dom",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "should work with COEP/COOP/CORP isolated iframe",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "locator.contentFrame should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-frame",
+    "test": "frameLocator.owner should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible and isHidden should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible should be true for opacity:0",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible should be true for element outside view",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible and isHidden should work with details",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible inside a button",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible inside a role=button",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible during navigation should not throw",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-is-visible",
+    "test": "isVisible with invalid selector should throw",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-list",
+    "test": "locator.all should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should hover @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should hover when Node is removed",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should fill input",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should fill input when Node is removed",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should clear input",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should check the box",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should check the box using setChecked",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should uncheck the box",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should select single option",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should focus and blur a button",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "focus should respect strictness",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should dispatch click event via ElementHandles",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-1",
+    "test": "should upload the file",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should press @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should scroll into view",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should scroll zero-sized element into view",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should select textarea",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should type",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should pressSequentially",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should take screenshot",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should return bounding box",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should waitFor",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should waitFor hidden",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should combine visible with other selectors",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should support filter(visible)",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "locator.count should work with deleted Map in main world",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "Locator.locator() and FrameLocator.locator() should accept locator",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "should fill programmatically enabled textarea",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-misc-2",
+    "test": "press should throw on unknown keys",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should respect first() and last() @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should respect nth()",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should throw on capture w/ nth()",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should throw on due to strictness",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should throw on due to strictness 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by text 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by regex",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by text with quotes",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by regex with quotes",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by regex with a single quote",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by regex and regexp flags",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by case-insensitive regex in a child",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by case-insensitive regex in multiple children",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should filter by regex with special symbols",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should support has:locator",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should support locator.filter",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should support locator.and",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should support locator.or",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should support locator.locator with and/or",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should allow some, but not all nested frameLocators",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "should enforce same frame for has/leftOf/rightOf/above/below/near",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "alias methods coverage",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "locator-query",
+    "test": "count() should not throw during navigation",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with large DOM @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work for open shadow roots",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with > combinator and spaces",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with comma separated list",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should keep dom order with comma separated list",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should return multiple captures for the same node",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should return multiple captures when going up the hierarchy",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with comma separated list in various positions",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with comma inside text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with attribute selectors",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should not match root after >>",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with numerical id",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with wrong-case id",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with *",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :nth-child",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :nth-child(of) notation with nested functions",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :not",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with ~",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with +",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with spaces in :nth-child and :not",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :is",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :has",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :scope",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should work with :scope and class",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should absolutize relative selectors",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "css on the handle should be relative",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-css",
+    "test": "should use light DOM structure for child combinator with slotted content",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByTestId should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByTestId with custom testId should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByTestId should escape id",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByTestId should work for regex",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByText should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work with nested elements",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work with multiply-labelled input",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work with ancestor label and multiple controls",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work with ancestor label and for",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work with aria-labelledby",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should prioritize aria-labelledby over native label",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should work with aria-label",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should ignore empty aria-label",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByLabel should prioritize aria-labelledby over aria-label",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByPlaceholder should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByAltText should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByTitle should work",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getBy escaping",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-get-by",
+    "test": "getByRole escaping",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should detect roles",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support selected",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support checked",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support pressed",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support expanded",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support disabled",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should inherit disabled from the ancestor",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support disabled fieldset",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support level",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should filter hidden, unless explicitly asked for",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support name",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "errors",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "hidden with shadow dom slots",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should support output accessible name",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-role",
+    "test": "should not match scope by default",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with :text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should support empty string",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work across nodes",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "text-is() should ignore comments",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with text nodes in quoted mode",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should clear caches",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with :has-text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with large DOM",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should be case sensitive if quotes are specified",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should search for a substring without quotes",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should skip head, script and style",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should match input[type=button|submit]",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work for open shadow roots",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should prioritize light dom over shadow dom in the same parent",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should waitForSelector with distributed elements",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should match root after >>",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should match root after >> with *",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with leading and trailing spaces",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with unpaired quotes when not at the start",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "should work with paired quotes in the middle of selector",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "selectors-text",
+    "test": "hasText and internal:text should match full node text in strict mode",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should intercept @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should unroute",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not support ? in glob pattern",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work when POST is redirected with 302",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work when header manipulation headers with redirect",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should be able to remove headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should contain referer header",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should properly return navigation response when URL has cookies",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not override cookie header",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should show custom HTTP headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with redirect inside sync XHR",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should pause intercepted XHR until continue",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should pause intercepted fetch request until continue",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with custom referer headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should be abortable",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should be abortable with custom error codes",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not throw if request was cancelled by the page",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should send referer",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should fail navigation when aborting main resource",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not work with redirects",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should chain fallback w/ dynamic URL",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with redirects for subresources",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with equal requests",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should navigate to dataURL and not fire dataURL requests",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should be able to fetch dataURL and not fire dataURL requests",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should navigate to URL with hash and and fire requests without hash",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with encoded server",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with badly encoded server",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work with encoded server - 2",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not throw \"Invalid Interception Id\" if the request was cancelled",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should intercept main resource during cross-process navigation",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should fulfill with redirect status",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not fulfill with redirect status",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should support cors with GET",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should add Access-Control-Allow-Origin by default when fulfill",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should allow null origin for about:blank",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should respect cors overrides",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not auto-intercept non-preflight OPTIONS without network interception",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should not auto-intercept non-preflight OPTIONS with network interception",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should support cors with POST",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should support cors with credentials",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should reject cors with disallowed credentials",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should support cors for different methods",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should support the times parameter with route matching",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should work if handler with times parameter was removed from another handler",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should support async handler w/ times",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should contain raw request header",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should contain raw response header",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should contain raw response header after fulfill",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "route.fulfill should throw if called twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "route.continue should throw if called twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "route.fallback should throw if called twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "route.abort should throw if called twice",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should intercept when postData is more than 1MB",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-route",
+    "test": "should be able to intercept every navigation to a page controlled by service worker",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should work for main frame navigation request",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should work for subframe navigation request",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should work for fetch requests @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should work for a redirect",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should not work for a redirect and interception",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should return headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should get the same headers as the server",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should not return allHeaders() until they are available",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should get the same headers as the server CORS",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should not get preflight CORS requests when intercepting",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should return postData",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should work with binary post data",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should work with binary post data and interception",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should override post data content type",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should get |undefined| with postData() when there is no post data",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should parse the json post data",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should parse the data if content-type is application/x-www-form-urlencoded",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should parse the data if content-type is application/x-www-form-urlencoded; charset=UTF-8",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should get |undefined| with postDataJSON() when there is no post data",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should return multipart/form-data",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should return event source",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should return navigation bit",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should return navigation bit when navigating to image",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should report raw headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should report raw response headers in redirects",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should report all cookies in one header",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should not allow to access frame on popup main request",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "page.reload return 304 status code",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-request",
+    "test": "should handle mixed-content blocked requests",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should work @smoke",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return multiple header value",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return uncompressed text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should throw when requesting body of redirected response",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should wait until response completes",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return json",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return body",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return body with compression",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return status text",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should report all headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should report multiple set-cookie headers",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should behave the same way for headers and allHeaders",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should provide a Response with a file URL",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return set-cookie header after route.fulfill",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return headers after route.fulfill",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should report if request was fromServiceWorker",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return body for prefetch script",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should bypass disk cache when page interception is enabled",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should bypass disk cache when context interception is enabled",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "request.existingResponse should return null before response is received",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "request.existingResponse should return the response after it is received",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  },
+  {
+    "spec": "page-network-response",
+    "test": "should return http version",
+    "error": "The \"path\" argument must be of type string. Received an instance of Object"
+  }
+]

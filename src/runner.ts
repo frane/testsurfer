@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Browser, type BrowserContext, type LaunchOptions } from './browser.ts';
-import { currentTestInfo, testInfoStore, updateSnapshotsFromEnv, type UpdateSnapshots } from './testinfo.ts';
+import { currentTestInfo, testInfoStore, updateSnapshotsFromEnv, type TestInfo, type UpdateSnapshots } from './testinfo.ts';
 import type { Page } from './page.ts';
 
 export interface TestFixtures {
@@ -49,7 +49,7 @@ export interface RunnerOptions extends LaunchOptions {
 }
 
 type Fixtures = Record<string, unknown>;
-type TestBody<F> = (fixtures: F) => Promise<void> | void;
+type TestBody<F> = (fixtures: F, testInfo: TestInfo) => Promise<void> | void;
 type AllHook = (fixtures: WorkerFixtures) => Promise<void> | void;
 type FixtureFn = (fixtures: Fixtures, use: (value: unknown) => Promise<void>) => Promise<void>;
 /** A test.extend() definition: a value, a setup function, or `[value, { option: true }]`. */
@@ -121,6 +121,9 @@ interface TestOpts {
 }
 
 interface Scope {
+  title?: string;
+  /** test.use() overrides, applied to tests registered after them in this scope. */
+  uses?: Record<string, unknown>;
   beforeEach: TestBody<Fixtures>[];
   afterEach: TestBody<Fixtures>[];
   mode: 'default' | 'parallel' | 'serial';
@@ -176,7 +179,7 @@ function nodeOpts(o: TestOpts): Record<string, unknown> {
 }
 
 function describeWith(name: string, body: () => void, opts: TestOpts, mode: Scope['mode']): void {
-  const scope: Scope = { beforeEach: [], afterEach: [], mode, items: [] };
+  const scope: Scope = { title: name, beforeEach: [], afterEach: [], mode, items: [] };
   stack.push(scope);
   try {
     body();
@@ -203,21 +206,67 @@ function runWith(
     // Launching merges the config file into `options`; do it before
     // reading outputDir and updateSnapshots.
     await sharedBrowser();
+    const outputDir = options.outputDir ?? 'test-results';
+    // skip(), fixme() and friends take (condition?, reason?): no
+    // condition, or a string reason alone, means unconditionally.
+    const when = (c: boolean | string | undefined, r: string | undefined): [boolean, string | undefined] =>
+      typeof c === 'string' ? [true, c] : [c ?? true, r];
+    const info: TestInfo = {
+      title: name,
+      titlePath: [...chain.map((s) => s.title).filter((x): x is string => !!x), name],
+      file: t.filePath ?? process.argv[1] ?? 'test',
+      snapshotIndex: 0,
+      outputDir,
+      updateSnapshots: updateSnapshotsFromEnv() ?? options.updateSnapshots ?? 'missing',
+      annotations: [],
+      attachments: [],
+      softErrors: [],
+      retry: 0,
+      workerIndex: 0,
+      parallelIndex: 0,
+      project: { name: 'webkit', use: {} },
+      timeout: 30_000,
+      expectedStatus: 'passed',
+      skip: (c, r) => {
+        const [on, reason] = when(c, r);
+        if (!on) return;
+        info.annotations.push({ type: 'skip', description: reason });
+        t.skip?.(reason);
+        throw new SkipSignal(reason ?? 'skipped');
+      },
+      fixme: (c, r) => info.skip(c, r),
+      fail: (c, r) => {
+        const [on, reason] = when(c, r);
+        if (!on) return;
+        info.annotations.push({ type: 'fail', description: reason });
+        info.expectedStatus = 'failed';
+      },
+      slow: (c, r) => {
+        const [on, reason] = when(c, r);
+        if (on) info.annotations.push({ type: 'slow', description: reason });
+      },
+      setTimeout: (ms) => {
+        info.timeout = ms;
+      },
+      outputPath: (...parts) => path.resolve(outputDir, safeName(name), ...parts),
+      attach: async (n, o = {}) => {
+        const body = typeof o.body === 'string' ? Buffer.from(o.body) : o.body;
+        info.attachments.push({ name: n, contentType: o.contentType ?? 'application/octet-stream', path: o.path, body });
+      },
+    };
     try {
-      await testInfoStore.run(
-        {
-          title: name,
-          file: t.filePath ?? process.argv[1] ?? 'test',
-          snapshotIndex: 0,
-          outputDir: options.outputDir ?? 'test-results',
-          updateSnapshots: updateSnapshotsFromEnv() ?? options.updateSnapshots ?? 'missing',
-          skip: (reason?: string) => {
-            t.skip?.(reason);
-            throw new SkipSignal(reason ?? 'skipped');
-          },
-        },
-        () => runTest(name, fn, chain, defs),
-      );
+      await testInfoStore.run(info, async () => {
+        let threw = false;
+        try {
+          await runTest(name, fn, chain, defs, info);
+        } catch (e) {
+          if (e instanceof SkipSignal || info.expectedStatus !== 'failed') throw e;
+          threw = true;
+        }
+        if (info.expectedStatus === 'failed' && !threw) {
+          throw new Error('expected to fail, but passed (test.fail)');
+        }
+      });
     } catch (e) {
       if (!(e instanceof SkipSignal)) throw e;
     }
@@ -257,6 +306,7 @@ async function runTest(
   fn: TestBody<Fixtures>,
   chain: Scope[],
   defs: Record<string, FixtureDef>,
+  info: TestInfo,
 ): Promise<void> {
   const befores = chain.flatMap((s) => s.beforeEach);
   const afters = chain.flatMap((s) => s.afterEach).reverse();
@@ -270,17 +320,22 @@ async function runTest(
     }
     await withFixtures({ page, context, browser }, defs, async (all) => {
       try {
-        for (const h of befores) await h(all);
-        await fn(all);
+        for (const h of befores) await h(all, info);
+        await fn(all, info);
+        if (info.softErrors.length > 0) {
+          const [first, ...rest] = info.softErrors;
+          if (rest.length && first instanceof Error) first.message += `\n\n(and ${rest.length} more soft assertion failure${rest.length > 1 ? 's' : ''})`;
+          throw first;
+        }
       } catch (e) {
         if (!(e instanceof SkipSignal) && options.screenshot === 'only-on-failure') {
           const file = path.join(options.outputDir ?? 'test-results', `${safeName(name)}.png`);
-          const saved = await page.screenshot({ path: file }).catch(() => null);
-          if (saved && e instanceof Error) e.message += `\n  screenshot: ${saved}`;
+          const saved = await page.screenshot({ path: file }).then(() => true, () => false);
+          if (saved && e instanceof Error) e.message += `\n  screenshot: ${file}`;
         }
         throw e;
       } finally {
-        for (const h of afters) await h(all);
+        for (const h of afters) await h(all, info);
       }
     });
   } finally {
@@ -315,6 +370,18 @@ export interface TestApi<F extends object> {
     (name: string, fn: TestBody<F>): void;
     (condition?: boolean, reason?: string): void;
   };
+  /** A test expected to throw: it passes only if its body fails. */
+  fail: {
+    (name: string, fn: TestBody<F>): void;
+    (condition?: boolean, reason?: string): void;
+  };
+  /** Marks the running test slow (an annotation; there is no timeout tripling). */
+  slow: (condition?: boolean, reason?: string) => void;
+  setTimeout: (ms: number) => void;
+  /** The running test's TestInfo. */
+  info: () => TestInfo;
+  /** Override fixture values for the tests in this file or describe block. */
+  use: (values: Partial<F> & Record<string, unknown>) => void;
   describe: DescribeFn;
   beforeEach: (fn: TestBody<F>) => void;
   afterEach: (fn: TestBody<F>) => void;
@@ -334,7 +401,19 @@ export type FixtureDefFor<All, V> =
 
 function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F> {
   const reg = (name: string, fn: TestBody<F>, opts: TestOpts) =>
-    add({ kind: 'test', name, fn: fn as TestBody<Fixtures>, opts, chain: [...stack], defs });
+    add({
+      kind: 'test',
+      name,
+      fn: fn as TestBody<Fixtures>,
+      opts,
+      chain: [...stack],
+      defs: Object.assign({}, defs, ...stack.map((s) => s.uses ?? {})),
+    });
+  const running = (what: string): TestInfo => {
+    const info = currentTestInfo();
+    if (!info) throw new Error(`test.${what}() must be called inside a test`);
+    return info;
+  };
 
   const t = ((name: string, fn: TestBody<F>) => reg(name, fn, {})) as TestApi<F>;
   t.only = (name, fn) => reg(name, fn, { only: true });
@@ -344,12 +423,27 @@ function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F
       return;
     }
     if (a === false) return;
-    const info = currentTestInfo();
-    if (!info) throw new Error('test.skip(condition) must be called inside a test');
-    info.skip(typeof b === 'string' ? b : undefined);
+    running('skip').skip(a ?? true, typeof b === 'string' ? b : undefined);
   }) as TestApi<F>['skip'];
   t.skip = skipper;
   t.fixme = skipper;
+  t.fail = ((a?: string | boolean, b?: TestBody<F> | string) => {
+    if (typeof a === 'string' && typeof b === 'function') {
+      reg(a, (async (f: F, info: TestInfo) => {
+        info.fail();
+        await b(f, info);
+      }) as TestBody<F>, {});
+      return;
+    }
+    running('fail').fail(a ?? true, typeof b === 'string' ? b : undefined);
+  }) as TestApi<F>['fail'];
+  t.slow = (c, r) => running('slow').slow(c ?? true, r);
+  t.setTimeout = (ms) => running('setTimeout').setTimeout(ms);
+  t.info = () => running('info');
+  t.use = (values) => {
+    const scope = current();
+    scope.uses = { ...scope.uses, ...values };
+  };
   t.describe = describeApi;
   t.beforeEach = (fn) => current().beforeEach.push(fn as TestBody<Fixtures>);
   t.afterEach = (fn) => current().afterEach.push(fn as TestBody<Fixtures>);
