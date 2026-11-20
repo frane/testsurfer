@@ -337,7 +337,9 @@ interface ShimRow {
 
 interface ShimEvent {
   t: string;
-  id?: number;
+  id?: number | string;
+  name?: string;
+  args?: unknown[];
   type?: string;
   text?: string;
   message?: string;
@@ -386,7 +388,36 @@ export class PageEvents {
   }
 
   get active(): boolean {
-    return this.routes.length > 0 || this.listeners.size > 0;
+    return this.routes.length > 0 || this.listeners.size > 0 || this.bindings.size > 0;
+  }
+
+  /** exposeBinding() callbacks by name; the page calls them through the shim queue. */
+  private bindings = new Map<string, (...args: unknown[]) => unknown>();
+
+  /** Register a binding and return the page-side script that defines it. */
+  addBinding(name: string, fn: (...args: unknown[]) => unknown): string {
+    if (this.bindings.has(name)) throw new Error(`Function "${name}" has been already registered`);
+    this.bindings.set(name, fn);
+    const n = JSON.stringify(name);
+    return (
+      `(function(){if(window.top!==window)return;var ts=window.__ts;if(!ts)return;` +
+      `window[${n}]=function(){var args=[].slice.call(arguments);return new Promise(function(res,rej){` +
+      `var id='b'+(++ts.seq);ts.wait[id]=function(d){if(d.ok)res(d.v);else rej(new Error(d.e));};` +
+      `var enc;try{enc=JSON.parse(JSON.stringify(args));}catch(e){enc=[];}` +
+      `ts.ev.push({t:'call',id:id,name:${n},args:enc});});};})();`
+    );
+  }
+
+  private async runBinding(e: ShimEvent): Promise<void> {
+    const fn = this.bindings.get(e.name ?? '');
+    let d: { ok: boolean; v?: unknown; e?: string };
+    try {
+      d = { ok: true, v: fn ? await fn(...(e.args ?? [])) : undefined };
+    } catch (err) {
+      d = { ok: false, e: err instanceof Error ? err.message : String(err) };
+    }
+    if (d.v === undefined) delete d.v;
+    await this.evalPage(`window.__ts ? window.__ts.settle(${JSON.stringify(e.id)}, ${JSON.stringify(d)}) : 'gone'`).catch(() => {});
   }
 
   get routing(): boolean {
@@ -497,6 +528,9 @@ export class PageEvents {
 
   private onEvent(e: ShimEvent): void {
     switch (e.t) {
+      case 'call':
+        void this.runBinding(e);
+        break;
       case 'console':
         this.emit('console', new ConsoleMessage(e.type ?? 'log', e.text ?? ''));
         break;
@@ -508,7 +542,7 @@ export class PageEvents {
       }
       case 'request': {
         const req = new Request({
-          id: e.id ?? 0,
+          id: Number(e.id ?? 0),
           url: e.url ?? '',
           method: e.method ?? 'GET',
           headers: e.headers ?? {},
@@ -520,7 +554,7 @@ export class PageEvents {
         break;
       }
       case 'response': {
-        const req = this.requests.get(e.id ?? -1);
+        const req = this.requests.get(Number(e.id ?? -1));
         if (!req) break;
         const res = new Response(req, {
           url: e.url ?? req.url(),
@@ -535,7 +569,7 @@ export class PageEvents {
         break;
       }
       case 'requestfailed': {
-        const req = this.requests.get(e.id ?? -1);
+        const req = this.requests.get(Number(e.id ?? -1));
         if (!req) break;
         req.failureText = e.failure ?? 'failed';
         this.emit('requestfailed', req);

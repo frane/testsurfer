@@ -350,6 +350,35 @@ export class Page {
     }
   }
 
+  /**
+   * Resolve when the page has loaded a new document (and, with `url`,
+   * one whose URL matches). Start it before the action that navigates:
+   * `await Promise.all([page.waitForNavigation(), link.click()])`.
+   */
+  async waitForNavigation(options: { url?: UrlMatcher; timeout?: number; waitUntil?: string } = {}): Promise<null> {
+    const budget = options.timeout ?? this.timeouts.navigation;
+    const deadline = Date.now() + budget;
+    // Mark the current document; a new one will not carry the mark.
+    const mark = `nav${Date.now()}${Math.random().toString(36).slice(2)}`;
+    await this.rawEval(`(window.__tsNavMark = ${JSON.stringify(mark)}, 0)`).catch(() => {});
+    for (;;) {
+      const state = await this.rawEval<{ m: string | null; r: string; u: string } | null>(
+        `({ m: window.__tsNavMark || null, r: document.readyState, u: location.href })`,
+      ).catch(() => null);
+      if (state && state.m !== mark && state.r !== 'loading') {
+        if (!options.url || urlMatches(options.url, state.u, this.baseURL)) {
+          this.snapshot = null;
+          this.synced = false;
+          this.fresh = false;
+          this.events.documentChanged();
+          return null;
+        }
+      }
+      if (Date.now() >= deadline) throw new Error(`page.waitForNavigation: Timeout ${budget}ms exceeded.`);
+      await sleep(20);
+    }
+  }
+
   /** goto() already waits for the load; kept for Playwright compatibility. */
   async waitForLoadState(_state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void> {}
 
@@ -909,6 +938,26 @@ export class Page {
         return true;
       }) ?? null
     );
+  }
+
+  /**
+   * Make `fn` callable from the page as `window[name](...args)`; the
+   * call returns a promise of fn's result. Arguments and results cross
+   * as JSON. Covers this document and every later one.
+   */
+  async exposeFunction(name: string, fn: (...args: any[]) => unknown): Promise<void> {
+    await this.exposeBinding(name, (_source: unknown, ...args: unknown[]) => fn(...args));
+  }
+
+  /** Like exposeFunction, with `{ page, context, frame }` as the first argument. */
+  async exposeBinding(name: string, fn: (source: { page: Page; context: BrowserContext | null; frame: Frame }, ...args: any[]) => unknown): Promise<void> {
+    const script = this.events.addBinding(name, (...args: unknown[]) =>
+      fn({ page: this, context: this.ctx, frame: this.mainFrame() }, ...args),
+    );
+    await this.ensureShim();
+    await this.addInitSource(script);
+    await this.events.sync();
+    if (this.pageId) await this.rawEval(`(${script.replace(/;\s*$/, '')}, 0)`).catch(() => {});
   }
 
   /** Like evaluate(), but keeps the result in the page and returns a handle to it. */

@@ -193,6 +193,8 @@ export class Browser {
   /** Close the session and drop the connection. */
   async close(): Promise<void> {
     for (const ctx of [...this.openContexts]) await ctx.close().catch(() => {});
+    // The default context shares the browser's session; closing it closes its pages and their pollers.
+    if (this.defaultCtx) await this.defaultCtx.close().catch(() => {});
     await this.client.call('vs_session_close', [this.sessionId], {}).catch(() => {});
     this.client.close();
   }
