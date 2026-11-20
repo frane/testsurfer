@@ -1,0 +1,55 @@
+name: Set up testsurfer
+description: Prepare a GitHub runner to run testsurfer suites. On Linux, installs WebKitGTK 6 and starts a virtual display; on macOS there is nothing to install.
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  vibesurfer-version:
+    description: vibesurfer release to fetch and start. Empty uses the version this testsurfer release pins.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install WebKitGTK 6 and Xvfb
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q --no-install-recommends \
+          libwebkitgtk-6.0-4 libgtk-4-1 xvfb dbus-x11
+        # WebKitGTK's web process runs in a bubblewrap sandbox, which
+        # needs unprivileged user namespaces. Ubuntu 24.04 restricts
+        # them through AppArmor, and the web view then crashes on its
+        # first navigation.
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+    - name: Start a virtual display
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        # Trusted input goes through XTest, so the web view needs a
+        # real X display, not just an offscreen surface.
+        Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+        for _ in $(seq 1 50); do
+          [ -e /tmp/.X11-unix/X99 ] && break
+          sleep 0.1
+        done
+        echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+    - name: Fetch and start vibesurfer
+      shell: bash
+      env:
+        VS_VERSION: ${{ inputs.vibesurfer-version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [ -z "$VS_VERSION" ]; then
+          VS_VERSION=$(sed -n "s/^export const PINNED_VIBESURFER = '\(.*\)';/\1/p" "$ACTION_PATH/src/client.ts")
+        fi
+        echo "TESTSURFER_VS=npx -y vibesurfer@${VS_VERSION}" >> "$GITHUB_ENV"
+        # Download the binary and start the daemon once, so the first
+        # test does not pay for it and parallel test files do not race
+        # to spawn it.
+        npx -y "vibesurfer@${VS_VERSION}" status

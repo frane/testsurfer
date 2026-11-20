@@ -7,7 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,13 +21,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm run test:unit
+      # The same action users put in their own workflows.
+      - uses: ./
       - name: e2e against the pinned vibesurfer binary
-        env:
-          TESTSURFER_VS: npx -y vibesurfer@0.2.14
         run: npm run test:e2e
       - name: example project
-        env:
-          TESTSURFER_VS: npx -y vibesurfer@0.2.14
         working-directory: examples/todo
         run: |
           npm install
