@@ -1607,6 +1607,7 @@ export function installEngine(SER) {
   };
   SER.H.get = (id) => HANDLES.get(id);
   // Elements, documents and shadow roots come back as element handles.
+  const frameIds = new WeakMap();
   const isEl = (v) => !!v && typeof v === 'object' && (v.nodeType === 1 || v.nodeType === 9 || v.nodeType === 11);
 
   const api = {
@@ -1655,7 +1656,7 @@ export function installEngine(SER) {
         );
         return { p: id };
       }
-      return { v: SER.ser(v), u: location.href };
+      return { v: SER.ser(v), u: location.href, fc: document.querySelectorAll('iframe,frame').length };
     },
     h: (id) => HANDLES.get(id),
     drop(id) {
@@ -1680,7 +1681,12 @@ export function installEngine(SER) {
       const walk = (doc, parent) => {
         for (const f of allUnder(doc)) {
           if (f.nodeName !== 'IFRAME' && f.nodeName !== 'FRAME') continue;
-          const id = adopt(f);
+          // The same iframe keeps its id, so Frame objects stay the same across listings.
+          let id = frameIds.get(f);
+          if (id === undefined) {
+            id = adopt(f);
+            frameIds.set(f, id);
+          }
           let d = null;
           let url = '';
           try {

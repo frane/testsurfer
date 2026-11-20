@@ -25,6 +25,11 @@ export class Frame {
     return this.owner;
   }
 
+  /** @internal The handle id of the <iframe> element (-1 for the main frame). */
+  elementId(): number {
+    return this.element?.handleId ?? -1;
+  }
+
   parentFrame(): Frame | null {
     return this.parent;
   }

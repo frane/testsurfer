@@ -214,6 +214,11 @@ export class Page {
       addInitScript: (src) => this.addInitSource(src),
       proxied: () => this.ctx?.intercept ?? false,
       mainFrame: () => this.mainFrame(),
+      childFrame: (url: string) => {
+        // The frame list may predate the iframe; the newest child stands in.
+        const kids = this.frames().slice(1);
+        return kids.find((f) => f.frameUrl === url) ?? kids[kids.length - 1] ?? null;
+      },
       extraHeaders: () => ({ ...(this.ctx?.extraHeaders ?? {}), ...this.extraHeaders }),
     });
   }
@@ -880,9 +885,17 @@ export class Page {
       throw new Error('Execution context was destroyed, most likely because of a navigation');
     }
     if (r && typeof (r as { u?: unknown }).u === 'string') this.lastHref = (r as { u: string }).u;
+    // Keep frames() current: re-read the frame tree when the page's iframe count changed.
+    const fc = (r as { fc?: number } | null)?.fc;
+    if (typeof fc === 'number' && fc !== this.lastFrameCount && !this.refreshingFrames) {
+      this.lastFrameCount = fc;
+      await this.refreshFrames();
+    }
     if (this.events.hasBindings && !body.startsWith('E.doc')) await this.events.flush();
     if (r.e) {
-      const err = new Error(r.e.message);
+      // As Playwright prints a page exception: "TypeError: Load failed".
+      const name = r.e.name && r.e.name !== 'Error' ? r.e.name : null;
+      const err = new Error(name ? `${name}: ${r.e.message}` : r.e.message);
       err.name = r.e.name ?? 'Error';
       throw err;
     }
@@ -1004,6 +1017,8 @@ export class Page {
   }
 
   private frameCache: Frame[] = [];
+  private lastFrameCount = 0;
+  private refreshingFrames = false;
 
   /**
    * The main frame, then every iframe, depth first, as of the last
@@ -1017,15 +1032,20 @@ export class Page {
   /** Re-read the frame tree, for iframes added after the page loaded. */
   async refreshFrames(): Promise<Frame[]> {
     let rows: [number, number | null, string, string][] = [];
+    this.refreshingFrames = true;
     try {
       rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string][];
     } catch {
       rows = [];
+    } finally {
+      this.refreshingFrames = false;
     }
     const byId = new Map<number, Frame>();
+    const known = new Map(this.frameCache.map((f) => [(f as unknown as { elementId(): number }).elementId(), f]));
     const out: Frame[] = [];
     for (const [id, parent, name, url] of rows) {
-      const f = new Frame(this, new ElementHandle(this, id), parent === null ? this.mainFrame() : (byId.get(parent) ?? this.mainFrame()));
+      // An iframe already listed keeps its Frame object (Playwright compares them by identity).
+      const f = known.get(id) ?? new Frame(this, new ElementHandle(this, id), parent === null ? this.mainFrame() : (byId.get(parent) ?? this.mainFrame()));
       f.frameName = name;
       f.frameUrl = url;
       byId.set(id, f);

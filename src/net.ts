@@ -22,8 +22,8 @@ export interface NetPage {
   netRoutes(): boolean;
   /** setExtraHTTPHeaders() values. */
   netExtraHeaders(): Record<string, string>;
-  /** The page's main frame, for request.frame(). */
-  netFrame(): unknown;
+  /** The frame for request.frame(): the main frame, or the iframe loading `url`. */
+  netFrame(kind: 'main' | 'sub', url: string): unknown;
   /** A route aborted a main-frame navigation. */
   netNavAborted(): void;
   /**
@@ -65,6 +65,7 @@ interface Pending {
   id: number;
   head: string[];
   headers: Record<string, string>;
+  raw: { name: string; value: string }[];
   body?: string;
 }
 
@@ -173,8 +174,10 @@ export class NetHub {
       if (line.startsWith('h ') && cur) {
         const i = line.indexOf(': ');
         if (i > 2) {
-          const k = line.slice(2, i).toLowerCase();
+          const name = line.slice(2, i);
+          const k = name.toLowerCase();
           const v = line.slice(i + 2);
+          cur.raw.push({ name, value: v });
           cur.headers[k] = cur.headers[k] === undefined ? v : `${cur.headers[k]}, ${v}`;
         }
         continue;
@@ -189,7 +192,7 @@ export class NetHub {
       switch (parts[0]) {
         case 'req':
         case 'res':
-          cur = { kind: parts[0], id, head: parts, headers: {} };
+          cur = { kind: parts[0], id, head: parts, headers: {}, raw: [] };
           break;
         case 'fin': {
           const req = this.requests.get(id);
@@ -219,19 +222,28 @@ export class NetHub {
       // req <id> <METHOD> <url> type=<t> nav=<0|1> [frame=main|sub]
       const [, , method = 'GET', url = ''] = p.head;
       const attrs = Object.fromEntries(p.head.slice(4).map((kv) => kv.split('=') as [string, string]));
-      const type = attrs['type'] ?? 'other';
+      let type = attrs['type'] ?? 'other';
+      // The proxy cannot tell an EventSource from fetch; its Accept header can.
+      if (type === 'fetch' && (p.headers['accept'] ?? '').includes('text/event-stream')) type = 'eventsource';
+      // The proxy forwards one request per connection, so the server sees
+      // `Connection: close`; report the headers as they reached it.
+      if (p.headers['connection'] !== undefined) p.headers['connection'] = 'close';
+      for (const h of p.raw) if (h.name.toLowerCase() === 'connection') h.value = 'close';
+      const bytes = p.body ? Buffer.from(p.body, 'base64') : null;
       const req = new Request({
         id: p.id,
         url,
         method,
         headers: p.headers,
-        body: p.body ? Buffer.from(p.body, 'base64').toString('latin1') : null,
-        type: type as 'fetch',
+        body: bytes ? bytes.toString('utf8') : null,
+        bodyBytes: bytes,
+        raw: p.raw,
+        type,
         navigation: attrs['nav'] === '1',
         frame: attrs['frame'] === 'sub' ? 'sub' : 'main',
       });
       const page = [...this.pages][0];
-      req.frameValue = page ? page.netFrame() : null;
+      req.frameValue = page ? () => page.netFrame(req.frameKind(), url) : null;
       // setExtraHTTPHeaders() values are part of the request, as handlers and listeners see it.
       const add = Object.assign({}, ...[...this.pages].map((pg) => pg.netExtraHeaders()));
       for (const [k, v] of Object.entries(add)) req.addHeader(k, v as string);
@@ -339,8 +351,34 @@ export class NetHub {
     };
     const fallthrough: ContinueOptions = {};
     try {
-      // CORS preflights are not shown to routes; they go to the network.
+      // CORS preflights are not shown to routes. With routes active, the
+      // server's own answer is used when it grants the request; when it
+      // does not (or cannot be reached), the preflight is granted here,
+      // so a route can fulfill a cross-origin request to any host.
       const preflight = req.method() === 'OPTIONS' && req.headers()['access-control-request-method'] !== undefined;
+      if (preflight && [...this.pages].some((p) => p.netRoutes())) {
+        const real = await decider.fetch({}).catch(() => null);
+        const granted = real && Object.keys(real.headers()).some((k) => k.toLowerCase() === 'access-control-allow-origin');
+        if (real && granted) {
+          await this.call('vs_net_fulfill', [id], {
+            status: String(real.status()),
+            headers: headerLines(real.headers()),
+            'body-b64': (await real.body()).toString('base64'),
+          }).catch(quiet);
+        } else {
+          await this.call('vs_net_fulfill', [id], {
+            status: '204',
+            headers: headerLines({
+              'access-control-allow-origin': req.headers()['origin'] ?? '*',
+              'access-control-allow-methods': req.headers()['access-control-request-method'] ?? '*',
+              'access-control-allow-headers': req.headers()['access-control-request-headers'] ?? '*',
+              'access-control-allow-credentials': 'true',
+            }),
+            'body-b64': '',
+          }).catch(quiet);
+        }
+        return;
+      }
       if (!redirectHop && !preflight) {
         for (const page of [...this.pages]) {
           if (await page.netHandle(req, decider, fallthrough)) return;

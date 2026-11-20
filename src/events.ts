@@ -85,6 +85,10 @@ interface RequestInfo {
   /** The main-frame or iframe navigation (proxy mode). */
   navigation?: boolean;
   frame?: 'main' | 'sub';
+  /** Headers in their original case and order, as sent (proxy mode). */
+  raw?: { name: string; value: string }[];
+  /** The request body's bytes (proxy mode). */
+  bodyBytes?: Buffer | null;
 }
 
 /** A fetch or XHR the page made. */
@@ -101,6 +105,12 @@ export class Request {
   abortedByRoute = false;
 
   frame(): any {
+    // Resolved on first use: an iframe's frame may not be listed yet when its request starts.
+    if (typeof this.frameValue === 'function') {
+      const f = (this.frameValue as () => unknown)();
+      if (f) this.frameValue = f;
+      return f;
+    }
     return this.frameValue;
   }
   failureText: string | null = null;
@@ -129,7 +139,13 @@ export class Request {
     return this.info.body;
   }
   postDataJSON(): unknown {
-    return this.info.body === null ? null : JSON.parse(this.info.body);
+    if (this.info.body === null) return null;
+    const type = this.info.headers['content-type'] ?? '';
+    // A form body parses as name/value pairs, as in Playwright.
+    if (type.includes('application/x-www-form-urlencoded')) {
+      return Object.fromEntries(new URLSearchParams(this.info.body));
+    }
+    return JSON.parse(this.info.body);
   }
   /** `fetch`, `xhr`, or `document` for the main-frame navigation goto() returns. */
   resourceType(): string {
@@ -143,6 +159,7 @@ export class Request {
     return this.info.frame ?? 'main';
   }
   headersArray(): { name: string; value: string }[] {
+    if (this.info.raw) return this.info.raw.map((h) => ({ ...h }));
     return Object.entries(this.info.headers).map(([name, value]) => ({ name, value }));
   }
   redirectedFrom(): Request | null {
@@ -161,6 +178,7 @@ export class Request {
     return this.info.headers[name.toLowerCase()] ?? null;
   }
   postDataBuffer(): Buffer | null {
+    if (this.info.bodyBytes !== undefined) return this.info.bodyBytes;
     return this.info.body === null ? null : Buffer.from(this.info.body);
   }
   failure(): { errorText: string } | null {
@@ -450,6 +468,8 @@ export interface EventsHost {
   proxied?: () => boolean;
   /** The page's main frame, for request.frame(). */
   mainFrame?: () => unknown;
+  /** The iframe loading `url` (or the newest one), for an iframe's request.frame(). */
+  childFrame?: (url: string) => unknown;
   /** setExtraHTTPHeaders() values for this page and its context. */
   extraHeaders?: () => Record<string, string>;
 }
@@ -573,8 +593,9 @@ export class PageEvents {
     return this.host.extraHeaders?.() ?? {};
   }
 
-  netFrame(): unknown {
-    return this.host.mainFrame?.() ?? null;
+  netFrame(kind: 'main' | 'sub', url: string): unknown {
+    if (kind === 'main') return this.host.mainFrame?.() ?? null;
+    return this.host.childFrame?.(url) ?? null;
   }
 
   private navAborted = false;
