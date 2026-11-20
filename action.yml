@@ -39,7 +39,36 @@ runs:
         done
         echo "DISPLAY=:99" >> "$GITHUB_ENV"
 
+    - name: Fetch and start vibesurfer (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        VS_VERSION: ${{ inputs.vibesurfer-version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        # The release zip directly, checksum-verified, rather than the
+        # npm launcher, whose unpacking needs vibesurfer 0.2.16+ under
+        # Git Bash.
+        $v = $env:VS_VERSION
+        if (-not $v) {
+          $v = (Select-String -Path (Join-Path $env:ACTION_PATH 'src/client.ts') -Pattern "PINNED_VIBESURFER = '(.*)'").Matches[0].Groups[1].Value
+        }
+        $asset = "vs-v$v-x86_64-pc-windows-msvc.zip"
+        $base = "https://github.com/frane/vibesurfer/releases/download/v$v"
+        $dir = Join-Path $env:RUNNER_TEMP "vibesurfer-$v"
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        Invoke-WebRequest "$base/$asset" -OutFile (Join-Path $dir $asset)
+        $sums = (Invoke-WebRequest "$base/checksums.txt").Content
+        $want = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset) } | Select-Object -First 1).Split(' ')[0]
+        $got = (Get-FileHash (Join-Path $dir $asset) -Algorithm SHA256).Hash.ToLower()
+        if ($want -ne $got) { throw "checksum mismatch for ${asset}: $got, expected $want" }
+        Expand-Archive (Join-Path $dir $asset) -DestinationPath $dir -Force
+        $dir | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+        "TESTSURFER_VS=$(Join-Path $dir 'vs.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+        & (Join-Path $dir 'vs.exe') status
+
     - name: Fetch and start vibesurfer
+      if: runner.os != 'Windows'
       shell: bash
       env:
         VS_VERSION: ${{ inputs.vibesurfer-version }}
