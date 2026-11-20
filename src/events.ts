@@ -9,6 +9,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import type { WireClient } from './client.ts';
 import { NetHub, type NetDecider } from './net.ts';
 
@@ -177,6 +178,16 @@ export class Request {
   async headerValue(name: string): Promise<string | null> {
     return this.info.headers[name.toLowerCase()] ?? null;
   }
+  /** The response, when it has arrived (no waiting). */
+  existingResponse(): Response | null {
+    return this.responseValue;
+  }
+  async sizes(): Promise<{ requestBodySize: number; requestHeadersSize: number; responseBodySize: number; responseHeadersSize: number }> {
+    return { requestBodySize: this.postDataBuffer()?.length ?? 0, requestHeadersSize: -1, responseBodySize: -1, responseHeadersSize: -1 };
+  }
+  serviceWorker(): null {
+    return null;
+  }
   postDataBuffer(): Buffer | null {
     if (this.info.bodyBytes !== undefined) return this.info.bodyBytes;
     return this.info.body === null ? null : Buffer.from(this.info.body);
@@ -198,9 +209,36 @@ export class Response {
   private readonly data: { url: string; status: number; statusText: string; headers: Record<string, string> };
   /** Reads the body; set by whoever built the response. */
   bodyLoader: (() => Promise<Buffer>) | null = null;
+  /** Headers in their original case and order (proxy mode). */
+  rawHeaders: { name: string; value: string }[] | null = null;
   constructor(req: Request, data: { url: string; status: number; statusText: string; headers: Record<string, string> }) {
     this.req = req;
     this.data = data;
+  }
+  headersArray(): { name: string; value: string }[] {
+    if (this.rawHeaders) return this.rawHeaders.map((h) => ({ ...h }));
+    return Object.entries(this.data.headers).map(([name, value]) => ({ name, value }));
+  }
+  async headersArrayAsync(): Promise<{ name: string; value: string }[]> {
+    return this.headersArray();
+  }
+  async headerValues(name: string): Promise<string[]> {
+    const n = name.toLowerCase();
+    return this.headersArray()
+      .filter((h) => h.name.toLowerCase() === n)
+      .map((h) => h.value);
+  }
+  fromServiceWorker(): boolean {
+    return false;
+  }
+  httpVersion(): string {
+    return 'HTTP/1.1';
+  }
+  async serverAddr(): Promise<null> {
+    return null;
+  }
+  async securityDetails(): Promise<null> {
+    return null;
   }
   async allHeaders(): Promise<Record<string, string>> {
     return this.headers();
@@ -209,10 +247,23 @@ export class Response {
     return this.data.headers[name.toLowerCase()] ?? null;
   }
   async body(): Promise<Buffer> {
-    if (!this.bodyLoader || this.req.method() !== 'GET') {
+    if (this.data.status >= 300 && this.data.status < 400 && this.data.headers['location']) {
+      throw new Error('response.body: Response body is unavailable for redirect responses');
+    }
+    if (!this.bodyLoader) {
       throw new Error('response.body: the body of this response was not captured');
     }
-    return this.bodyLoader();
+    const raw = await this.bodyLoader();
+    // The proxy keeps bodies as they came over the wire; the page saw them decoded.
+    const enc = (this.data.headers['content-encoding'] ?? '').toLowerCase().trim();
+    try {
+      if (enc === 'gzip' || enc === 'x-gzip') return gunzipSync(raw);
+      if (enc === 'deflate') return inflateSync(raw);
+      if (enc === 'br') return brotliDecompressSync(raw);
+    } catch {
+      /* not actually encoded; hand back what came */
+    }
+    return raw;
   }
   async text(): Promise<string> {
     return (await this.body()).toString('utf8');
@@ -236,7 +287,8 @@ export class Response {
     return this.data.statusText;
   }
   ok(): boolean {
-    return this.data.status >= 200 && this.data.status < 300;
+    // Playwright counts status 0 (file: and data: URLs) as ok.
+    return this.data.status === 0 || (this.data.status >= 200 && this.data.status < 300);
   }
   headers(): Record<string, string> {
     return { ...this.data.headers };

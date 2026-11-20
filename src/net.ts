@@ -78,6 +78,9 @@ export class NetHub {
   private routing = false;
   private readonly requests = new Map<number, Request>();
   private readonly responses = new Map<number, Response>();
+  /** Body sizes of fulfilled requests, by id. */
+  private readonly fulfilledLength = new Map<number, number>();
+
   /** The last main-frame document response, for goto(). */
   lastNav: Response | null = null;
 
@@ -191,7 +194,9 @@ export class NetHub {
           const k = name.toLowerCase();
           const v = line.slice(i + 2);
           cur.raw.push({ name, value: v });
-          cur.headers[k] = cur.headers[k] === undefined ? v : `${cur.headers[k]}, ${v}`;
+          // Repeated headers join with ", "; set-cookie values with newlines, as Playwright does.
+          const sep = k === 'set-cookie' ? '\n' : ', ';
+          cur.headers[k] = cur.headers[k] === undefined ? v : `${cur.headers[k]}${sep}${v}`;
         }
         continue;
       }
@@ -278,7 +283,14 @@ export class NetHub {
     if (!req) return;
     const status = Number(p.head[2]);
     const url = p.head[3] ?? req.url();
+    // A fulfilled response gets the Content-Length the proxy sends with it.
+    const sent = this.fulfilledLength.get(p.id);
+    if (sent !== undefined && p.headers['content-length'] === undefined) {
+      p.headers['content-length'] = String(sent);
+      p.raw.push({ name: 'content-length', value: String(sent) });
+    }
     const res = new Response(req, { url, status, statusText: p.head.slice(4).join(' '), headers: p.headers });
+    res.rawHeaders = p.raw;
     res.bodyLoader = async () => {
       const r = await this.call('vs_net_body', [String(p.id)]);
       const line = r.body.find((l) => l.startsWith('body ')) ?? 'body ';
@@ -324,6 +336,7 @@ export class NetHub {
       },
       fulfill: async (status, headers, body) => {
         const h = { ...headers };
+        this.fulfilledLength.set(req.id, body.length);
         // Like Playwright, answer a cross-origin request with its origin allowed.
         const origin = req.headers()['origin'];
         if (origin && !Object.keys(h).some((k) => k.toLowerCase() === 'access-control-allow-origin')) {

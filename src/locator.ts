@@ -324,9 +324,12 @@ export class Locator {
 
   /** The chain in the engine's wire form. */
   wire(): unknown[] {
-    return this.steps.map((s) => {
+    return this.steps.map((s, i) => {
       if (s.capture && s.index !== null) throw new Error("Error: Can't query n-th element in a request with the capture.");
-      return { q: wireQuery(s.query), f: s.filters.map(wireFilter), i: s.index };
+      const q = wireQuery(s.query);
+      // A frame hop names its <iframe> locator in errors.
+      if (s.query.kind === 'frame') q['d'] = Locator.stepsText(this.owner, this.steps.slice(0, i));
+      return { q, f: s.filters.map(wireFilter), i: s.index };
     });
   }
 

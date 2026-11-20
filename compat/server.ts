@@ -1,3 +1,4 @@
+import * as zlib from 'node:zlib';
 /**
  * The subset of Playwright's TestServer (tests/config/testserver) the
  * ported specs use: static files from Playwright's tests/assets,
@@ -74,9 +75,13 @@ export class TestServer {
     this.extra.set(p, headers);
   }
 
-  enableGzip(): void {
-    /* responses are served uncompressed; specs that check encoding fail honestly */
+  private gzipped = new Set<string>();
+
+  /** Serve this path gzip-encoded, as Playwright's TestServer does. */
+  enableGzip(p: string): void {
+    this.gzipped.add(p);
   }
+
 
   waitForRequest(p: string): Promise<http.IncomingMessage & { postBody: Promise<Buffer> }> {
     return new Promise((resolve) => {
@@ -109,10 +114,13 @@ export class TestServer {
       res.end(`File not found: ${pathname}`);
       return;
     }
+    const data = fs.readFileSync(file);
+    const gzip = this.gzipped.has(pathname);
     res.writeHead(200, {
       'content-type': MIME[path.extname(file)] ?? 'application/octet-stream',
       'cache-control': 'no-store',
+      ...(gzip ? { 'content-encoding': 'gzip' } : {}),
     });
-    res.end(fs.readFileSync(file));
+    res.end(gzip ? zlib.gzipSync(data) : data);
   }
 }

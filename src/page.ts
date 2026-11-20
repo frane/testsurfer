@@ -530,7 +530,14 @@ export class Page {
       throw e;
     }
     const viaProxy = await this.events.proxiedNavResponse();
-    return viaProxy ?? this.mainResponse();
+    const res = viaProxy ?? (await this.mainResponse());
+    if (res || !target.startsWith('file:')) return res;
+    // A file: page has a response too, with status 0, as in WebKit under Playwright.
+    const req = new Request({ id: 0, url: target, method: 'GET', headers: {}, body: null, type: 'document', navigation: true });
+    req.frameValue = this.mainFrame();
+    const fileRes = new Response(req, { url: target, status: 0, statusText: '', headers: {} });
+    req.responseValue = fileRes;
+    return fileRes;
   }
 
   /**
@@ -1066,7 +1073,7 @@ export class Page {
         if (m.name !== undefined && f.name() !== m.name) return false;
         if (m.url !== undefined) {
           const u = f === this.main ? '' : f.frameUrl;
-          if (typeof m.url === 'string' && u !== m.url) return false;
+          if (typeof m.url === 'string' && !urlMatches(m.url, u, this.baseURL)) return false;
           if (m.url instanceof RegExp && !m.url.test(u)) return false;
           if (typeof m.url === 'function' && !(u && m.url(new URL(u)))) return false;
         }

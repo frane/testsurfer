@@ -907,6 +907,18 @@ export function installEngine(SER) {
         for (const f of s.f || []) out = applyFilter(out, f);
         cur = out;
       } else if (s.q.k === 'frame') {
+        // A frame hop needs exactly one <iframe> (first/last/nth pick one).
+        if (cur.length > 1) {
+          throw new Error(
+            `Error: strict mode violation: ${s.q.d} resolved to ${cur.length} elements:\n` +
+              cur.slice(0, 10).map((e, i) => `    ${i + 1}) ${preview(e)} aka ${aka(e)}`).join('\n'),
+          );
+        }
+        for (const e of cur) {
+          if (e.nodeType === 1 && e.nodeName !== 'IFRAME' && e.nodeName !== 'FRAME') {
+            throw new Error(`Error: ${s.q.d} resolved to ${preview(e)}, <iframe> was expected`);
+          }
+        }
         cur = cur
           .map((e) => {
             try {
