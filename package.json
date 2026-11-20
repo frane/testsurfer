@@ -10,6 +10,9 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./register": {
+      "default": "./dist/register.js"
     }
   },
   "files": [
@@ -47,5 +50,8 @@
   "homepage": "https://github.com/frane/testsurfer#readme",
   "bugs": {
     "url": "https://github.com/frane/testsurfer/issues"
+  },
+  "bin": {
+    "testsurfer": "./dist/cli.js"
   }
 }

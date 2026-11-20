@@ -43,3 +43,17 @@ export {
 export type { TestInfo } from './testinfo.ts';
 export { APIRequestContext, type RequestOptions } from './request.ts';
 export { Frame } from './frame.ts';
+
+/**
+ * Playwright's device descriptors, reduced to what testsurfer applies
+ * (the viewport). Lets a playwright.config that spreads devices[...]
+ * load.
+ */
+export const devices: Record<string, { viewport: { width: number; height: number }; deviceScaleFactor: number; defaultBrowserType: string }> = {
+  'Desktop Chrome': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'chromium' },
+  'Desktop Edge': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'chromium' },
+  'Desktop Firefox': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'firefox' },
+  'Desktop Safari': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'webkit' },
+  'iPhone 13': { viewport: { width: 390, height: 664 }, deviceScaleFactor: 3, defaultBrowserType: 'webkit' },
+  'Pixel 5': { viewport: { width: 393, height: 727 }, deviceScaleFactor: 2.75, defaultBrowserType: 'chromium' },
+};
