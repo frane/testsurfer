@@ -34,12 +34,12 @@ The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer run
 
 ## CI
 
-testsurfer runs on macOS and Linux GitHub runners. On Linux it needs WebKitGTK 6 and an X display; the action in this repo installs both and starts the pinned vibesurfer daemon:
+testsurfer runs on macOS, Linux and Windows GitHub runners. On Linux it needs WebKitGTK 6 and an X display, and on Windows the WebView2 runtime the runners already have. The action in this repo installs what is missing and starts the pinned vibesurfer daemon:
 
 ```yaml
 jobs:
   test:
-    runs-on: ubuntu-24.04 # or macos-15
+    runs-on: ubuntu-24.04 # or macos-15, windows-2025
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,7 +50,7 @@ jobs:
       - run: node --test tests/
 ```
 
-`vibesurfer-version` overrides the pinned daemon. This repo's own CI runs the same action on both runners. Windows (WebView2) is supported by vibesurfer but not yet tested here.
+`vibesurfer-version` overrides the pinned daemon. This repo's own CI runs the same action on all three.
 
 ## API
 
