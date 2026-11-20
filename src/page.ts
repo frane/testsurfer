@@ -61,6 +61,8 @@ const ENGINE_JS = `(${installEngine.toString()})(${SERIALIZE_JS})`;
 
 interface EngineReply {
   v?: unknown;
+  /** location.href when the call returned. */
+  u?: string;
   e?: { name?: string; message: string; stack?: string };
   p?: number;
   gone?: boolean;
@@ -210,6 +212,9 @@ export class Page {
       baseURL,
       ensureShim: () => this.ensureShim(),
       addInitScript: (src) => this.addInitSource(src),
+      proxied: () => this.ctx?.intercept ?? false,
+      mainFrame: () => this.mainFrame(),
+      extraHeaders: () => ({ ...(this.ctx?.extraHeaders ?? {}), ...this.extraHeaders }),
     });
   }
 
@@ -351,7 +356,7 @@ export class Page {
     const budget = options.timeout ?? this.timeouts.navigation;
     const deadline = Date.now() + budget;
     for (;;) {
-      const now = await this.url().catch(() => '');
+      const now = await this.currentURL().catch(() => '');
       if (now && urlMatches(url, now, this.baseURL)) return;
       if (Date.now() >= deadline) throw new Error(`waitForURL(${String(url)}) timed out after ${budget}ms; URL is ${now}`);
       await new Promise((r) => setTimeout(r, 50));
@@ -400,9 +405,9 @@ export class Page {
    * native clicks on a rewritten about:blank.
    */
   async setContent(html: string): Promise<void> {
-    const here = this.pageId ? await this.url().catch(() => '') : '';
+    const here = this.pageId ? await this.currentURL().catch(() => '') : '';
     if (!/^https?:/.test(here)) {
-      const shown = here.startsWith('data:') ? await this.url() : 'about:blank';
+      const shown = here.startsWith('data:') ? here : 'about:blank';
       const data = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
       await this.navigate(data);
       await this.rememberNav(shown, data);
@@ -427,7 +432,7 @@ export class Page {
 
   /** Load the current URL again. */
   async reload(): Promise<Response | null> {
-    return this.goto(await this.url());
+    return this.goto(await this.currentURL());
   }
 
   /** History back; resolves once the URL changed (or immediately when there is no history). */
@@ -440,13 +445,13 @@ export class Page {
   }
 
   private async historyMove(delta: number): Promise<void> {
-    const before = await this.url();
+    const before = await this.currentURL();
     await this.evaluate(`(history.go(${delta}), 'ok')`);
     // No history entry means no change; give up on the URL after 2s.
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
-      const now = await this.url().catch(() => before);
+      const now = await this.currentURL().catch(() => before);
       if (now !== before) break;
     }
     this.snapshot = null;
@@ -509,8 +514,16 @@ export class Page {
    * page and open a new one.
    */
   async goto(target: string, _options: { waitUntil?: string; timeout?: number; referer?: string } = {}): Promise<Response | null> {
-    await this.navigate(target);
-    return this.mainResponse();
+    try {
+      await this.events.beforeNavigation();
+      await this.navigate(target);
+    } catch (e) {
+      // A route that aborted the document fails the navigation the way WebKit reports it.
+      if (this.events.abortedNavigation()) throw new Error(`page.goto: Blocked by Web Inspector`);
+      throw e;
+    }
+    const viaProxy = await this.events.proxiedNavResponse();
+    return viaProxy ?? this.mainResponse();
   }
 
   /**
@@ -544,7 +557,10 @@ export class Page {
         }
       }
     }
+    // Responses do not carry the fragment.
+    url = url.replace(/#.*$/, '');
     const req = new Request({ id: 0, url, method: 'GET', headers: {}, body: null, type: 'document' });
+    req.frameValue = this.mainFrame();
     const res = new Response(req, { url, status, statusText, headers });
     req.responseValue = res;
     res.bodyLoader = async () => {
@@ -863,6 +879,7 @@ export class Page {
     if (!r || r.gone || r.noengine) {
       throw new Error('Execution context was destroyed, most likely because of a navigation');
     }
+    if (r && typeof (r as { u?: unknown }).u === 'string') this.lastHref = (r as { u: string }).u;
     if (this.events.hasBindings && !body.startsWith('E.doc')) await this.events.flush();
     if (r.e) {
       const err = new Error(r.e.message);
@@ -1056,6 +1073,22 @@ export class Page {
     if (this.pageId) await this.rawEval(`(${script.replace(/;\s*$/, '')}, 0)`).catch(() => {});
   }
 
+  private extraHeaders: Record<string, string> = {};
+
+  /** @internal Re-apply routing after the context's network settings changed. */
+  async refreshNetwork(): Promise<void> {
+    await this.events.sync();
+  }
+
+  /**
+   * Headers added to every request this page makes. In proxy mode they
+   * reach every http request; otherwise fetch and XHR only.
+   */
+  async setExtraHTTPHeaders(headers: Record<string, string>): Promise<void> {
+    this.extraHeaders = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
+    await this.events.sync();
+  }
+
   /** Like evaluate(), but keeps the result in the page and returns a handle to it. */
   async evaluateHandle<A = unknown>(fn: string | ((arg: A) => unknown), arg?: A): Promise<JSHandle> {
     const a = JSON.stringify(serializeValue(arg));
@@ -1242,8 +1275,21 @@ export class Page {
   }
 
   /** The page's current URL. */
-  async url(): Promise<string> {
-    const href = await this.evaluate<string>('location.href');
+  /** The location every engine call reports; Playwright's page.url() is synchronous. */
+  private lastHref = 'about:blank';
+
+  /** The page's URL as of the last call into the page (actions, reads and navigations all refresh it). */
+  url(): string {
+    return this.shownURL(this.lastHref);
+  }
+
+  /** Read location.href now. */
+  private async currentURL(): Promise<string> {
+    this.lastHref = await this.evaluate<string>('location.href');
+    return this.url();
+  }
+
+  private shownURL(href: string): string {
     const nav = this.navURL;
     if (!nav || href !== nav.actual) {
       // WebKit percent-encodes data: URLs; show them as written.
@@ -1258,7 +1304,7 @@ export class Page {
     }
     // The engine percent-encodes a data: URL; report it as given, and a
     // setContent() page as the about:blank Playwright would show.
-    return nav ? nav.shown : href;
+    return nav.shown;
   }
 
   /** What goto() was asked for, and what the engine then reports. */
@@ -1316,6 +1362,13 @@ export class Page {
    * IndexedDB) under `name`, encrypted at rest by the daemon. Load it
    * in a later run with loadAuth(name) to skip the login flow.
    */
+  /** @internal Load an imported cookie blob into this page's jar (the session's). */
+  async loadCookieBlob(name: string): Promise<void> {
+    await this.ensureOpen();
+    await this.client.call('vs_auth', ['load', this.id, name], { session: this.sessionId });
+    await this.client.call('vs_auth', ['clear', name], { session: this.sessionId }).catch(() => {});
+  }
+
   async saveAuth(name: string): Promise<void> {
     await this.client.call('vs_auth', ['save', this.id, name], { session: this.sessionId });
   }

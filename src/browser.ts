@@ -141,12 +141,14 @@ export class Browser {
    * Playwright context is. `{ isolated: false }` shares the engine's
    * persistent jar (logins survive across runs).
    */
-  async newContext(options: { isolated?: boolean } = {}): Promise<BrowserContext> {
+  async newContext(options: { isolated?: boolean; intercept?: boolean } = {}): Promise<BrowserContext> {
     const flags: Record<string, true> = options.isolated === false ? {} : { isolated: true };
+    // Every http request goes through vibesurfer's proxy (0.2.16+); see src/net.ts.
+    if (options.intercept) flags['intercept'] = true;
     const resp = await this.client.call('vs_session_open', [], flags);
     const id = resp.body[0];
     if (!id) throw new Error('vs_session_open returned no session id');
-    const ctx = new BrowserContext(this, id, true);
+    const ctx = new BrowserContext(this, id, true, options.intercept ?? false);
     this.openContexts.add(ctx);
     return ctx;
   }
@@ -168,6 +170,11 @@ export class Browser {
   /** @internal Close a context's session. */
   async closeSession(sessionId: string): Promise<void> {
     await this.client.call('vs_session_close', [sessionId], {}).catch(() => {});
+  }
+
+  /** @internal One wire call on the browser's own connection. */
+  rawCall(prim: string, args: string[], flags: Record<string, string | true> = {}) {
+    return this.client.call(prim, args, flags);
   }
 
   /** A new page in this session. Call page.goto(url) to load a URL. */
@@ -216,10 +223,14 @@ export class BrowserContext {
   private readonly routes: { url: UrlMatcher; handler: RouteHandler; times?: number }[] = [];
   private readonly scripts: { script: Parameters<Page['addInitScript']>[0]; arg?: unknown }[] = [];
 
-  constructor(owner: Browser, sessionId: string, ownsSession: boolean) {
+  /** The session runs through vibesurfer's intercepting proxy. */
+  readonly intercept: boolean;
+
+  constructor(owner: Browser, sessionId: string, ownsSession: boolean, intercept = false) {
     this.owner = owner;
     this.sessionId = sessionId;
     this.ownsSession = ownsSession;
+    this.intercept = intercept;
   }
 
   browser(): Browser {
@@ -232,9 +243,67 @@ export class BrowserContext {
     page.bindContext(this);
   }
 
+  /** setExtraHTTPHeaders() for every page of the context. */
+  extraHeaders: Record<string, string> = {};
+
+  async setExtraHTTPHeaders(headers: Record<string, string>): Promise<void> {
+    this.extraHeaders = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
+    for (const p of this.open) await p.refreshNetwork();
+  }
+
+  private pendingCookies: string[] = [];
+  private cookieSeq = 0;
+
+  /**
+   * Add cookies to the context's jar: `{ name, value, url }` or
+   * `{ name, value, domain, path }`, with optional expires, httpOnly,
+   * secure and sameSite. HttpOnly cookies work too: they go in through
+   * the engine's cookie store, not document.cookie.
+   */
+  async addCookies(
+    cookies: {
+      name: string;
+      value: string;
+      url?: string;
+      domain?: string;
+      path?: string;
+      expires?: number;
+      httpOnly?: boolean;
+      secure?: boolean;
+      sameSite?: 'Strict' | 'Lax' | 'None';
+    }[],
+  ): Promise<void> {
+    const list = cookies.map((c) => {
+      const u = c.url ? new URL(c.url) : null;
+      const domain = c.domain ?? u?.hostname;
+      if (!domain) throw new Error('browserContext.addCookies: a cookie needs url or domain');
+      return {
+        name: c.name,
+        value: c.value,
+        domain,
+        path: c.path ?? (u ? u.pathname.replace(/\/[^/]*$/, '/') || '/' : '/'),
+        ...(c.expires !== undefined && c.expires > 0 ? { expiresUnix: Math.floor(c.expires) } : {}),
+        secure: c.secure ?? u?.protocol === 'https:',
+        httpOnly: c.httpOnly ?? false,
+        ...(c.sameSite ? { sameSite: c.sameSite } : {}),
+      };
+    });
+    const first = cookies[0];
+    const origin = first?.url ? new URL(first.url).origin : `http://${list[0]?.domain ?? 'localhost'}`;
+    const blob = { version: 2, url: `${origin}/`, origin, cookies: list, localStorage: {}, sessionStorage: {} };
+    const name = `testsurfer-cookies-${this.sessionId}-${++this.cookieSeq}`;
+    await this.owner.rawCall('vs_auth', ['import', name, Buffer.from(JSON.stringify(blob)).toString('base64')], {
+      session: this.sessionId,
+    });
+    const page = this.open[0];
+    if (page) await page.loadCookieBlob(name);
+    else this.pendingCookies.push(name);
+  }
+
   async newPage(): Promise<Page> {
     const page = this.owner.makePage(this.sessionId);
     this.adopt(page);
+    for (const name of this.pendingCookies.splice(0)) await page.loadCookieBlob(name);
     for (const s of this.scripts) await page.addInitScript(s.script, s.arg);
     for (const r of this.routes) await page.route(r.url, r.handler, r.times === undefined ? {} : { times: r.times });
     return page;

@@ -50,9 +50,10 @@ export class Frame {
   /** @internal Last URL seen by Page.frames(); url() reads it live. */
   frameUrl = '';
 
-  async url(): Promise<string> {
+  /** The frame's URL: the page's for the main frame, else as of the last frame listing. */
+  url(): string {
     if (!this.element) return this.owner.url();
-    return this.evaluate<string>('location.href');
+    return this.frameUrl;
   }
 
   async title(): Promise<string> {

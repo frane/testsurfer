@@ -52,6 +52,15 @@ export interface RunnerOptions extends LaunchOptions {
    * sharing the engine's persistent jar.
    */
   isolate?: boolean;
+  /**
+   * How page.route() and network events see requests. `shim` (default)
+   * patches fetch and XHR in the page. `proxy` sends every http request
+   * through vibesurfer's intercepting proxy, so documents, iframes,
+   * scripts and images are reported and routable too; https is not
+   * intercepted, and on macOS requests to localhost or 127.0.0.1 bypass
+   * the proxy (use a name under .localhost instead).
+   */
+  network?: 'shim' | 'proxy';
   /** Where toMatchSnapshot(name) keeps baselines; Playwright's tokens. */
   snapshotPathTemplate?: string;
 }
@@ -323,7 +332,10 @@ async function runTest(
   const afters = chain.flatMap((s) => s.afterEach).reverse();
   const browser = await sharedBrowser();
   // Each test gets a fresh, isolated context unless the suite opts out.
-  const context = options.isolate === false ? browser.sharedContext() : await browser.newContext();
+  const context =
+    options.isolate === false
+      ? browser.sharedContext()
+      : await browser.newContext(options.network === 'proxy' ? { intercept: true } : {});
   const page = await context.newPage();
   try {
     if (options.auth) {

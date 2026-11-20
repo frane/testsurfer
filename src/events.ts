@@ -10,6 +10,7 @@
 
 import { readFile } from 'node:fs/promises';
 import type { WireClient } from './client.ts';
+import { NetHub, type NetDecider } from './net.ts';
 
 export type UrlMatcher = string | RegExp | ((url: URL) => boolean);
 
@@ -19,7 +20,11 @@ export function globToRegExp(glob: string): RegExp {
   let inGroup = false;
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i]!;
-    if (c === '*') {
+    if (c === '\\' && i + 1 < glob.length) {
+      // A backslash makes the next character literal (`index\\?hello`).
+      const next = glob[++i]!;
+      out += '\\^$.|?+()[]{}*'.includes(next) ? `\\${next}` : next;
+    } else if (c === '*') {
       if (glob[i + 1] === '*') {
         out += '.*';
         i++;
@@ -75,7 +80,11 @@ interface RequestInfo {
   method: string;
   headers: Record<string, string>;
   body: string | null;
-  type: 'fetch' | 'xhr' | 'document';
+  /** fetch, xhr, document, script, stylesheet, image, font, media, websocket, manifest or other. */
+  type: string;
+  /** The main-frame or iframe navigation (proxy mode). */
+  navigation?: boolean;
+  frame?: 'main' | 'sub';
 }
 
 /** A fetch or XHR the page made. */
@@ -83,6 +92,17 @@ export class Request {
   private readonly info: RequestInfo;
   /** Set once the response (or failure) arrives. */
   responseValue: Response | null = null;
+  /** The frame that made the request. */
+  frameValue: unknown = null;
+  /** Redirect chain, when the proxy saw a 3xx before this request. */
+  redirectedFromValue: Request | null = null;
+  redirectedToValue: Request | null = null;
+  /** The route aborted it. */
+  abortedByRoute = false;
+
+  frame(): any {
+    return this.frameValue;
+  }
   failureText: string | null = null;
 
   constructor(info: RequestInfo) {
@@ -101,6 +121,10 @@ export class Request {
   headers(): Record<string, string> {
     return { ...this.info.headers };
   }
+  /** @internal setExtraHTTPHeaders() values join the request's headers. */
+  addHeader(name: string, value: string): void {
+    this.info.headers[name.toLowerCase()] = value;
+  }
   postData(): string | null {
     return this.info.body;
   }
@@ -112,7 +136,23 @@ export class Request {
     return this.info.type;
   }
   isNavigationRequest(): boolean {
-    return this.info.type === 'document';
+    return this.info.navigation ?? this.info.type === 'document';
+  }
+  /** `main` or `sub` (an iframe), as far as the proxy can tell. */
+  frameKind(): 'main' | 'sub' {
+    return this.info.frame ?? 'main';
+  }
+  headersArray(): { name: string; value: string }[] {
+    return Object.entries(this.info.headers).map(([name, value]) => ({ name, value }));
+  }
+  redirectedFrom(): Request | null {
+    return this.redirectedFromValue;
+  }
+  redirectedTo(): Request | null {
+    return this.redirectedToValue;
+  }
+  timing(): Record<string, number> {
+    return { startTime: 0, domainLookupStart: -1, domainLookupEnd: -1, connectStart: -1, secureConnectionStart: -1, connectEnd: -1, requestStart: -1, responseStart: -1, responseEnd: -1 };
   }
   async allHeaders(): Promise<Record<string, string>> {
     return this.headers();
@@ -291,11 +331,14 @@ export class Route {
   }
 
   private claim(what: string): void {
-    if (this.handled) throw new Error(`route.${what}: the route is already handled`);
+    if (this.handled) throw new Error(`route.${what}: Route is already handled!`);
     this.handled = true;
   }
 
   async fulfill(options: FulfillOptions = {}): Promise<void> {
+    const st = options.status ?? options.response?.status() ?? 200;
+    // WebKit cannot fulfill with a redirect; Playwright refuses it there too.
+    if (st >= 300 && st < 400) throw new Error(`route.fulfill: Cannot fulfill with redirect status: ${st}`);
     this.claim('fulfill');
     const headers: Record<string, string> = {};
     let status = options.status ?? 200;
@@ -326,9 +369,9 @@ export class Route {
     await this.settle({ kind: 'continue', ...overrides(options) });
   }
 
-  async abort(_errorCode?: string): Promise<void> {
+  async abort(errorCode = 'failed'): Promise<void> {
     this.claim('abort');
-    await this.settle({ kind: 'abort' });
+    await this.settle({ kind: 'abort', error: errorCode });
   }
 
   /** Let the next matching handler decide (or the network, when none does). */
@@ -403,6 +446,12 @@ export interface EventsHost {
   ensureShim: () => Promise<void>;
   /** Add a document-start script for later documents. */
   addInitScript: (source: string) => Promise<void>;
+  /** The session routes through vibesurfer's proxy (`--intercept`); see src/net.ts. */
+  proxied?: () => boolean;
+  /** The page's main frame, for request.frame(). */
+  mainFrame?: () => unknown;
+  /** setExtraHTTPHeaders() values for this page and its context. */
+  extraHeaders?: () => Record<string, string>;
 }
 
 /** Per-page routing and event state. The Page owns one. */
@@ -463,7 +512,7 @@ export class PageEvents {
   }
 
   get routing(): boolean {
-    return this.routes.length > 0;
+    return this.routes.length > 0 && !this.proxied;
   }
 
   addRoute(matcher: UrlMatcher, handler: RouteHandler, times: number | null): void {
@@ -503,7 +552,117 @@ export class PageEvents {
   }
 
   /** Start or stop polling and tell the page whether to hold requests. */
+  private hub: NetHub | null = null;
+
+  /** Proxy mode: the session's network hub carries requests, responses and routes. */
+  private get proxied(): boolean {
+    return this.host.proxied?.() ?? false;
+  }
+
+  // --- NetPage, for the hub -------------------------------------------
+
+  netEmit(name: string, arg: unknown): void {
+    this.emit(name, arg);
+  }
+
+  netRoutes(): boolean {
+    return this.routes.length > 0 || Object.keys(this.host.extraHeaders?.() ?? {}).length > 0;
+  }
+
+  netExtraHeaders(): Record<string, string> {
+    return this.host.extraHeaders?.() ?? {};
+  }
+
+  netFrame(): unknown {
+    return this.host.mainFrame?.() ?? null;
+  }
+
+  private navAborted = false;
+
+  /** A route aborted the last main-frame navigation (read once). */
+  abortedNavigation(): boolean {
+    const v = this.navAborted;
+    this.navAborted = false;
+    return v;
+  }
+
+  netNavAborted(): void {
+    this.navAborted = true;
+  }
+
+  /** Proxy mode: the main document's response from the hub, redirect chain and all. */
+  async proxiedNavResponse(): Promise<Response | null> {
+    if (!this.hub) return null;
+    // Reset in beforeNavigation(); the poll loop may already have seen it.
+    await this.hub.drainNow();
+    return this.hub.lastNav;
+  }
+
+  /** Proxy mode: make sure the hub is attached before a navigation, so it sees the document. */
+  async beforeNavigation(): Promise<void> {
+    if (!this.proxied) return;
+    if (!this.hub) {
+      const { sessionId } = this.host.target();
+      this.hub = NetHub.for(sessionId, () => this.host.openPoller());
+      this.hub.attach(this);
+    }
+    this.hub.lastNav = null;
+  }
+
+  async netHandle(req: Request, decide: NetDecider, fallthrough: ContinueOptions): Promise<boolean> {
+    for (const entry of [...this.routes]) {
+      // A handler unrouted by an earlier one no longer runs.
+      if (!this.routes.includes(entry)) continue;
+      // After fallback({ url }), later handlers see the new URL.
+      if (!urlMatches(entry.matcher, fallthrough.url ?? req.url(), this.host.baseURL)) continue;
+      if (entry.times !== null) {
+        entry.times -= 1;
+        if (entry.times <= 0) this.routes = this.routes.filter((r) => r !== entry);
+      }
+      const route = new Route(
+        req,
+        async (d) => {
+          if (d.kind === 'fulfill') {
+            await decide.fulfill(d['status'] as number, d['headers'] as Record<string, string>, Buffer.from(String(d['body'] ?? ''), 'base64'));
+          } else if (d.kind === 'abort') {
+            await decide.abort(String(d['error'] ?? 'failed'));
+          } else {
+            const o: ContinueOptions = { ...fallthrough };
+            if (d['url']) o.url = d['url'] as string;
+            if (d['method']) o.method = d['method'] as string;
+            if (d['headers']) o.headers = d['headers'] as Record<string, string>;
+            if (d['body'] !== undefined) o.postData = d['body'] as string;
+            await decide.continue(o);
+          }
+        },
+        (opts) => decide.fetch({ ...fallthrough, ...opts }),
+      );
+      try {
+        await entry.handler(route, req);
+      } catch (e) {
+        if (!route.handled) await decide.abort('failed');
+        throw e;
+      }
+      if (route.fellBack) {
+        Object.assign(fallthrough, route.fellBack);
+        continue;
+      }
+      // A handler that returns without deciding leaves the request
+      // waiting, as in Playwright (it may decide later).
+      return true;
+    }
+    return false;
+  }
+
   async sync(): Promise<void> {
+    if (this.proxied) {
+      const { sessionId } = this.host.target();
+      if (this.active && !this.hub) {
+        this.hub = NetHub.for(sessionId, () => this.host.openPoller());
+        this.hub.attach(this);
+      }
+      await this.hub?.sync();
+    }
     if (this.active) await this.host.ensureShim();
     if (this.routing !== this.routingDefault) {
       // New documents read this before Node has seen them.
@@ -606,6 +765,8 @@ export class PageEvents {
         break;
       }
       case 'request': {
+        // In proxy mode the hub reports every request; the shim's copy would double it.
+        if (this.proxied) break;
         const req = new Request({
           id: Number(e.id ?? 0),
           url: e.url ?? '',
@@ -619,6 +780,7 @@ export class PageEvents {
         break;
       }
       case 'response': {
+        if (this.proxied) break;
         const req = this.requests.get(Number(e.id ?? -1));
         if (!req) break;
         const res = new Response(req, {
@@ -634,6 +796,7 @@ export class PageEvents {
         break;
       }
       case 'requestfailed': {
+        if (this.proxied) break;
         const req = this.requests.get(Number(e.id ?? -1));
         if (!req) break;
         req.failureText = e.failure ?? 'failed';
@@ -731,6 +894,8 @@ export class PageEvents {
   }
 
   close(): void {
+    this.hub?.detach(this);
+    this.hub = null;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.routes = [];

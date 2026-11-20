@@ -14,6 +14,8 @@ const ASSETS = path.resolve(process.env['COMPAT_ASSETS'] ?? path.join(import.met
 // Playwright's own test config gives expect() 10 seconds.
 configure({
   timeouts: { expect: 10_000 },
+  // Every request through vibesurfer's proxy, as Playwright sees them.
+  network: 'proxy',
   // Playwright's own WebKit baselines, next to the original specs.
   snapshotPathTemplate: path.join(ASSETS, '..', 'page', '{testFileName}-snapshots', '{arg}-{projectName}{ext}'),
 });

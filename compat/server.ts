@@ -39,10 +39,13 @@ export class TestServer {
   }
 
   async start(): Promise<void> {
-    await new Promise<void>((r) => this.server.listen(0, '127.0.0.1', r));
+    // All interfaces: *.localhost names resolve to ::1 in Node and 127.0.0.1 in the proxy.
+    await new Promise<void>((r) => this.server.listen(0, r));
     this.PORT = (this.server.address() as AddressInfo).port;
-    this.PREFIX = `http://localhost:${this.PORT}`;
-    this.CROSS_PROCESS_PREFIX = `http://127.0.0.1:${this.PORT}`;
+    // Names under .localhost: macOS WebKit never sends localhost or
+    // 127.0.0.1 through vibesurfer's proxy, but does send these.
+    this.PREFIX = `http://compat.localhost:${this.PORT}`;
+    this.CROSS_PROCESS_PREFIX = `http://cross.localhost:${this.PORT}`;
     this.EMPTY_PAGE = `${this.PREFIX}/empty.html`;
   }
 

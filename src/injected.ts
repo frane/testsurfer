@@ -1655,7 +1655,7 @@ export function installEngine(SER) {
         );
         return { p: id };
       }
-      return { v: SER.ser(v) };
+      return { v: SER.ser(v), u: location.href };
     },
     h: (id) => HANDLES.get(id),
     drop(id) {
