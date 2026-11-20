@@ -8,6 +8,7 @@ import { matchesTemplate, parseTemplate, renderSnapshot } from './aria.ts';
 import { TimeoutError } from './errors.ts';
 import { Locator } from './locator.ts';
 import { Page } from './page.ts';
+import { asymmetric, pollAssertions, ValueAssertions } from './values.ts';
 import { assertScreenshot, type ScreenshotOptions } from './screenshot.ts';
 
 export interface ExpectOptions {
@@ -388,11 +389,33 @@ export class PageAssertions {
   }
 }
 
-export function expect(target: Locator): LocatorAssertions;
-export function expect(target: Page): PageAssertions;
-export function expect(target: Locator | Page): LocatorAssertions | PageAssertions {
+export function expect(target: Locator, message?: string): LocatorAssertions;
+export function expect(target: Page, message?: string): PageAssertions;
+export function expect(target: unknown, message?: string): ValueAssertions;
+export function expect(target: unknown, _message?: string): LocatorAssertions | PageAssertions | ValueAssertions {
   if (target instanceof Locator) {
     return new LocatorAssertions(target, false, target.expectTimeout);
   }
-  return new PageAssertions(target, false, target.timeouts.expect);
+  if (target instanceof Page) return new PageAssertions(target, false, target.timeouts.expect);
+  return new ValueAssertions(target);
 }
+
+/** Retry `fn` until its value passes the matcher: `await expect.poll(() => count()).toBe(3)`. */
+expect.poll = (fn: () => unknown, options: { timeout?: number; intervals?: number[] } = {}): ValueAssertions =>
+  pollAssertions(fn, options.timeout ?? 5_000, options.intervals ?? [100, 250, 500, 1000]) as ValueAssertions;
+
+/**
+ * Playwright's soft assertions keep the test running after a failure.
+ * Here they fail the test at once, like a plain expect.
+ */
+expect.soft = expect;
+
+/** Accepted for compatibility; per-call timeouts go in each matcher's options. */
+expect.configure = (_options: { timeout?: number; soft?: boolean }) => expect;
+
+expect.any = asymmetric.any;
+expect.anything = asymmetric.anything;
+expect.stringContaining = asymmetric.stringContaining;
+expect.stringMatching = asymmetric.stringMatching;
+expect.objectContaining = asymmetric.objectContaining;
+expect.arrayContaining = asymmetric.arrayContaining;
