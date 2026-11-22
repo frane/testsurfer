@@ -1,6 +1,6 @@
 # Playwright compatibility
 
-Playwright's own page specs (v1.59.1, Apache-2.0) run against testsurfer, unmodified except for the import of their fixtures. 2026-11-22, darwin arm64, vibesurfer main at 7e0e1bb (released as 0.2.16). Reproduce with `node compat/run.mjs`.
+Playwright's own page specs (v1.59.1, Apache-2.0) run against testsurfer, unmodified except for the import of their fixtures. 2026-11-22, darwin arm64, vibesurfer main at 9fc43c8 (released as 0.2.16). Reproduce with `node compat/run.mjs`.
 
 **488 of 488 tests pass (100.0%)**; 7 are skipped by the specs themselves for WebKit or this platform.
 

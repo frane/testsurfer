@@ -52,6 +52,9 @@ export class TestServer {
 
   stop(): void {
     this.server.close();
+    // A request a test left hanging (held by a route, never answered)
+    // would otherwise keep the process alive for Node's 300 s request timeout.
+    this.server.closeAllConnections();
   }
 
   reset(): void {

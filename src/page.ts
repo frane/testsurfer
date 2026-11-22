@@ -70,6 +70,9 @@ interface EngineReply {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** The frame-tree listing; its own reply never starts another refresh. */
+const FRAMES_CALL = 'E.frames()';
 import { renderSnapshot } from './aria.ts';
 import { PAGE_SHIM } from './shim.ts';
 import {
@@ -1007,7 +1010,7 @@ export class Page {
       if (typeof (r as { sw?: unknown }).sw === 'boolean') this.swControlled = (r as { sw: boolean }).sw;
       // Keep frames() current: re-read the frame tree when the page's iframe count changed.
       const fc = (r as { fc?: number } | null)?.fc;
-      if (typeof fc === 'number' && fc !== this.lastFrameCount && !this.refreshingFrames) {
+      if (typeof fc === 'number' && fc !== this.lastFrameCount && body !== FRAMES_CALL) {
         this.lastFrameCount = fc;
         await this.refreshFrames();
       }
@@ -1169,7 +1172,8 @@ export class Page {
 
   private frameCache: Frame[] = [];
   private lastFrameCount = 0;
-  private refreshingFrames = false;
+  /** Refreshes run one after another, so an older listing never overwrites a newer one. */
+  private frameChain: Promise<unknown> = Promise.resolve();
 
   /**
    * The main frame, then every iframe, depth first, as of the last
@@ -1182,14 +1186,17 @@ export class Page {
 
   /** Re-read the frame tree, for iframes added after the page loaded. */
   async refreshFrames(): Promise<Frame[]> {
+    const next = this.frameChain.then(() => this.readFrames(), () => this.readFrames());
+    this.frameChain = next;
+    return next;
+  }
+
+  private async readFrames(): Promise<Frame[]> {
     let rows: [number, number | null, string, string, number?][] = [];
-    this.refreshingFrames = true;
     try {
-      rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string, number?][];
+      rows = (await this.engineCall(FRAMES_CALL)) as [number, number | null, string, string, number?][];
     } catch {
       rows = [];
-    } finally {
-      this.refreshingFrames = false;
     }
     const byId = new Map<number, Frame>();
     const known = new Map(this.frameCache.map((f) => [(f as unknown as { elementId(): number }).elementId(), f]));
