@@ -1,8 +1,8 @@
 # Playwright compatibility
 
-Playwright's own page specs (v1.59.1, Apache-2.0) run against testsurfer, unmodified except for the import of their fixtures. 2026-11-20, darwin arm64, vs 0.2.15. Reproduce with `node compat/run.mjs`.
+Playwright's own page specs (v1.59.1, Apache-2.0) run against testsurfer, unmodified except for the import of their fixtures. 2026-11-22, darwin arm64, vibesurfer main at 7e0e1bb (released as 0.2.16). Reproduce with `node compat/run.mjs`.
 
-**484 of 488 tests pass (99.2%)**; 7 are skipped by the specs themselves for WebKit or this platform.
+**488 of 488 tests pass (100.0%)**; 7 are skipped by the specs themselves for WebKit or this platform.
 
 | spec | passed | failed | skipped |
 | ---- | ------ | ------ | ------- |
@@ -13,7 +13,7 @@ Playwright's own page specs (v1.59.1, Apache-2.0) run against testsurfer, unmodi
 | expect-timeout | 8 | 0 | 0 |
 | locator-click | 5 | 0 | 0 |
 | locator-convenience | 22 | 0 | 0 |
-| locator-frame | 21 | 1 | 0 |
+| locator-frame | 22 | 0 | 0 |
 | locator-is-visible | 8 | 0 | 0 |
 | locator-list | 1 | 0 | 0 |
 | locator-misc-1 | 13 | 0 | 0 |
@@ -24,7 +24,11 @@ Playwright's own page specs (v1.59.1, Apache-2.0) run against testsurfer, unmodi
 | selectors-role | 15 | 0 | 0 |
 | selectors-text | 22 | 0 | 0 |
 | page-route | 52 | 0 | 3 |
-| page-network-request | 25 | 1 | 3 |
-| page-network-response | 20 | 2 | 1 |
+| page-network-request | 26 | 0 | 3 |
+| page-network-response | 22 | 0 | 1 |
 
-A test counts as failed when it errors for any reason, including APIs testsurfer does not have (`page.$`, `elementHandle`, `locator.evaluate`, ...). The failures with their first error line are in `compat/failures.json`.
+A test counts as failed when it errors for any reason. The failures with their first error line are in `compat/failures.json`.
+
+Some tests are marked `test.fail()` for Playwright's own WebKit, for a bug it has. Where testsurfer does not have the bug, the test passes and counts as passed:
+
+- page-network-response: should return set-cookie header after route.fulfill

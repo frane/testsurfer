@@ -2,7 +2,8 @@
  * Frames (Playwright's Frame). The main frame stands in for the page;
  * a child frame is a same-origin iframe, addressed through a handle to
  * its <iframe> element, and its evaluate() runs in the frame's own
- * window. Cross-origin frames are not reachable from the page.
+ * window. A cross-origin frame is reached by URL through vibesurfer
+ * (`vs inspect eval --frame`), since the page itself cannot.
  */
 
 import { ElementHandle, FrameLocator, JSHandle, type ByRoleOptions, type ByTextOptions, type Locator, type LocatorOptions } from './locator.ts';
@@ -54,6 +55,9 @@ export class Frame {
 
   /** @internal Last URL seen by Page.frames(); url() reads it live. */
   frameUrl = '';
+
+  /** @internal A cross-origin frame: the page cannot reach into it, so evaluate() goes through vibesurfer by URL. */
+  crossOrigin = false;
 
   /** The frame's URL: the page's for the main frame, else as of the last frame listing. */
   url(): string {
@@ -119,6 +123,7 @@ export class Frame {
   /** Evaluate `fn(arg)` (or an expression) inside this frame's window. */
   async evaluate<T = unknown, A = unknown>(fn: string | ((arg: A) => unknown), arg?: A): Promise<T> {
     if (!this.element) return this.owner.evaluate<T, A>(fn, arg);
+    if (this.crossOrigin) return this.owner.evaluateInFrame<T, A>(this.frameUrl, fn, arg);
     return (await this.owner.engineCall(this.callIn(fn, arg))) as T;
   }
 

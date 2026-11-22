@@ -895,7 +895,8 @@ export function installEngine(SER) {
   /** Run a step chain. Each step searches inside the previous step's matches. */
   function resolve(steps, roots) {
     let cur = roots;
-    for (const s of steps) {
+    for (let si = 0; si < steps.length; si++) {
+      const s = steps[si];
       if (s.q.k === 'self') {
         let out = cur.filter((e) => e.nodeType === 1);
         for (const f of s.f || []) out = applyFilter(out, f);
@@ -919,7 +920,7 @@ export function installEngine(SER) {
             throw new Error(`Error: ${s.q.d} resolved to ${preview(e)}, <iframe> was expected`);
           }
         }
-        cur = cur
+        const docs = cur
           .map((e) => {
             try {
               return e.contentDocument;
@@ -928,6 +929,26 @@ export function installEngine(SER) {
             }
           })
           .filter(Boolean);
+        // A cross-origin frame has a window but no document we may
+        // read: the rest of the chain has to run inside it. Node does
+        // that (`vs inspect eval --frame`) and moves points by `x, y`,
+        // where the frame's content box sits in the top viewport.
+        const xo = cur.length === 1 && docs.length === 0 && cur[0].contentWindow ? cur[0] : null;
+        if (xo && steps.length > si + 1) {
+          const t = topRect(xo);
+          const cs = getComputedStyle(xo);
+          const err = new Error(
+            JSON.stringify({
+              url: xo.src,
+              rest: si + 1,
+              x: t.x + xo.clientLeft + parseFloat(cs.paddingLeft || '0'),
+              y: t.y + xo.clientTop + parseFloat(cs.paddingTop || '0'),
+            }),
+          );
+          err.name = 'XOFrame';
+          throw err;
+        }
+        cur = docs;
       } else {
         let out = [];
         for (const r of cur) out.push(...query(r, s.q));
@@ -1423,6 +1444,21 @@ export function installEngine(SER) {
     return { x: t.x + (first.left - r.left) + lx, y: t.y + (first.top - r.top) + ly };
   }
 
+  /**
+   * Page state every reply carries: the URL, the iframe count (frames()
+   * refreshes when it changes), and whether a service worker controls
+   * the page, which marks its responses fromServiceWorker in proxy mode.
+   */
+  function here() {
+    let sw = false;
+    try {
+      sw = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+    } catch (_) {
+      /* a sandboxed document may not ask */
+    }
+    return { u: location.href, fc: document.querySelectorAll('iframe,frame').length, sw };
+  }
+
   let focusMoved = true;
 
   /**
@@ -1668,7 +1704,7 @@ export function installEngine(SER) {
         );
         return { p: id };
       }
-      return { v: SER.ser(v), u: location.href, fc: document.querySelectorAll('iframe,frame').length };
+      return { v: SER.ser(v), ...here() };
     },
     h: (id) => HANDLES.get(id),
     drop(id) {
@@ -1707,7 +1743,8 @@ export function installEngine(SER) {
           } catch (_) {
             url = f.src;
           }
-          out.push([id, parent, attr(f, 'name') || '', url]);
+          // Fifth: 1 for a cross-origin frame, which only `--frame` evals reach.
+          out.push([id, parent, attr(f, 'name') || '', url, !d && f.contentWindow ? 1 : 0]);
           if (d) walk(d, id);
         }
       };
@@ -1725,7 +1762,7 @@ export function installEngine(SER) {
       const s = SLOTS.get(id);
       if (!s) return { p: id };
       SLOTS.delete(id);
-      return s;
+      return { ...s, ...here() };
     },
     ser: SER.ser,
     des: SER.des,

@@ -104,6 +104,8 @@ export class Request {
   redirectedToValue: Request | null = null;
   /** The route aborted it. */
   abortedByRoute = false;
+  /** Proxy mode: the page's service worker handed it on; its response is fromServiceWorker(). */
+  viaServiceWorker = false;
 
   frame(): any {
     // Resolved on first use: an iframe's frame may not be listed yet when its request starts.
@@ -195,7 +197,20 @@ export class Request {
   failure(): { errorText: string } | null {
     return this.failureText === null ? null : { errorText: this.failureText };
   }
+  /** Proxy mode: response() waits for the response or the failure. */
+  awaitsResponse = false;
+  private settled = false;
+  private waiters: (() => void)[] = [];
+
+  /** @internal The response arrived, or the request failed or finished. */
+  markSettled(): void {
+    this.settled = true;
+    for (const w of this.waiters.splice(0)) w();
+  }
+
   async response(): Promise<Response | null> {
+    if (this.responseValue || this.settled || !this.awaitsResponse) return this.responseValue;
+    await new Promise<void>((res) => this.waiters.push(res));
     return this.responseValue;
   }
 }
@@ -228,8 +243,11 @@ export class Response {
       .filter((h) => h.name.toLowerCase() === n)
       .map((h) => h.value);
   }
+  /** Proxy mode: the page's service worker handed the request on (see PageEvents.netViaServiceWorker). */
+  viaServiceWorker = false;
+
   fromServiceWorker(): boolean {
-    return false;
+    return this.viaServiceWorker;
   }
   httpVersion(): string {
     return 'HTTP/1.1';
@@ -524,6 +542,12 @@ export interface EventsHost {
   childFrame?: (url: string) => unknown;
   /** setExtraHTTPHeaders() values for this page and its context. */
   extraHeaders?: () => Record<string, string>;
+  /** A service worker controlled the page as of the last engine call. */
+  swControlled?: () => boolean;
+  /** The page's URL as of the last engine call. */
+  pageURL?: () => string;
+  /** The page is a popup another page opened. */
+  isPopup?: () => boolean;
 }
 
 /** Per-page routing and event state. The Page owns one. */
@@ -650,6 +674,20 @@ export class PageEvents {
     return this.host.childFrame?.(url) ?? null;
   }
 
+  /**
+   * A request this page's service worker handed on: the page is
+   * controlled and the request comes from its document. WebKit sends
+   * the same headers either way, so this is as close as the proxy gets.
+   */
+  netViaServiceWorker(referer: string): boolean {
+    if (!this.host.swControlled?.()) return false;
+    try {
+      return new URL(referer).origin === new URL(this.host.pageURL?.() ?? '').origin;
+    } catch {
+      return false;
+    }
+  }
+
   private navAborted = false;
 
   /** A route aborted the last main-frame navigation (read once). */
@@ -674,12 +712,25 @@ export class PageEvents {
   /** Proxy mode: make sure the hub is attached before a navigation, so it sees the document. */
   async beforeNavigation(): Promise<void> {
     if (!this.proxied) return;
-    if (!this.hub) {
-      const { sessionId } = this.host.target();
-      this.hub = NetHub.for(sessionId, () => this.host.openPoller());
-      this.hub.attach(this);
-    }
-    this.hub.lastNav = null;
+    this.attachHub();
+    this.hub!.lastNav = null;
+  }
+
+  /** Proxy mode: join the session's hub now (a popup, before its first request). */
+  attachHub(): void {
+    if (this.hub) return;
+    const { sessionId } = this.host.target();
+    this.hub = NetHub.for(sessionId, () => this.host.openPoller());
+    this.hub.attach(this);
+  }
+
+  netIsPopup(): boolean {
+    return this.host.isPopup?.() ?? false;
+  }
+
+  /** Report an event that is not network traffic (popup, close). */
+  emitPageEvent(name: string, arg: unknown): void {
+    this.emit(name, arg);
   }
 
   async netHandle(req: Request, decide: NetDecider, fallthrough: ContinueOptions): Promise<boolean> {

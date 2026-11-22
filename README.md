@@ -62,7 +62,7 @@ Locators resolve lazily at action time, against a fresh view:
 - `page.getByTestId(id)` matches `data-testid` exactly (string or RegExp). The `testIdAttribute` option changes the attribute.
 - `page.getByPlaceholder(text)`, `page.getByAltText(text)` and `page.getByTitle(text)` match those attributes, substring and case-insensitive by default, whole-string with `{ exact: true }`.
 - `page.locator(selector, { hasText, has })` takes Playwright selectors: CSS (searching open shadow roots, with `:has-text()`, `:text()`, `:text-is()`, `:text-matches()` and `:visible` anywhere), `xpath=` or `//...`, `text=`, `role=button[name="OK"]`, `id=`, `data-testid=`, `nth=`, `visible=`, and `>>` chains.
-- `page.frameLocator(selector)` or `locator.contentFrame()` searches inside a same-origin iframe; plain locators stay in their own frame, as in Playwright.
+- `page.frameLocator(selector)` or `locator.contentFrame()` searches inside an iframe; plain locators stay in their own frame, as in Playwright. A cross-origin iframe is searched through vibesurfer, which evaluates inside it directly (macOS; on Linux and Windows only same-origin iframes are reachable).
 - Every `getBy*` and `locator()` also exists on a locator and searches inside its matches: `page.getByTestId('cart').getByRole('button', { name: 'Remove' })`.
 - `.filter({ hasText, hasNotText, has, hasNot, visible })` narrows matches; `has` and `hasNot` take a locator searched inside each match.
 - `.and(locator)` keeps elements matching both, `.or(locator)` takes either.
@@ -110,7 +110,7 @@ Template siblings must appear in that order, and a child can sit at any depth un
 - `page.evaluate(fn, arg)` runs in the page and awaits promises; values round-trip with their types (`undefined`, `Date`, `RegExp`, `Map`, `Set`, `BigInt`, ...), and handles can be passed in. `page.evaluateHandle`, `page.$eval`, `page.$$eval`, `page.waitForFunction` and `page.exposeFunction` / `exposeBinding` work as in Playwright.
 - `page.screenshot({ path, fullPage, clip })` returns the PNG and writes it to `path` when given. The viewport is 1280x720 by default; `page.setViewportSize()` changes it.
 - `page.keyboard.press(key)`, `down`, `up`, `insertText` and `type`, with the browser's default actions (Enter submits a form, Tab moves focus, Backspace deletes).
-- `page.mainFrame()`, `page.frames()` and `page.frame(name)` reach same-origin iframes, with `evaluate` running in the frame's own window.
+- `page.mainFrame()`, `page.frames()` and `page.frame(name)` reach iframes, with `evaluate` running in the frame's own window (cross-origin ones on macOS).
 - `page.click(selector)`, `page.fill(selector, value)` and the rest of the selector shorthands, `page.waitForSelector`, `page.waitForNavigation`, `page.addLocatorHandler`.
 - `page.mouse.move(x, y)`, `page.mouse.click(x, y)` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop.
 - `page.reload()`, `page.goBack()`, `page.goForward()`, `page.waitForURL(url)`, `page.waitForTimeout(ms)`.
@@ -133,7 +133,9 @@ await page.route('**/analytics/**', (route) => route.abort());
 
 `page.on(event, listener)` (and `once`, `off`) reports `console` (`msg.type()`, `msg.text()`), `pageerror`, `request`, `response`, `requestfinished` and `requestfailed`. `page.waitForRequest(url)`, `page.waitForResponse(url)` and `page.waitForEvent(name, predicate)` wait for one.
 
-Both work through a script testsurfer installs in the page, so they see what page script does: `fetch`, `XMLHttpRequest`, `console`, uncaught errors. Navigations, images, scripts, stylesheets and requests from workers are not intercepted or reported. While a page has routes, each `fetch` and XHR waits a poll interval (15ms) for the handler's decision.
+By default both work through a script testsurfer installs in the page, so they see what page script does: `fetch`, `XMLHttpRequest`, `console`, uncaught errors. While a page has routes, each `fetch` and XHR waits a poll interval (15ms) for the handler's decision.
+
+With `configure({ network: 'proxy' })` every request goes through vibesurfer's intercepting proxy instead (vibesurfer 0.2.16+), http and https: documents, iframes, scripts, stylesheets, images, fetch and XHR, each redirect hop on its own. All of them are reported and routable, `page.goto` returns the real response, `setExtraHTTPHeaders` reaches every request, and `context.addCookies` sets cookies in the context's jar. Popups open as their own pages (`page.on('popup')`, `context.on('page')`, `page.opener()`, `close` when they call `window.close()`), and a response a service worker handed on reports `fromServiceWorker()`. Two limits: on macOS, WebKit sends requests to `localhost` and `127.0.0.1` around any proxy, so serve the app under a `.localhost` name (`http://app.localhost:3000`), which resolves to the same loopback address; and popups are macOS only, other platforms load them in the page that opened them.
 
 ## Logging in once
 
@@ -158,7 +160,7 @@ The `test` export wraps node:test with Playwright's test API. Each test gets fre
 - `test.only`, `test.skip(name, fn)` and `test.fixme(name, fn)` register; `test.skip(condition, reason)` inside a test skips it there.
 - `test.step(name, fn)` runs a named part of a test and puts the name in its errors.
 - `test.extend({ ... })` adds fixtures: a value, `[value, { option: true }]`, or a setup function that receives the other fixtures and calls `use(value)`, with teardown after `use` returns.
-- `context.newPage()` opens more pages in a test; `browser.newContext()` opens another context (see Status for how isolated it is).
+- `context.newPage()` opens more pages in a test; `browser.newContext()` opens another context with its own cookie and storage jar. Each test gets a fresh context, as in Playwright; `isolate: false` runs a file's tests in one shared jar instead. `context.on('page')`, `context.on('request')` and `context.waitForEvent(name)` report what the context's pages do (proxy mode).
 
 Options come from `testsurfer.config.ts` (or `.mts`, `.js`, `.mjs`) in the directory you run the tests from, and from `configure(options)` in a test file, which wins over the file:
 
@@ -178,6 +180,8 @@ The options:
 - `inputMode`: `robotic` (default, instant), `careful`, or `human` (a humanized cursor path for flows that score input behavior).
 - `testIdAttribute`: the attribute `getByTestId` reads, default `data-testid`.
 - `updateSnapshots`: `missing` (default), `all` or `none`, for `toHaveScreenshot` baselines. `TESTSURFER_UPDATE_SNAPSHOTS=1` means `all`.
+- `network`: `shim` (default) or `proxy` (see Network and events).
+- `isolate`: `true` (default) gives every test its own context and jar; `false` shares the browser's session.
 
 Test files run in parallel: `node --test` gives each file its own process (one less than the CPU count at a time; set it with `--test-concurrency=N`), and each process opens its own session on the shared daemon. Inside a file, tests run one after another unless a describe block calls `test.describe.configure({ mode: 'parallel' })` (or is `test.describe.parallel`); then its tests run at the same time, each with its own page.
 
@@ -227,18 +231,19 @@ await browser.close();
 
 ## Status
 
-This version pins vibesurfer 0.2.15 and speaks its frozen wire protocol (v1). Routes, page events, `addInitScript` and frames need 0.2.15; `level`, `checked` and `<label>` lookups need 0.2.12; the rest works with older daemons. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
+This version pins vibesurfer 0.2.16 and speaks its frozen wire protocol (v1). Isolated contexts, the proxy network mode, popups and cross-origin frames need 0.2.16; routes, page events, `addInitScript` and same-origin frames need 0.2.15; `level`, `checked` and `<label>` lookups need 0.2.12; the rest works with older daemons. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
+
+[`compat/`](compat) runs Playwright's own page specs against testsurfer, unmodified except for the import of their fixtures; [`compat/RESULTS.md`](compat/RESULTS.md) has the current numbers.
 
 Differences from Playwright, so a suite that relies on these will not run unchanged:
 
-- `page.route` and network events cover `fetch` and XHR only (see Network and events). Documents, iframes, images and scripts cannot be fulfilled or aborted: WKWebView has no request interception for http(s).
+- Without `network: 'proxy'`, `page.route` and network events cover `fetch` and XHR only (see Network and events).
 - `page.request` sends requests from the test process, so it does not share the page's cookies.
-- Contexts share one cookie and storage jar. `browser.newContext()` opens a separate vibesurfer session with its own pages, but logins and storage are visible across contexts.
-- No popups: a link or `window.open` that would open a new window loads in the same page, so `waitForEvent('popup')` never fires.
+- Popups and cross-origin iframes are macOS only (see above).
 - `page.on('dialog')` is not reported; WebKit headless dismisses alerts and confirms.
 - `toHaveScreenshot` compares against baselines recorded by testsurfer; Playwright's baselines come from different engines and will not match.
 - Worker-scoped fixtures in `test.extend` are set up per test.
-- Cross-origin iframes cannot be searched.
+- A response a service worker builds itself, without a network request, is not reported.
 
 ## Benchmark
 

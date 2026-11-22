@@ -220,7 +220,64 @@ export class Page {
         return kids.find((f) => f.frameUrl === url) ?? kids[kids.length - 1] ?? null;
       },
       extraHeaders: () => ({ ...(this.ctx?.extraHeaders ?? {}), ...this.extraHeaders }),
+      isPopup: () => this.openerPage !== undefined,
+      swControlled: () => this.swControlled,
+      pageURL: () => this.lastHref,
     });
+  }
+
+  /** The page that opened this one; undefined when not a popup. */
+  private openerPage: Page | null | undefined = undefined;
+  private closedFlag = false;
+  /** The URL a popup was opened with, until waitForLoadState() sees it loaded. */
+  private popupURL = '';
+
+  /**
+   * @internal Take over a page vibesurfer opened as a popup of `opener`
+   * (`--popups`). Joins the network hub at once, so the popup's first
+   * request is reported to it.
+   */
+  adoptPopup(pageId: string, url: string, opener: Page | null): PageEvents {
+    this.pageId = pageId;
+    this.openerPage = opener;
+    this.popupURL = url || 'about:blank';
+    this.lastHref = url || 'about:blank';
+    this.events.documentChanged();
+    this.events.attachHub();
+    return this.events;
+  }
+
+  /** @internal The vibesurfer page id, once the page has one. */
+  wireId(): string | null {
+    return this.pageId;
+  }
+
+  /** The page that opened this one (window.open, target=_blank), or null. */
+  async opener(): Promise<Page | null> {
+    return this.openerPage ?? null;
+  }
+
+  isClosed(): boolean {
+    return this.closedFlag;
+  }
+
+  /** @internal The page closed itself (window.close()); vibesurfer already released it. */
+  closedByPage(): void {
+    if (this.closedFlag) return;
+    this.pageId = null;
+    this.markClosed();
+  }
+
+  private markClosed(): void {
+    this.closedFlag = true;
+    this.events.emitPageEvent('close', this);
+    this.events.close();
+    this.ctx?.forgetPage(this);
+  }
+
+  /** @internal Report a popup this page opened. */
+  emitPopup(popup: Page): void {
+    this.events.emitPageEvent('popup', popup);
   }
 
   /** @internal Set by the context that created this page. */
@@ -397,8 +454,30 @@ export class Page {
     }
   }
 
-  /** goto() already waits for the load; kept for Playwright compatibility. */
-  async waitForLoadState(_state?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<void> {
+  /**
+   * goto() already waits for the load. A popup loads on its own, so
+   * for one this waits until its document is there and loaded.
+   */
+  async waitForLoadState(state?: 'load' | 'domcontentloaded' | 'networkidle', options: { timeout?: number } = {}): Promise<void> {
+    if (this.popupURL) {
+      const want = this.popupURL;
+      const budget = options.timeout ?? this.timeouts.navigation;
+      const deadline = Date.now() + budget;
+      for (;;) {
+        const r = await this.rawEval<string>(`location.href + ' ' + document.readyState`).catch(() => '');
+        const cut = r.lastIndexOf(' ');
+        const href = r.slice(0, cut);
+        const ready = r.slice(cut + 1);
+        const loaded = state === 'domcontentloaded' ? ready === 'interactive' || ready === 'complete' : ready === 'complete';
+        if (loaded && (href !== 'about:blank' || want === 'about:blank')) {
+          this.lastHref = href;
+          break;
+        }
+        if (Date.now() >= deadline) throw new Error(`page.waitForLoadState: Timeout ${budget}ms exceeded.`);
+        await new Promise((res) => setTimeout(res, 30));
+      }
+      this.popupURL = '';
+    }
     await this.refreshFrames();
   }
 
@@ -862,13 +941,12 @@ export class Page {
   }
 
   /** Raw evaluate through vs_inspect: JSON in, JSON out, no promise handling. */
-  private async rawEval<T>(src: string): Promise<T> {
+  private async rawEval<T>(src: string, frame: string | null = null): Promise<T> {
     await this.ensureOpen();
-    const resp = await this.client.call(
-      'vs_inspect',
-      ['eval', this.id, `JSON.stringify(${src}) ?? "null"`],
-      { session: this.sessionId, full: true },
-    );
+    const flags: Record<string, string | true> = { session: this.sessionId, full: true };
+    // A subframe by URL, cross-origin ones included (vibesurfer 0.2.16+).
+    if (frame !== null) flags['frame'] = frame;
+    const resp = await this.client.call('vs_inspect', ['eval', this.id, `JSON.stringify(${src}) ?? "null"`], flags);
     const line = resp.body.find((l) => l.startsWith('result='));
     if (line === undefined) {
       throw new Error(`evaluate failed: ${resp.body.join(' ').slice(0, 300)}`);
@@ -878,27 +956,31 @@ export class Page {
 
   /**
    * Run `body` (an expression that may use the engine as `E`) in the
-   * page. Installs the engine on first use in each document, waits out
-   * promises, and turns page exceptions into thrown Errors.
+   * page, or in the subframe with URL `frame`. Installs the engine on
+   * first use in each document, waits out promises, and turns page
+   * exceptions into thrown Errors.
    */
-  async engineCall(body: string): Promise<unknown> {
+  async engineCall(body: string, frame: string | null = null): Promise<unknown> {
     const call = (install: boolean) =>
       `(function(){var E=${install ? ENGINE_JS : 'window.__tse'};if(!E)return {noengine:1};return E.exec(function(){return ${body};});})()`;
-    let r = await this.rawEval<EngineReply | null>(call(false));
-    if (r && r.noengine) r = await this.rawEval<EngineReply | null>(call(true));
+    let r = await this.rawEval<EngineReply | null>(call(false), frame);
+    if (r && r.noengine) r = await this.rawEval<EngineReply | null>(call(true), frame);
     for (let i = 0; r && r.p !== undefined; i++) {
       await sleep(i < 5 ? 2 : i < 20 ? 10 : 25);
-      r = await this.rawEval<EngineReply | null>(`(function(){var E=window.__tse;return E?E.take(${r.p}):{gone:1};})()`);
+      r = await this.rawEval<EngineReply | null>(`(function(){var E=window.__tse;return E?E.take(${r.p}):{gone:1};})()`, frame);
     }
     if (!r || r.gone || r.noengine) {
       throw new Error('Execution context was destroyed, most likely because of a navigation');
     }
-    if (r && typeof (r as { u?: unknown }).u === 'string') this.lastHref = (r as { u: string }).u;
-    // Keep frames() current: re-read the frame tree when the page's iframe count changed.
-    const fc = (r as { fc?: number } | null)?.fc;
-    if (typeof fc === 'number' && fc !== this.lastFrameCount && !this.refreshingFrames) {
-      this.lastFrameCount = fc;
-      await this.refreshFrames();
+    if (frame === null) {
+      if (typeof (r as { u?: unknown }).u === 'string') this.lastHref = (r as { u: string }).u;
+      if (typeof (r as { sw?: unknown }).sw === 'boolean') this.swControlled = (r as { sw: boolean }).sw;
+      // Keep frames() current: re-read the frame tree when the page's iframe count changed.
+      const fc = (r as { fc?: number } | null)?.fc;
+      if (typeof fc === 'number' && fc !== this.lastFrameCount && !this.refreshingFrames) {
+        this.lastFrameCount = fc;
+        await this.refreshFrames();
+      }
     }
     if (this.events.hasBindings && !body.startsWith('E.doc')) await this.events.flush();
     if (r.e) {
@@ -913,7 +995,37 @@ export class Page {
 
   /** One locator-engine request (see src/injected.ts). `fn` is a function source passed alongside. */
   async engineRun<T>(req: Record<string, unknown>, fn?: string): Promise<T> {
-    return (await this.engineCall(`E.run(${JSON.stringify(req)}${fn ? `,(${fn})` : ''})`)) as T;
+    return (await this.engineRunIn(null, req, fn, 0, 0)) as T;
+  }
+
+  /**
+   * engineRun in `frame`. A chain that crosses into a cross-origin
+   * frame stops there (XOFrame); the rest runs inside that frame, and
+   * a point it returns moves by where the frame sits in the page.
+   */
+  private async engineRunIn(frame: string | null, req: Record<string, unknown>, fn: string | undefined, dx: number, dy: number): Promise<unknown> {
+    let r: unknown;
+    try {
+      r = await this.engineCall(`E.run(${JSON.stringify(req)}${fn ? `,(${fn})` : ''})`, frame);
+    } catch (e) {
+      if ((e as Error).name !== 'XOFrame') throw e;
+      const xo = JSON.parse((e as Error).message.replace(/^XOFrame: /, '')) as { url: string; rest: number; x: number; y: number };
+      const steps = (req['steps'] as unknown[]).slice(xo.rest);
+      return this.engineRunIn(xo.url, { ...req, steps }, fn, dx + xo.x, dy + xo.y);
+    }
+    const v = (r as { v?: { x?: unknown; y?: unknown } } | null)?.v;
+    if (frame !== null && v && typeof v.x === 'number' && typeof v.y === 'number') {
+      (r as { v: { x: number; y: number } }).v = { ...v, x: v.x + dx, y: v.y + dy } as { x: number; y: number };
+    }
+    return r;
+  }
+
+  /** @internal page.evaluate() inside a cross-origin subframe, addressed by URL. */
+  async evaluateInFrame<T = unknown, A = unknown>(frame: string, fn: string | ((arg: A) => unknown), arg?: A): Promise<T> {
+    const a = JSON.stringify(serializeValue(arg));
+    const src = typeof fn === 'function' ? fn.toString() : fn;
+    const body = `(function(){var v=(${src});return typeof v==='function'?v(E.des(${a})):v;})()`;
+    return (await this.engineCall(body, frame)) as T;
   }
 
   /** Log lines from the last locator-handler run that blocked a wait. */
@@ -1040,10 +1152,10 @@ export class Page {
 
   /** Re-read the frame tree, for iframes added after the page loaded. */
   async refreshFrames(): Promise<Frame[]> {
-    let rows: [number, number | null, string, string][] = [];
+    let rows: [number, number | null, string, string, number?][] = [];
     this.refreshingFrames = true;
     try {
-      rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string][];
+      rows = (await this.engineCall('E.frames()')) as [number, number | null, string, string, number?][];
     } catch {
       rows = [];
     } finally {
@@ -1052,11 +1164,12 @@ export class Page {
     const byId = new Map<number, Frame>();
     const known = new Map(this.frameCache.map((f) => [(f as unknown as { elementId(): number }).elementId(), f]));
     const out: Frame[] = [];
-    for (const [id, parent, name, url] of rows) {
+    for (const [id, parent, name, url, xo] of rows) {
       // An iframe already listed keeps its Frame object (Playwright compares them by identity).
       const f = known.get(id) ?? new Frame(this, new ElementHandle(this, id), parent === null ? this.mainFrame() : (byId.get(parent) ?? this.mainFrame()));
       f.frameName = name;
       f.frameUrl = url;
+      f.crossOrigin = xo === 1;
       byId.set(id, f);
       out.push(f);
     }
@@ -1306,6 +1419,8 @@ export class Page {
   /** The page's current URL. */
   /** The location every engine call reports; Playwright's page.url() is synchronous. */
   private lastHref = 'about:blank';
+  /** A service worker controlled the page as of the last engine call. */
+  private swControlled = false;
 
   /** The page's URL as of the last call into the page (actions, reads and navigations all refresh it). */
   url(): string {
@@ -1515,12 +1630,11 @@ export class Page {
   }
 
   async close(): Promise<void> {
-    this.events.close();
-    if (!this.pageId) return;
-    await this.client
-      .call('vs_close', [this.pageId], { session: this.sessionId })
-      .catch(() => {});
+    if (this.closedFlag) return;
+    const id = this.pageId;
     this.pageId = null;
+    this.markClosed();
+    if (id) await this.client.call('vs_close', [id], { session: this.sessionId }).catch(() => {});
     this.token = null;
     this.snapshot = null;
     this.synced = false;

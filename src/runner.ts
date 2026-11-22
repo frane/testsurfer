@@ -54,11 +54,12 @@ export interface RunnerOptions extends LaunchOptions {
   isolate?: boolean;
   /**
    * How page.route() and network events see requests. `shim` (default)
-   * patches fetch and XHR in the page. `proxy` sends every http request
-   * through vibesurfer's intercepting proxy, so documents, iframes,
-   * scripts and images are reported and routable too; https is not
-   * intercepted, and on macOS requests to localhost or 127.0.0.1 bypass
-   * the proxy (use a name under .localhost instead).
+   * patches fetch and XHR in the page. `proxy` sends every http(s)
+   * request through vibesurfer's intercepting proxy, so documents,
+   * iframes, scripts and images are reported and routable too, and
+   * popups open as their own pages (macOS). On macOS requests to
+   * localhost or 127.0.0.1 bypass the proxy; use a name under
+   * .localhost instead.
    */
   network?: 'shim' | 'proxy';
   /** Where toMatchSnapshot(name) keeps baselines; Playwright's tokens. */

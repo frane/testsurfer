@@ -73,6 +73,8 @@ const only = process.argv.slice(2);
 const specs = only.length ? SPECS.filter((s) => only.includes(s)) : SPECS;
 const rows = [];
 const failures = [];
+/** test.fail() tests that pass: upstream WebKit bugs testsurfer does not have. */
+const beyond = [];
 const JOBS = Number(process.env.COMPAT_JOBS ?? 3);
 
 /** Run one spec file in its own node:test process. */
@@ -104,6 +106,15 @@ function runSpec(name) {
         : [];
       // A spec that cannot load reports one failure named after the file.
       const tests = results.filter((t) => !t.name.endsWith('.spec.ts'));
+      // test.fail() marks a known bug in Playwright's own WebKit. When
+      // testsurfer gets it right the test "fails" by passing; it counts
+      // as a pass here and is listed apart in RESULTS.md.
+      for (const t of tests) {
+        if (t.status === 'failed' && t.error === 'expected to fail, but passed (test.fail)') {
+          t.status = 'passed';
+          beyond.push({ spec: name, test: t.name });
+        }
+      }
       const loadError = results.find((t) => t.name.endsWith('.spec.ts') && t.status === 'failed');
       const count = (s) => tests.filter((t) => t.status === s).length;
       const row = { name, passed: count('passed'), failed: count('failed'), skipped: count('skipped') };
@@ -154,8 +165,16 @@ if (!only.length) {
     '| ---- | ------ | ------ | ------- |',
     ...rows.map((r) => `| ${r.name} | ${r.passed} | ${r.failed}${r.loadError ? ' (does not load)' : ''} | ${r.skipped} |`),
     '',
-    'A test counts as failed when it errors for any reason, including APIs testsurfer does not have (`page.$`, `elementHandle`, `locator.evaluate`, ...). The failures with their first error line are in `compat/failures.json`.',
+    'A test counts as failed when it errors for any reason. The failures with their first error line are in `compat/failures.json`.',
     '',
+    ...(beyond.length
+      ? [
+          "Some tests are marked `test.fail()` for Playwright's own WebKit, for a bug it has. Where testsurfer does not have the bug, the test passes and counts as passed:",
+          '',
+          ...beyond.map((b) => `- ${b.spec}: ${b.test}`),
+          '',
+        ]
+      : []),
   ];
   fs.writeFileSync(path.join(here, 'RESULTS.md'), lines.join('\n'));
   fs.writeFileSync(path.join(here, 'failures.json'), JSON.stringify(failures, null, 2) + '\n');

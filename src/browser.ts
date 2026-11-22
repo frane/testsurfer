@@ -26,6 +26,7 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
   return caps;
 }
 import type { RouteHandler, UrlMatcher } from './events.ts';
+import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
   Page,
   DEFAULT_TIMEOUTS,
@@ -143,8 +144,13 @@ export class Browser {
    */
   async newContext(options: { isolated?: boolean; intercept?: boolean } = {}): Promise<BrowserContext> {
     const flags: Record<string, true> = options.isolated === false ? {} : { isolated: true };
-    // Every http request goes through vibesurfer's proxy (0.2.16+); see src/net.ts.
-    if (options.intercept) flags['intercept'] = true;
+    // Every http request goes through vibesurfer's proxy (0.2.16+); see
+    // src/net.ts. Popups then open as their own pages, reported on the
+    // same event stream.
+    if (options.intercept) {
+      flags['intercept'] = true;
+      flags['popups'] = true;
+    }
     const resp = await this.client.call('vs_session_open', [], flags);
     const id = resp.body[0];
     if (!id) throw new Error('vs_session_open returned no session id');
@@ -170,6 +176,11 @@ export class Browser {
   /** @internal Close a context's session. */
   async closeSession(sessionId: string): Promise<void> {
     await this.client.call('vs_session_close', [sessionId], {}).catch(() => {});
+  }
+
+  /** @internal A second daemon connection, for a context's event poller. */
+  openPoller(): Promise<WireClient> {
+    return this.client.sibling();
   }
 
   /** @internal One wire call on the browser's own connection. */
@@ -241,6 +252,106 @@ export class BrowserContext {
   adopt(page: Page): void {
     this.open.push(page);
     page.bindContext(this);
+    this.listen();
+  }
+
+  /** @internal A page closed; it is no longer one of the context's pages. */
+  forgetPage(page: Page): void {
+    const i = this.open.indexOf(page);
+    if (i >= 0) this.open.splice(i, 1);
+  }
+
+  // --- Events: page, request, response, requestfinished, requestfailed, close.
+
+  private readonly listeners = new Map<string, Set<(arg: never) => void>>();
+  private hub: NetHub | null = null;
+
+  /** Proxy mode: watch the session's event stream for popups and context-level events. */
+  private listen(): void {
+    if (!this.intercept || this.hub) return;
+    this.hub = NetHub.for(this.sessionId, () => this.owner.openPoller());
+    this.hub.attachContext(this.netContext());
+  }
+
+  private netContext(): NetContext {
+    return {
+      netEmit: (name, arg) => this.emit(name, arg),
+      netPopup: (openerId, pageId, url) => this.popupOpened(openerId, pageId, url),
+      netPageClosed: (pageId) => {
+        this.open.find((p) => p.wireId() === pageId)?.closedByPage();
+      },
+    };
+  }
+
+  private popupOpened(openerId: string, pageId: string, url: string): NetPage | null {
+    const opener = this.open.find((p) => p.wireId() === openerId) ?? null;
+    const popup = this.owner.makePage(this.sessionId);
+    this.adopt(popup);
+    const events = popup.adoptPopup(pageId, url, opener);
+    // The context's routes and init scripts apply to the popup too; its
+    // document is already on the way, so they reach it from the next one.
+    for (const r of this.routes) void popup.route(r.url, r.handler, r.times === undefined ? {} : { times: r.times });
+    this.emit('page', popup);
+    opener?.emitPopup(popup);
+    return events;
+  }
+
+  private emit(name: string, arg: unknown): void {
+    for (const fn of [...(this.listeners.get(name) ?? [])]) {
+      try {
+        (fn as (a: unknown) => void)(arg);
+      } catch {
+        /* a throwing listener must not stop the poller */
+      }
+    }
+  }
+
+  on(event: string, listener: (arg: never) => void): this {
+    let set = this.listeners.get(event);
+    if (!set) this.listeners.set(event, (set = new Set()));
+    set.add(listener);
+    return this;
+  }
+
+  once(event: string, listener: (arg: never) => void): this {
+    const wrapped = (arg: never) => {
+      this.off(event, wrapped);
+      listener(arg);
+    };
+    return this.on(event, wrapped);
+  }
+
+  off(event: string, listener: (arg: never) => void): this {
+    this.listeners.get(event)?.delete(listener);
+    return this;
+  }
+
+  removeListener(event: string, listener: (arg: never) => void): this {
+    return this.off(event, listener);
+  }
+
+  /** The next `event` that `predicate` accepts. */
+  waitForEvent<T = unknown>(
+    event: string,
+    optionsOrPredicate?: ((arg: T) => boolean | Promise<boolean>) | { predicate?: (arg: T) => boolean | Promise<boolean>; timeout?: number },
+  ): Promise<T> {
+    const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
+    const timeout = opts.timeout ?? 30_000;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.off(event, fn);
+        reject(new Error(`browserContext.waitForEvent: Timeout ${timeout}ms exceeded while waiting for event "${event}"`));
+      }, timeout);
+      const fn = (arg: never) => {
+        void (async () => {
+          if (opts.predicate && !(await opts.predicate(arg as T))) return;
+          clearTimeout(timer);
+          this.off(event, fn);
+          resolve(arg as T);
+        })();
+      };
+      this.on(event, fn);
+    });
   }
 
   /** setExtraHTTPHeaders() for every page of the context. */
@@ -333,6 +444,9 @@ export class BrowserContext {
   /** Close every page, and the session when the context opened one. */
   async close(): Promise<void> {
     for (const p of this.open.splice(0)) await p.close().catch(() => {});
+    this.hub?.detachContext();
+    this.hub = null;
+    this.emit('close', this);
     if (this.ownsSession) {
       await this.owner.closeSession(this.sessionId);
       this.owner.forgetContext(this);

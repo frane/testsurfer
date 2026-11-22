@@ -7,8 +7,10 @@
  * context has a route, the proxy holds every request until a handler
  * (or the hub, when none matches) decides.
  *
- * HTTPS is tunnelled by the proxy without interception, so https
- * requests are neither reported nor routable in this mode.
+ * HTTPS goes through the proxy too: it answers the browser's TLS with
+ * leaves from the daemon's CA, which only intercept pages trust.
+ * Popups (`--popups`) arrive on the same stream as `page` and `close`
+ * lines, and become Page objects of the context.
  */
 
 import type { WireClient } from './client.ts';
@@ -32,6 +34,19 @@ export interface NetPage {
    * fallback() overrides for the next page or the network.
    */
   netHandle(req: Request, decide: NetDecider, fallthrough: ContinueOptions): Promise<boolean>;
+  /** A popup: it gets its own requests only, not the session's. */
+  netIsPopup?(): boolean;
+  /** The page's service worker handed on a request with this referer. */
+  netViaServiceWorker?(referer: string): boolean;
+}
+
+/** The context side of a session's hub: popups, closes, context-level events. */
+export interface NetContext {
+  netEmit(name: string, arg: unknown): void;
+  /** A page opened a popup (vibesurfer `--popups`); returns the popup's events, attached. */
+  netPopup(openerId: string, pageId: string, url: string): NetPage | null;
+  /** A page closed itself (`window.close()`). */
+  netPageClosed(pageId: string): void;
 }
 
 /** How a handler's decision reaches the proxy. */
@@ -138,8 +153,29 @@ export class NetHub {
 
   detach(page: NetPage): void {
     this.pages.delete(page);
+    if (this.pages.size === 0 && !this.ctx) this.close();
+  }
+
+  private ctx: NetContext | null = null;
+
+  /** The context listens for popups and context-level events. */
+  attachContext(ctx: NetContext): void {
+    this.ctx = ctx;
+    this.loop();
+  }
+
+  detachContext(): void {
+    this.ctx = null;
     if (this.pages.size === 0) this.close();
   }
+
+  /** Popups whose first navigation has not arrived yet, by URL. */
+  private readonly popupNav = new Map<string, NetPage>();
+  /** The page a request belongs to, when not the whole session. */
+  /** The page a request belongs to; null for a service worker's own requests (context only). */
+  private readonly owners = new Map<number, NetPage | null>();
+  /** Service worker scripts seen (`Service-Worker: script`). */
+  private readonly swScripts = new Set<string>();
 
   /** Hold requests while any page has a route; let them run otherwise. */
   async sync(): Promise<void> {
@@ -162,7 +198,7 @@ export class NetHub {
     if (this.running) return;
     this.running = true;
     void (async () => {
-      while (this.running && this.pages.size > 0) {
+      while (this.running && (this.pages.size > 0 || this.ctx)) {
         try {
           const resp = await this.call('vs_net_poll', [], { 'wait-ms': '250' });
           this.handle(resp.body);
@@ -175,8 +211,14 @@ export class NetHub {
     })();
   }
 
-  private emit(name: string, arg: unknown): void {
-    for (const p of this.pages) p.netEmit(name, arg);
+  /**
+   * To `owner` alone, to the context alone (`null`), or to every page
+   * but popups (`undefined`); and to the context in every case.
+   */
+  private emit(name: string, arg: unknown, owner?: NetPage | null): void {
+    if (owner) owner.netEmit(name, arg);
+    else if (owner === undefined) for (const p of this.pages) if (!p.netIsPopup?.()) p.netEmit(name, arg);
+    this.ctx?.netEmit(name, arg);
   }
 
   /** Parse one poll body: `req`/`res` lines with their `h`/`body` lines, `fin`, `fail`. */
@@ -215,8 +257,10 @@ export class NetHub {
         case 'fin': {
           const req = this.requests.get(id);
           if (req) {
-            this.emit('requestfinished', req);
+            req.markSettled();
+            this.emit('requestfinished', req, this.owners.get(id));
             this.requests.delete(id);
+            this.owners.delete(id);
           }
           break;
         }
@@ -225,11 +269,23 @@ export class NetHub {
           if (req) {
             // WebKit reports a request a route aborted this way.
             req.failureText = req.abortedByRoute ? 'Blocked by Web Inspector' : parts.slice(2).join(' ') || 'failed';
-            this.emit('requestfailed', req);
+            req.markSettled();
+            this.emit('requestfailed', req, this.owners.get(id));
             this.requests.delete(id);
+            this.owners.delete(id);
           }
           break;
         }
+        case 'page': {
+          // page <opener> <page> <url>: the popup exists before its first request.
+          const url = parts.slice(3).join(' ');
+          const popup = this.ctx?.netPopup(parts[1] ?? '', parts[2] ?? '', url) ?? null;
+          if (popup && url && url !== 'about:blank') this.popupNav.set(url, popup);
+          break;
+        }
+        case 'close':
+          this.ctx?.netPageClosed(parts[1] ?? '');
+          break;
       }
     }
     flush();
@@ -260,8 +316,28 @@ export class NetHub {
         navigation: attrs['nav'] === '1',
         frame: attrs['frame'] === 'sub' ? 'sub' : 'main',
       });
-      const page = [...this.pages][0];
-      req.frameValue = page ? () => page.netFrame(req.frameKind(), url) : null;
+      // A popup's first navigation is the popup's; Playwright has no
+      // frame for it yet. Everything else goes to the session's pages.
+      const popup = req.isNavigationRequest() && req.frameKind() === 'main' ? this.popupNav.get(url) : undefined;
+      if (popup) {
+        this.popupNav.delete(url);
+        this.owners.set(p.id, popup);
+        req.frameValue = () => {
+          throw new Error(
+            'request.frame: Frame for this navigation request is not available, because the request was issued before the frame is created. You can check whether the request is a navigation request by calling isNavigationRequest() method.',
+          );
+        };
+      } else {
+        const page = [...this.pages].find((pg) => !pg.netIsPopup?.()) ?? [...this.pages][0];
+        req.frameValue = page ? () => page.netFrame(req.frameKind(), url) : null;
+        // Service workers: a worker script, the worker's own requests
+        // (sent with the script as referer; not the page's), and the
+        // page's requests the worker handed on.
+        const referer = p.headers['referer'] ?? '';
+        if (p.headers['service-worker'] === 'script') this.swScripts.add(url);
+        if (this.swScripts.has(referer)) this.owners.set(p.id, null);
+        else if (page && referer && !req.isNavigationRequest()) req.viaServiceWorker = page.netViaServiceWorker?.(referer) ?? false;
+      }
       // setExtraHTTPHeaders() values are part of the request, as handlers and listeners see it.
       const add = Object.assign({}, ...[...this.pages].map((pg) => pg.netExtraHeaders()));
       for (const [k, v] of Object.entries(add)) req.addHeader(k, v as string);
@@ -273,8 +349,9 @@ export class NetHub {
         req.redirectedFromValue = from;
         from.redirectedToValue = req;
       }
+      req.awaitsResponse = true;
       this.requests.set(p.id, req);
-      this.emit('request', req);
+      this.emit('request', req, this.owners.get(p.id));
       if (this.routing) void this.route(req, !!from);
       return;
     }
@@ -291,12 +368,14 @@ export class NetHub {
     }
     const res = new Response(req, { url, status, statusText: p.head.slice(4).join(' '), headers: p.headers });
     res.rawHeaders = p.raw;
+    res.viaServiceWorker = req.viaServiceWorker;
     res.bodyLoader = async () => {
       const r = await this.call('vs_net_body', [String(p.id)]);
       const line = r.body.find((l) => l.startsWith('body ')) ?? 'body ';
       return Buffer.from(line.slice(5), 'base64');
     };
     req.responseValue = res;
+    req.markSettled();
     this.responses.set(p.id, res);
     if (req.isNavigationRequest() && req.frameKind() === 'main' && !(status >= 300 && status < 400)) this.lastNav = res;
     const loc = p.headers['location'];
@@ -307,7 +386,7 @@ export class NetHub {
         /* not a URL; no hop to link */
       }
     }
-    this.emit('response', res);
+    this.emit('response', res, this.owners.get(p.id));
   }
 
   /** Offer a held request to each page's routes; continue when none decides. */
