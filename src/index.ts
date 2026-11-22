@@ -32,6 +32,7 @@ export { PINNED_VIBESURFER } from './client.ts';
 export {
   APIResponse,
   ConsoleMessage,
+  Dialog,
   Request,
   Response,
   Route,
@@ -53,7 +54,7 @@ export const devices: Record<string, { viewport: { width: number; height: number
   'Desktop Chrome': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'chromium' },
   'Desktop Edge': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'chromium' },
   'Desktop Firefox': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'firefox' },
-  'Desktop Safari': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'webkit' },
+  'Desktop Safari': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2, defaultBrowserType: 'webkit' },
   'iPhone 13': { viewport: { width: 390, height: 664 }, deviceScaleFactor: 3, defaultBrowserType: 'webkit' },
   'Pixel 5': { viewport: { width: 393, height: 727 }, deviceScaleFactor: 2.75, defaultBrowserType: 'chromium' },
 };

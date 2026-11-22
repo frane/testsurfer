@@ -4,3 +4,7 @@ dist/
 .DS_Store
 compat/.cache/
 compat/.work/
+lab/node_modules
+lab/results/
+lab/test-results/
+test-results/

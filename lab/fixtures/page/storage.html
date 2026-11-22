@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>storage</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<button onclick="localStorage.setItem('k','v');o.textContent='saved'">Save</button><p id="o">empty</p><script>if(localStorage.getItem("k"))o.textContent="had "+localStorage.getItem("k")</script>
+</body></html>

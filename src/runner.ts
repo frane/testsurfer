@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 import { Browser, type BrowserContext, type LaunchOptions } from './browser.ts';
 import { currentTestInfo, testInfoStore, updateSnapshotsFromEnv, type TestInfo, type UpdateSnapshots } from './testinfo.ts';
 import type { Page } from './page.ts';
+import { findPlaywrightConfig, importPlaywrightConfig, runnerOptionsFrom } from './pwconfig.ts';
 
 export interface TestFixtures {
   page: Page;
@@ -90,18 +91,21 @@ export function defineConfig(config: RunnerOptions): RunnerOptions {
 const CONFIG_FILES = ['testsurfer.config.ts', 'testsurfer.config.mts', 'testsurfer.config.js', 'testsurfer.config.mjs'];
 
 /**
- * The default export of the first testsurfer.config.* in the working
- * directory, or `{}`. Read once, when the first test launches the
- * browser.
+ * Options from the working directory: what applies of a
+ * playwright.config.*, then the first testsurfer.config.* on top. Read
+ * once, when the first test launches the browser.
  */
 async function loadConfigFile(): Promise<RunnerOptions> {
+  const pw = findPlaywrightConfig();
+  const base = pw ? (runnerOptionsFrom(await importPlaywrightConfig(pw), path.dirname(pw)) as RunnerOptions) : {};
   for (const name of CONFIG_FILES) {
     const file = path.resolve(name);
     if (!fs.existsSync(file)) continue;
     const mod = (await import(pathToFileURL(file).href)) as { default?: RunnerOptions };
-    return mod.default ?? {};
+    const own = mod.default ?? {};
+    return { ...base, ...own, timeouts: { ...base.timeouts, ...own.timeouts } };
   }
-  return {};
+  return base;
 }
 
 /**
@@ -184,6 +188,9 @@ function register(item: Item): void {
       const { scope } = item;
       const o: Record<string, unknown> = { ...nodeOpts(item.opts) };
       if (scope.mode === 'parallel') o['concurrency'] = true;
+      // playwright.config `fullyParallel` (passed on by `testsurfer test`):
+      // a group's tests run a few at a time unless it asks for serial.
+      else if (scope.mode === 'default' && process.env['TESTSURFER_FULLY_PARALLEL'] === '1') o['concurrency'] = 4;
       nodeDescribe(item.name, o, () => {
         for (const child of scope.items ?? []) register(child);
       });

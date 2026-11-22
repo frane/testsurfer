@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>click</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<button id="b" onclick="this.textContent=(+this.dataset.n||0)+1;this.dataset.n=this.textContent">0</button><p id="trust"></p><script>b.addEventListener("click",e=>trust.textContent=e.isTrusted?"trusted":"synthetic")</script>
+</body></html>

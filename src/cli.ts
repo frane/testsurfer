@@ -14,10 +14,12 @@
  * current directory.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PLAYWRIGHT_CONFIGS } from './pwconfig.ts';
 
 const TEST_FILE = /\.(spec|test)\.[cm]?[jt]sx?$/;
 
@@ -48,7 +50,7 @@ function collect(p: string, out: string[]): void {
 
 /** testDir from a config file, read as text: configs import modules we do not want to run here. */
 function configuredTestDir(): string | null {
-  for (const name of ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs', 'testsurfer.config.ts', 'testsurfer.config.js']) {
+  for (const name of [...PLAYWRIGHT_CONFIGS, 'testsurfer.config.ts', 'testsurfer.config.js']) {
     if (!fs.existsSync(name)) continue;
     const m = /testDir\s*:\s*['"`]([^'"`]+)['"`]/.exec(fs.readFileSync(name, 'utf8'));
     if (m) return m[1]!;
@@ -98,5 +100,36 @@ const args = [
   ...(grep ? [`--test-name-pattern=${grep}`] : []),
   ...files,
 ];
+// A playwright.config's webServer, globalSetup and globalTeardown run
+// around the whole run, in their own process (src/global.ts).
+const pwConfig = PLAYWRIGHT_CONFIGS.find((n) => fs.existsSync(n));
+let global: ChildProcess | null = null;
+if (pwConfig) {
+  const script = new URL(`./global${ext}`, import.meta.url);
+  global = spawn(process.execPath, ['--import', register, fileURLToPath(script), pwConfig], {
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    env,
+  });
+  const reply = await new Promise<{ ready?: boolean; failed?: string; env?: Record<string, string> }>((resolve) => {
+    global!.once('message', (m) => resolve(m as { ready?: boolean }));
+    global!.once('exit', (code) => resolve({ failed: `global setup exited with code ${code}` }));
+  });
+  if (reply.failed) {
+    process.stderr.write(`testsurfer: ${reply.failed}\n`);
+    global.kill();
+    process.exit(1);
+  }
+  Object.assign(env, reply.env ?? {});
+}
+
+/** Run globalTeardown and stop web servers, then exit. */
+function finish(code: number): void {
+  if (!global || global.exitCode !== null) process.exit(code);
+  global.once('exit', () => process.exit(code));
+  global.send('teardown');
+  setTimeout(() => process.exit(code), 30_000).unref();
+}
+
 const child = spawn(process.execPath, args, { stdio: 'inherit', env });
-child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
+child.on('exit', (code, signal) => finish(code ?? (signal ? 1 : 0)));
+process.on('SIGINT', () => child.kill('SIGINT'));

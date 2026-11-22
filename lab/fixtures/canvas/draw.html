@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>draw</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<canvas id="c" width="300" height="200" style="border:1px solid"></canvas><p id="o"></p><script>const x=c.getContext("2d");let down=false,pts=0;c.addEventListener("mousedown",()=>down=true);c.addEventListener("mouseup",()=>{down=false;o.textContent="stroke "+pts});c.addEventListener("mousemove",e=>{if(!down)return;pts++;x.fillRect(e.offsetX,e.offsetY,3,3)});c.addEventListener("click",e=>o.dataset.click=e.offsetX+","+e.offsetY)</script>
+</body></html>

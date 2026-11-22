@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>spa</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<nav><a href="/dynamic/spa.html?p=about" id="about">About</a></nav><main id="m">Home</main><script>about.addEventListener("click",e=>{e.preventDefault();history.pushState(null,"",about.href);m.textContent="About page"});</script>
+</body></html>

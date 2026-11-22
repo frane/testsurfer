@@ -74,6 +74,7 @@ import { renderSnapshot } from './aria.ts';
 import { PAGE_SHIM } from './shim.ts';
 import {
   ConsoleMessage,
+  type Dialog,
   PageEvents,
   Request,
   Response,
@@ -278,6 +279,18 @@ export class Page {
   /** @internal Report a popup this page opened. */
   emitPopup(popup: Page): void {
     this.events.emitPageEvent('popup', popup);
+  }
+
+  /**
+   * @internal A dialog this page opened. Listeners on the page (or its
+   * context) decide; with none it is dismissed, as in Playwright.
+   */
+  handleDialog(d: Dialog, contextListens: boolean): void {
+    if (!this.events.hasListeners('dialog') && !contextListens) {
+      void d.dismiss().catch(() => {});
+      return;
+    }
+    this.events.emitPageEvent('dialog', d);
   }
 
   /** @internal Set by the context that created this page. */
@@ -582,6 +595,7 @@ export class Page {
    */
   private async ensureOpen(): Promise<void> {
     if (this.pageId) return;
+    if (this.closedFlag) throw new Error('Target page, context or browser has been closed');
     const resp = await this.client.call('vs_open', ['about:blank'], { session: this.sessionId });
     const id = resp.body[0];
     if (!id) throw new Error('vs_open returned no page id for about:blank');
@@ -806,6 +820,7 @@ export class Page {
         this.fresh = false;
       }
     } catch (e) {
+      if (await this.closedByItself(e)) return;
       if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
         this.token = e.args[0];
       }
@@ -813,6 +828,20 @@ export class Page {
       this.fresh = false;
       throw e;
     }
+  }
+
+  /**
+   * The action made the page close itself (a popup's "Close" button):
+   * vibesurfer released the page under the action, which then finds
+   * nothing. The action did its work; the close event follows on the
+   * event stream.
+   */
+  private async closedByItself(e: unknown): Promise<boolean> {
+    if (!(e instanceof WireError) || e.code !== 'NOT_FOUND' || !String(e.args[0] ?? '').startsWith('page=')) return false;
+    if (this.openerPage === undefined) return false;
+    const deadline = Date.now() + 1000;
+    while (!this.closedFlag && Date.now() < deadline) await sleep(20);
+    return this.closedFlag;
   }
 
   /**
@@ -838,6 +867,7 @@ export class Page {
         this.fresh = false;
       }
     } catch (e) {
+      if (await this.closedByItself(e)) return;
       if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
         this.token = e.args[0];
       }
@@ -1542,10 +1572,31 @@ export class Page {
    * mode unless a call overrides it.
    */
   readonly mouse = {
-    move: (x: number, y: number, options?: { mode?: InputMode }): Promise<void> =>
-      this.cursorOp('vs_move_to', [x, y], options?.mode, false),
-    click: (x: number, y: number, options?: { mode?: InputMode }): Promise<void> =>
-      this.clickAt(x, y, options?.mode),
+    /**
+     * Move the pointer. While a button is down (mouse.down()), the move
+     * is only recorded: the press, the path and the release go out as
+     * one native drag at mouse.up(), so the page sees them in order.
+     */
+    move: async (x: number, y: number, options?: { mode?: InputMode; steps?: number }): Promise<void> => {
+      this.pointer = { x, y };
+      if (this.pressedAt) return;
+      await this.cursorOp('vs_move_to', [x, y], options?.mode, false);
+    },
+    click: async (x: number, y: number, options?: { mode?: InputMode }): Promise<void> => {
+      this.pointer = { x, y };
+      await this.clickAt(x, y, options?.mode);
+    },
+    down: async (): Promise<void> => {
+      this.pressedAt = { ...this.pointer };
+    },
+    up: async (options?: { mode?: InputMode }): Promise<void> => {
+      const from = this.pressedAt;
+      this.pressedAt = null;
+      if (!from) return;
+      const to = this.pointer;
+      if (from.x === to.x && from.y === to.y) await this.clickAt(to.x, to.y, options?.mode);
+      else await this.cursorOp('vs_drag', [from.x, from.y, to.x, to.y], options?.mode, true);
+    },
     /** Press at (x1, y1), move along a path, release at (x2, y2). Fires the HTML5 drag events too. */
     drag: (
       x1: number,
@@ -1555,6 +1606,10 @@ export class Page {
       options?: { mode?: InputMode },
     ): Promise<void> => this.cursorOp('vs_drag', [x1, y1, x2, y2], options?.mode, true),
   };
+
+  /** Where mouse.move/click last put the pointer, and where mouse.down pressed. */
+  private pointer = { x: 0, y: 0 };
+  private pressedAt: { x: number; y: number } | null = null;
 
   private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
     await this.ensureOpen();

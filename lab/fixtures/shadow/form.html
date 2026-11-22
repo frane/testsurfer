@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>form</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<x-login></x-login><script>customElements.define("x-login",class extends HTMLElement{constructor(){super();const r=this.attachShadow({mode:"open"});r.innerHTML="<label>User <input id=u></label><button>Sign in</button><p id=o></p>";r.querySelector("button").onclick=()=>r.getElementById("o").textContent="hi "+r.getElementById("u").value}})</script>
+</body></html>

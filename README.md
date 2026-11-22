@@ -26,6 +26,8 @@ npx testsurfer test            # or: node --test tests/
 
 `testsurfer test` runs an existing Playwright suite without edits: imports of `@playwright/test` resolve to testsurfer, and extensionless imports (`../fixtures`) resolve as Playwright's runner resolves them. It takes paths, `--grep`, `--workers` and `--update-snapshots`; with no paths it runs the `testDir` from `playwright.config.*`, else `./tests`. Node 22.18 or newer runs `.ts` test files directly.
 
+From a `playwright.config.*` it takes `use.baseURL`, `use.testIdAttribute`, `use.viewport`, `use.actionTimeout` and `navigationTimeout`, `expect.timeout`, `outputDir` and the snapshot paths, with a WebKit project's `use` applied over the top level. It starts each `webServer` (or reuses one with `reuseExistingServer`), runs `globalSetup` before the tests and `globalTeardown` after, and passes environment variables the config or setup set on to the tests, as Playwright does. A `testsurfer.config.*` next to it overrides those options.
+
 ## How it works
 
 vibesurfer is a daemon that owns one real WebKit engine and speaks a line protocol over a Unix socket. testsurfer is a TypeScript client for that protocol. Locators resolve inside the page, in one evaluate per call, with Playwright's semantics: CSS that pierces open shadow roots, text, role and label queries, strict mode, actionability checks. vibesurfer supplies trusted native input, screenshots, navigation and the accessibility tree behind `toMatchAriaSnapshot`.
@@ -112,7 +114,7 @@ Template siblings must appear in that order, and a child can sit at any depth un
 - `page.keyboard.press(key)`, `down`, `up`, `insertText` and `type`, with the browser's default actions (Enter submits a form, Tab moves focus, Backspace deletes).
 - `page.mainFrame()`, `page.frames()` and `page.frame(name)` reach iframes, with `evaluate` running in the frame's own window (cross-origin ones on macOS).
 - `page.click(selector)`, `page.fill(selector, value)` and the rest of the selector shorthands, `page.waitForSelector`, `page.waitForNavigation`, `page.addLocatorHandler`.
-- `page.mouse.move(x, y)`, `page.mouse.click(x, y)` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop.
+- `page.mouse.move(x, y)`, `page.mouse.click(x, y)`, `page.mouse.down()` / `up()` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop.
 - `page.reload()`, `page.goBack()`, `page.goForward()`, `page.waitForURL(url)`, `page.waitForTimeout(ms)`.
 - `page.addInitScript(fn | string | { path }, arg)` runs a script at document start in every later document, before the page's own scripts. The page's Content Security Policy does not block it.
 
@@ -135,7 +137,7 @@ await page.route('**/analytics/**', (route) => route.abort());
 
 By default both work through a script testsurfer installs in the page, so they see what page script does: `fetch`, `XMLHttpRequest`, `console`, uncaught errors. While a page has routes, each `fetch` and XHR waits a poll interval (15ms) for the handler's decision.
 
-With `configure({ network: 'proxy' })` every request goes through vibesurfer's intercepting proxy instead (vibesurfer 0.2.16+), http and https: documents, iframes, scripts, stylesheets, images, fetch and XHR, each redirect hop on its own. All of them are reported and routable, `page.goto` returns the real response, `setExtraHTTPHeaders` reaches every request, and `context.addCookies` sets cookies in the context's jar. Popups open as their own pages (`page.on('popup')`, `context.on('page')`, `page.opener()`, `close` when they call `window.close()`), and a response a service worker handed on reports `fromServiceWorker()`. Two limits: on macOS, WebKit sends requests to `localhost` and `127.0.0.1` around any proxy, so serve the app under a `.localhost` name (`http://app.localhost:3000`), which resolves to the same loopback address; and popups are macOS only, other platforms load them in the page that opened them.
+With `configure({ network: 'proxy' })` every request goes through vibesurfer's intercepting proxy instead (vibesurfer 0.2.16+), http and https: documents, iframes, scripts, stylesheets, images, fetch and XHR, each redirect hop on its own. All of them are reported and routable, `page.goto` returns the real response, `setExtraHTTPHeaders` reaches every request, and `context.addCookies` sets cookies in the context's jar. Popups open as their own pages (`page.on('popup')`, `context.on('page')`, `page.opener()`, `close` when they call `window.close()`), `page.on('dialog')` gets `alert`, `confirm` and `prompt` to accept or dismiss (with no listener they are dismissed, as in Playwright), and a response a service worker handed on reports `fromServiceWorker()`. Two limits: on macOS, WebKit sends requests to `localhost` and `127.0.0.1` around any proxy, so serve the app under a `.localhost` name (`http://app.localhost:3000`), which resolves to the same loopback address; and popups and dialogs are macOS only: other platforms load popups in the page that opened them and dismiss dialogs.
 
 ## Logging in once
 
@@ -239,11 +241,14 @@ Differences from Playwright, so a suite that relies on these will not run unchan
 
 - Without `network: 'proxy'`, `page.route` and network events cover `fetch` and XHR only (see Network and events).
 - `page.request` sends requests from the test process, so it does not share the page's cookies.
-- Popups and cross-origin iframes are macOS only (see above).
-- `page.on('dialog')` is not reported; WebKit headless dismisses alerts and confirms.
+- Popups, dialogs and cross-origin iframes are macOS only, and popups and dialogs need `network: 'proxy'` (see above).
 - `toHaveScreenshot` compares against baselines recorded by testsurfer; Playwright's baselines come from different engines and will not match.
 - Worker-scoped fixtures in `test.extend` are set up per test.
 - A response a service worker builds itself, without a network request, is not reported.
+
+## Lab
+
+[`lab/`](lab) is a set of small fixture pages, one hard case each (locators, actions, assertions, dynamic pages, frames, shadow DOM, popups, network, keyboard, dialogs, pointer input), with tests written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer; [`lab/RESULTS.md`](lab/RESULTS.md) has both side by side, with wall time and install size. `node lab/run.mjs` reproduces it.
 
 ## Benchmark
 

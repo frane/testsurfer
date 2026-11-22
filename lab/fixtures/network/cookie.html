@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>cookie</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<button onclick="fetch('/set-cookie').then(()=>fetch('/cookies')).then(r=>r.json()).then(j=>o.textContent=j.cookie)">Cookie</button><p id="o"></p>
+</body></html>

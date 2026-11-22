@@ -123,7 +123,14 @@ export function snapshotPath(name: string): string {
   const template = info?.snapshotPathTemplate ?? '{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}-{platform}{ext}';
   const ext = path.extname(name);
   const arg = ext ? name.slice(0, -ext.length) : name;
+  const project = info?.project.name ?? 'webkit';
+  // From a playwright.config with snapshotDir: the test file's directory relative to testDir.
+  const relDir = path.relative(process.env['TESTSURFER_TEST_DIR'] ?? path.dirname(testFile), path.dirname(testFile));
   return template
+    .replace(/\{relTestFileDir\}/g, relDir)
+    .replace(/\{-projectName\}/g, project ? `-${project}` : '')
+    .replace(/\{\/projectName\}/g, project ? `/${project}` : '')
+    .replace(/\{-snapshotSuffix\}/g, `-${process.platform}`)
     .replace(/\{testDir\}/g, path.dirname(testFile))
     .replace(/\{testFileDir\}/g, path.dirname(testFile))
     .replace(/\{testFileName\}/g, path.basename(testFile))

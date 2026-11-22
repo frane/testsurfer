@@ -47,6 +47,14 @@ export interface NetContext {
   netPopup(openerId: string, pageId: string, url: string): NetPage | null;
   /** A page closed itself (`window.close()`). */
   netPageClosed(pageId: string): void;
+  /** A page opened a dialog; `answer` closes it. */
+  netDialog(
+    pageId: string,
+    kind: string,
+    message: string,
+    defaultText: string,
+    answer: (accept: boolean, text?: string) => Promise<void>,
+  ): void;
 }
 
 /** How a handler's decision reaches the proxy. */
@@ -286,6 +294,18 @@ export class NetHub {
         case 'close':
           this.ctx?.netPageClosed(parts[1] ?? '');
           break;
+        case 'dialog': {
+          // dialog <page> <id> <kind> <message-b64> <default-b64>
+          const dec = (s: string | undefined) => Buffer.from(s ?? '', 'base64').toString('utf8');
+          const did = parts[2] ?? '';
+          const answer = async (accept: boolean, text?: string) => {
+            const flags: Record<string, string> = text === undefined ? {} : { text };
+            await this.call('vs_net_dialog', [did, accept ? 'accept' : 'dismiss'], flags);
+          };
+          if (this.ctx) this.ctx.netDialog(parts[1] ?? '', parts[3] ?? 'alert', dec(parts[4]), dec(parts[5]), answer);
+          else void answer(false).catch(() => {});
+          break;
+        }
       }
     }
     flush();

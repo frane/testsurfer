@@ -166,7 +166,10 @@ export function installEngine(SER) {
     if (!e.isConnected) return false;
     const st = styleOf(e);
     if (st.display === 'contents') {
-      for (let c = e.firstChild; c; c = c.nextSibling) {
+      // A slot shows what is assigned to it, else its fallback children.
+      const assigned = e.nodeName === 'SLOT' ? e.assignedNodes({ flatten: true }) : [];
+      const kids = assigned.length ? assigned : [...e.childNodes];
+      for (const c of kids) {
         if (c.nodeType === 1 && isVisible(c)) return true;
         if (c.nodeType === 3) {
           const r = document.createRange();
@@ -191,6 +194,9 @@ export function installEngine(SER) {
     // select's popup, so only its own display counts.
     if (tag(e) === 'option') {
       if (styleOf(e).display === 'none') return true;
+    } else if (styleOf(e).display === 'contents') {
+      // No box of its own (a <slot>, a display:contents wrapper), so
+      // checkVisibility() says false; its content decides, below.
     } else if (typeof e.checkVisibility === 'function' && !e.checkVisibility()) {
       return true;
     }
@@ -1149,9 +1155,37 @@ export function installEngine(SER) {
     }
   }
 
+  /** Arrow, Page and Home/End keys on a range or number input step its value, as the browser does. */
+  function stepValue(target, key) {
+    if (tag(target) !== 'input' || !/^(range|number)$/.test(target.type) || target.disabled || target.readOnly) return false;
+    const deltas = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 };
+    if (!(key in deltas) && key !== 'Home' && key !== 'End') return false;
+    // Left and Right edit the text of a number field; only Up and Down step it.
+    if (target.type === 'number' && !/^Arrow(Up|Down)$/.test(key)) return false;
+    const before = target.value;
+    if (key === 'Home' || key === 'End') {
+      if (target.type !== 'range') return false;
+      target.value = key === 'Home' ? target.min || '0' : target.max || '100';
+    } else {
+      const n = deltas[key];
+      try {
+        if (n > 0) target.stepUp(Math.abs(n));
+        else target.stepDown(Math.abs(n));
+      } catch (_) {
+        return false;
+      }
+    }
+    if (target.value !== before) {
+      target.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return true;
+  }
+
   function defaultAction(target, info, mods) {
     const cmd = mods.has('Control') || mods.has('Meta');
     const editable = editableTarget(target);
+    if (!cmd && stepValue(target, info.key)) return;
     if (cmd) {
       if (info.key.toLowerCase() === 'a') {
         if ('select' in target && editable && typeof target.select === 'function') target.select();

@@ -25,7 +25,7 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
   }
   return caps;
 }
-import type { RouteHandler, UrlMatcher } from './events.ts';
+import { Dialog, type RouteHandler, type UrlMatcher } from './events.ts';
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
   Page,
@@ -279,6 +279,14 @@ export class BrowserContext {
       netPopup: (openerId, pageId, url) => this.popupOpened(openerId, pageId, url),
       netPageClosed: (pageId) => {
         this.open.find((p) => p.wireId() === pageId)?.closedByPage();
+      },
+      netDialog: (pageId, kind, message, defaultText, answer) => {
+        const page = this.open.find((p) => p.wireId() === pageId) ?? null;
+        const d = new Dialog(kind, message, defaultText, page, answer);
+        const contextListens = (this.listeners.get('dialog')?.size ?? 0) > 0;
+        if (page) page.handleDialog(d, contextListens);
+        else if (!contextListens) void d.dismiss().catch(() => {});
+        if (contextListens) this.emit('dialog', d);
       },
     };
   }

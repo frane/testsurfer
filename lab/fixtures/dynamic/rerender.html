@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>rerender</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<div id="r"></div><script>let n=0;function render(){r.innerHTML="<button onclick='window.hits=(window.hits||0)+1'>Again "+(n++%2)+"</button>"}render();setInterval(render,50)</script>
+</body></html>

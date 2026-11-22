@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>css-shadow</title></head>
+<body>
+<div id="host"></div><script>const r=document.getElementById("host").attachShadow({mode:"open"});r.innerHTML="<button class='inner'>Inside shadow</button><div id='host2'></div>";r.getElementById("host2").attachShadow({mode:"open"}).innerHTML="<span class='deep'>Deep text</span>";</script>
+</body></html>

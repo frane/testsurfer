@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>drag</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<ul id="l"><li draggable="true" id="x">first</li><li draggable="true" id="y">second</li></ul><div id="drop" style="width:200px;height:80px;border:2px dashed">drop here</div><script>let cur;document.querySelectorAll("li").forEach(li=>li.addEventListener("dragstart",e=>{cur=li.id;e.dataTransfer.setData("text",li.id)}));drop.addEventListener("dragover",e=>e.preventDefault());drop.addEventListener("drop",e=>{e.preventDefault();drop.textContent="dropped "+cur})</script>
+</body></html>

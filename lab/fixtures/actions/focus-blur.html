@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>focus-blur</title><style>body{font:16px system-ui;margin:20px}</style></head>
+<body>
+<input id="a" aria-label="A"><input id="b" aria-label="B"><p id="o"></p><script>a.addEventListener("blur",()=>o.textContent="a blurred");a.addEventListener("focus",()=>o.textContent="a focused")</script>
+</body></html>
