@@ -173,9 +173,7 @@ export class Browser {
       this.spare = null;
       this.spareReady = null;
     }
-    // macOS only: elsewhere native input goes by screen position, and a
-    // window opened while a click is in flight can land on top of it.
-    if (process.platform === 'darwin' && !this.spare && (flags['isolated'] || flags['intercept'])) this.warm(flags, key);
+    if (!this.spare && (flags['isolated'] || flags['intercept'])) this.warm(flags, key);
     const spare = ready;
     if (spare) {
       const ctx = new BrowserContext(this, spare.sessionId, true, options.intercept ?? false);
