@@ -47,13 +47,20 @@ function playwright() {
   if (!fs.existsSync(link)) fs.symlinkSync(path.join('..', 'bench', 'node_modules'), link);
   const r = run(process.execPath, [path.join(link, '@playwright', 'test', 'cli.js'), 'test', '--reporter=json']);
   const rows = new Map();
+  const errors = [];
   const walk = (suite) => {
-    for (const spec of suite.specs ?? []) rows.set(spec.title, spec.tests.every((t) => t.status === 'expected'));
+    for (const spec of suite.specs ?? []) {
+      const ok = spec.tests.every((t) => t.status === 'expected');
+      rows.set(spec.title, ok);
+      const msg = spec.tests.flatMap((t) => t.results ?? []).map((x) => x.error?.message).find(Boolean);
+      if (!ok && msg && errors.length < 5) errors.push(`${spec.title}: ${msg.slice(0, 400)}`);
+    }
     for (const s of suite.suites ?? []) walk(s);
   };
   const json = JSON.parse(r.out.slice(r.out.indexOf('{')));
   for (const s of json.suites) walk(s);
-  return { rows, ms: r.ms, err: r.err };
+  for (const e of json.errors ?? []) errors.push(`global: ${String(e.message).slice(0, 400)}`);
+  return { rows, ms: r.ms, err: [...errors, r.err].join('\n') };
 }
 
 function du(p) {
