@@ -33,6 +33,11 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps webkit chromium
+      - name: Resolve the lab's .localhost hosts
+        # Playwright's WebKit on macOS does not resolve *.localhost
+        # (testsurfer's proxy does); the lab serves lab.localhost and
+        # lab2.localhost as two origins.
+        run: echo "127.0.0.1 lab.localhost lab2.localhost" | sudo tee -a /etc/hosts
       - uses: ./
       - name: Build vibesurfer from source
         if: inputs.vibesurfer-ref != ''
