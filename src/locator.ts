@@ -655,8 +655,16 @@ export class Locator {
     if (state === checked) return;
     await this.click(options);
     if (options.trial) return;
-    const after = await this.peek<boolean>('locator.setChecked', 'checked');
-    if (after.found && after.v !== checked) throw new Error('Clicking the checkbox did not change its state');
+    // The click's events can still be on their way to the page (WebKitGTK
+    // sends a mouse event once the last one is acknowledged), so give
+    // the state a moment to change before calling the click a failure.
+    const deadline = Date.now() + 1000;
+    for (;;) {
+      const after = await this.peek<boolean>('locator.setChecked', 'checked');
+      if (!after.found || after.v === checked) return;
+      if (Date.now() >= deadline) throw new Error('Clicking the checkbox did not change its state');
+      await sleep(10);
+    }
   }
 
   async check(options: ClickOptions = {}): Promise<void> {
