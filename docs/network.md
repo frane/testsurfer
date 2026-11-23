@@ -28,4 +28,3 @@ await page.route('**/analytics/**', (route) => route.abort());
 Limits of proxy mode:
 
 - On macOS, WebKit sends requests to `localhost` and `127.0.0.1` around any proxy. Serve the app under a `.localhost` name (`http://app.localhost:3000`), which resolves to the same loopback address.
-- Popups and dialogs are macOS only. Other platforms load popups in the page that opened them and dismiss dialogs.

@@ -13,7 +13,7 @@ A suite that relies on these will not run unchanged:
 - Without `network: 'proxy'`, `page.route` and network events cover `fetch`, XHR and routed main documents only (see [Network](network.md)).
 - On macOS, WebKit never sends requests for `localhost` or `127.0.0.1` through a proxy, so routing images, scripts or stylesheets there does not work in either mode; serve the app under a name like `app.localhost`. A routed main document works on any host.
 - `page.request` sends requests from the test process, so it does not share the page's cookies.
-- Popups, dialogs and cross-origin iframes are macOS only, and popups and dialogs need `network: 'proxy'`.
+- Popups and dialogs need `network: 'proxy'`.
 - `toHaveScreenshot` compares against baselines recorded by testsurfer; Playwright's baselines come from different engines and will not match.
 - `page.emulateMedia` covers `matchMedia` and readable `@media` rules only. `mouse.wheel` is not a trusted event.
 - Worker-scoped fixtures in `test.extend` are set up per test.

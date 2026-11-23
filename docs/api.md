@@ -12,7 +12,7 @@ Locators resolve lazily at action time, against a fresh view:
 - `page.getByTestId(id)` matches `data-testid` exactly (string or RegExp). The `testIdAttribute` option changes the attribute.
 - `page.getByPlaceholder(text)`, `page.getByAltText(text)` and `page.getByTitle(text)` match those attributes, substring and case-insensitive by default, whole-string with `{ exact: true }`.
 - `page.locator(selector, { hasText, has })` takes Playwright selectors: CSS (searching open shadow roots, with `:has-text()`, `:text()`, `:text-is()`, `:text-matches()` and `:visible` anywhere), `xpath=` or `//...`, `text=`, `role=button[name="OK"]`, `id=`, `data-testid=`, `nth=`, `visible=`, and `>>` chains.
-- `page.frameLocator(selector)` or `locator.contentFrame()` searches inside an iframe; plain locators stay in their own frame, as in Playwright. A cross-origin iframe is searched through vibesurfer, which evaluates inside it directly (macOS; on Linux and Windows only same-origin iframes are reachable).
+- `page.frameLocator(selector)` or `locator.contentFrame()` searches inside an iframe; plain locators stay in their own frame, as in Playwright. A cross-origin iframe is searched through vibesurfer, which evaluates inside it directly.
 - Every `getBy*` and `locator()` also exists on a locator and searches inside its matches: `page.getByTestId('cart').getByRole('button', { name: 'Remove' })`.
 - `.filter({ hasText, hasNotText, has, hasNot, visible })` narrows matches; `has` and `hasNot` take a locator searched inside each match.
 - `.and(locator)` keeps elements matching both, `.or(locator)` takes either.
@@ -68,7 +68,7 @@ Template siblings must appear in that order, and a child can sit at any depth un
 - `page.emulateMedia({ media, colorScheme, reducedMotion, forcedColors })` makes `matchMedia` and the page's readable `@media` rules follow. `media` attributes on `<link>` and cross-origin stylesheets do not.
 - `page.screenshot({ path, fullPage, clip })` returns the PNG and writes it to `path` when given. The viewport is 1280x720 by default; `page.setViewportSize()` changes it.
 - `page.keyboard.press(key)`, `down`, `up`, `insertText` and `type`, with the browser's default actions (Enter submits a form, Tab moves focus, Backspace deletes).
-- `page.mainFrame()`, `page.frames()` and `page.frame(name)` reach iframes, with `evaluate` running in the frame's own window (cross-origin ones on macOS).
+- `page.mainFrame()`, `page.frames()` and `page.frame(name)` reach iframes, with `evaluate` running in the frame's own window, cross-origin ones included.
 - `page.click(selector)`, `page.fill(selector, value)` and the rest of the selector shorthands, `page.waitForSelector`, `page.waitForNavigation`, `page.addLocatorHandler`.
 - `page.mouse.move(x, y)`, `page.mouse.click(x, y)`, `page.mouse.down()` / `up()` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop. `page.mouse.wheel(dx, dy)` dispatches a wheel event (not trusted) and scrolls.
 - `page.reload()`, `page.goBack()`, `page.goForward()`, `page.waitForURL(url)`, `page.waitForTimeout(ms)`.
