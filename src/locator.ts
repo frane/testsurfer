@@ -589,7 +589,6 @@ export class Locator {
     if (synthetic) {
       await this.waitOne('locator.click', 'synthClick', options, options.timeout);
     } else {
-      if (process.env['TESTSURFER_DEBUG']) process.stderr.write(`[ts-debug] click ${this.toString()} at ${pt.x},${pt.y}\n`);
       await this.owner.clickAt(pt.x, pt.y);
       await this.run('settleFocus', {}, { first: true }).catch(() => {});
     }
@@ -662,7 +661,6 @@ export class Locator {
     const deadline = Date.now() + 1000;
     for (;;) {
       const after = await this.peek<boolean>('locator.setChecked', 'checked');
-      if (process.env['TESTSURFER_DEBUG']) process.stderr.write(`[ts-debug] setChecked ${this.toString()} want=${checked} was=${state} now=${JSON.stringify(after)}\n`);
       if (!after.found || after.v === checked) return;
       if (Date.now() >= deadline) throw new Error('Clicking the checkbox did not change its state');
       await sleep(10);
