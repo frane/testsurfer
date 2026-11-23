@@ -44,5 +44,5 @@ test('without a WebKit project the first project applies', () => {
 
 test('snapshotDir becomes a snapshot path template', () => {
   const o = runnerOptionsFrom({ testDir: 'tests', snapshotDir: 'snaps' }, '/repo');
-  assert.equal(o['snapshotPathTemplate'], '/repo/snaps/{relTestFileDir}/{testFileName}-snapshots/{arg}{-projectName}{-snapshotSuffix}{ext}');
+  assert.equal(o['snapshotPathTemplate'], `${path.resolve('/repo', 'snaps')}/{relTestFileDir}/{testFileName}-snapshots/{arg}{-projectName}{-snapshotSuffix}{ext}`);
 });
