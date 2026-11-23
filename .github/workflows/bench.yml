@@ -77,4 +77,4 @@ jobs:
       - name: Lab failures on testsurfer, with errors
         if: always()
         working-directory: lab
-        run: npx testsurfer test 2>&1 | grep -vE '^\s+at ' | awk '/failing tests/{f=1} f' | head -150 || true
+        run: node ../dist/cli.js test 2>&1 | grep -vE '^\s+at ' | awk '/failing tests/{f=1} f' | head -150 || true
