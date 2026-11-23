@@ -39,7 +39,7 @@ function testsurfer() {
     const t = JSON.parse(line);
     if (!t.name.endsWith('.ts')) rows.set(t.name, t.status === 'passed');
   }
-  return { rows, ms: r.ms };
+  return { rows, ms: r.ms, err: r.err };
 }
 
 function playwright() {
@@ -53,7 +53,7 @@ function playwright() {
   };
   const json = JSON.parse(r.out.slice(r.out.indexOf('{')));
   for (const s of json.suites) walk(s);
-  return { rows, ms: r.ms };
+  return { rows, ms: r.ms, err: r.err };
 }
 
 function du(p) {
@@ -114,3 +114,10 @@ const lines = [
 ];
 fs.writeFileSync(path.join(here, 'RESULTS.md'), lines.join('\n'));
 console.log(`testsurfer ${ts ? count(ts) : '-'}/${cases.length} in ${ts ? ts.ms : '-'}ms; Playwright ${pw ? count(pw) : '-'}/${cases.length} in ${pw ? pw.ms : '-'}ms`);
+for (const [label, r] of [['testsurfer', ts], ['Playwright', pw]]) {
+  if (!r) continue;
+  const failed = cases.filter((c) => r.rows.get(c.name) !== true);
+  if (failed.length === 0) continue;
+  console.log(`\n${label} failed: ${failed.map((c) => c.name).join('; ')}`);
+  if (r.err) console.log(`${label} stderr (tail):\n${r.err.slice(-3000)}`);
+}

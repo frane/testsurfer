@@ -74,3 +74,7 @@ jobs:
             echo
             sed -n '1,40p' lab/RESULTS.md
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Lab failures on testsurfer, with errors
+        if: always()
+        working-directory: lab
+        run: npx testsurfer test 2>&1 | grep -vE '^\s+at ' | awk '/failing tests/{f=1} f' | head -150 || true
