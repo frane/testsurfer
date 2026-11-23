@@ -75,5 +75,6 @@ macOS, Linux and Windows runners are supported.
 - [Network](docs/network.md): routes, events, the proxy mode, popups and dialogs
 - [Compatibility and evidence](docs/compatibility.md): differences from Playwright, test results, benchmarks
 - [Example project](examples/todo): a small app with a complete suite
+- [For AI agents](skills/testsurfer/SKILL.md): a skill file shipped in the package; copy `node_modules/testsurfer/skills/testsurfer` into your agent's skills folder (`.claude/skills/` for Claude Code)
 
 testsurfer is built on [vibesurfer](https://github.com/frane/vibesurfer). Apache-2.0.
