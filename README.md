@@ -241,14 +241,18 @@ Differences from Playwright, so a suite that relies on these will not run unchan
 
 - Without `network: 'proxy'`, `page.route` and network events cover `fetch` and XHR only (see Network and events).
 - `page.request` sends requests from the test process, so it does not share the page's cookies.
+- On macOS, WebKit never sends requests for `localhost` or `127.0.0.1` through a proxy, so routing images, scripts or stylesheets there does not work in either mode; serve the app under a name like `app.localhost`. A routed main document works on any host.
 - Popups, dialogs and cross-origin iframes are macOS only, and popups and dialogs need `network: 'proxy'` (see above).
 - `toHaveScreenshot` compares against baselines recorded by testsurfer; Playwright's baselines come from different engines and will not match.
+- `page.emulateMedia` rewrites `matchMedia` and the page's readable `@media` rules; `media` attributes on `<link>` and cross-origin stylesheets do not follow. `mouse.wheel` dispatches an untrusted wheel event and scrolls.
 - Worker-scoped fixtures in `test.extend` are set up per test.
 - A response a service worker builds itself, without a network request, is not reported.
 
 ## Lab
 
 [`lab/`](lab) is a set of small fixture pages, one hard case each (locators, actions, assertions, dynamic pages, frames, shadow DOM, popups, network, keyboard, dialogs, pointer input), with tests written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer; [`lab/RESULTS.md`](lab/RESULTS.md) has both side by side, with wall time and install size. `node lab/run.mjs` reproduces it.
+
+An open-source suite, unedited: docsify's 105 end-to-end tests pass 99 on testsurfer and 104 on Playwright's WebKit, in 123 s against 25 s, from a 10.4 MB install against 308 MB. All six testsurfer failures route subresources on `127.0.0.1` (above). Details and how to reproduce: [`bench/OSS.md`](bench/OSS.md).
 
 ## Benchmark
 

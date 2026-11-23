@@ -1044,6 +1044,9 @@ export function installEngine(SER) {
       const code = /[A-Z]/.test(up) ? 'Key' + up : /[0-9]/.test(k) ? 'Digit' + k : '';
       return { key: ch, code, keyCode: up.charCodeAt(0), text: ch };
     }
+    // Physical key codes Playwright also accepts as key names.
+    const CODES = { Space: ' ', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '\x60', ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Control', ControlRight: 'Control', AltLeft: 'Alt', AltRight: 'Alt', MetaLeft: 'Meta', MetaRight: 'Meta', NumpadEnter: 'Enter' };
+    if (CODES[k]) return keyInfo(CODES[k], shift);
     if (/^Key[A-Z]$/.test(k)) return keyInfo(k.slice(3).toLowerCase(), shift);
     if (/^Digit[0-9]$/.test(k)) return keyInfo(k.slice(5), shift);
     if (/^F([1-9]|1[0-2])$/.test(k)) return { key: k, code: k, keyCode: 111 + Number(k.slice(1)) };

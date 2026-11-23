@@ -169,13 +169,13 @@ export class Frame {
     fn: string | ((arg: A) => unknown),
     arg?: A,
     options: { timeout?: number; polling?: number | 'raf' } = {},
-  ): Promise<T> {
+  ): Promise<JSHandle & { jsonValue(): Promise<T> }> {
     if (!this.element) return this.owner.waitForFunction<T, A>(fn, arg, options);
     const budget = options.timeout ?? this.owner.timeouts.action;
     const deadline = Date.now() + budget;
     for (;;) {
       const v = await this.evaluate<T, A>(fn, arg);
-      if (v) return v;
+      if (v) return (await this.evaluateHandle(fn, arg)) as JSHandle & { jsonValue(): Promise<T> };
       if (Date.now() >= deadline) throw new Error(`frame.waitForFunction: Timeout ${budget}ms exceeded.`);
       await new Promise((r) => setTimeout(r, typeof options.polling === 'number' ? options.polling : 16));
     }

@@ -53,6 +53,7 @@ import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
+import { mediaScript, type MediaOptions } from './media.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
 import { decodePng, downscale, encodePng } from './png.ts';
 
@@ -339,6 +340,75 @@ export class Page {
   }
 
   /**
+   * Emulate media features: matchMedia and the page's @media rules
+   * follow (see src/media.ts). null resets a feature. Applies to this
+   * document and later ones.
+   */
+  async emulateMedia(options: MediaOptions = {}): Promise<void> {
+    for (const k of ['media', 'colorScheme', 'reducedMotion', 'forcedColors'] as const) {
+      if (k in options) (this.media as Record<string, string | null>)[k] = options[k] ?? null;
+    }
+    const src = mediaScript(this.media);
+    await this.addInitSource(src);
+    if (this.pageId) await this.rawEval(`(${src.replace(/;\s*$/, '')}, 0)`).catch(() => {});
+  }
+
+  private media: MediaOptions = {};
+
+  /**
+   * Add a <script> (from `url`, a file at `path`, or `content`) and
+   * wait for it to load. Returns its element.
+   */
+  async addScriptTag(options: { url?: string; path?: string; content?: string; type?: string }): Promise<ElementHandle> {
+    let content = options.content;
+    if (options.path !== undefined) {
+      content = `${await (await import('node:fs/promises')).readFile(options.path, 'utf8')}\n//# sourceURL=${options.path.replace(/\n/g, '')}`;
+    }
+    const fn = `(o) => new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      if (o.type) s.type = o.type;
+      if (o.url !== undefined) {
+        s.src = o.url;
+        s.onload = () => resolve(s);
+        s.onerror = () => reject(new Error('Failed to load script at ' + o.url));
+        document.head.appendChild(s);
+        return;
+      }
+      let err = null;
+      const onErr = (e) => { err = e.error || new Error(e.message); };
+      window.addEventListener('error', onErr);
+      s.text = o.content;
+      document.head.appendChild(s);
+      window.removeEventListener('error', onErr);
+      if (err) reject(err); else resolve(s);
+    })`;
+    const args = { url: options.url, content, type: options.type };
+    return (await this.evaluateHandle(fn, args)) as ElementHandle;
+  }
+
+  /** Add a <link rel=stylesheet> (from `url`) or a <style> (from `path` or `content`) and wait for it. */
+  async addStyleTag(options: { url?: string; path?: string; content?: string }): Promise<ElementHandle> {
+    let content = options.content;
+    if (options.path !== undefined) content = await (await import('node:fs/promises')).readFile(options.path, 'utf8');
+    const fn = `(o) => new Promise((resolve, reject) => {
+      let el;
+      if (o.url !== undefined) {
+        el = document.createElement('link');
+        el.rel = 'stylesheet';
+        el.href = o.url;
+      } else {
+        el = document.createElement('style');
+        el.textContent = o.content;
+      }
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Error while loading style'));
+      document.head.appendChild(el);
+      if (o.url === undefined) resolve(el);
+    })`;
+    return (await this.evaluateHandle(fn, { url: options.url, content })) as ElementHandle;
+  }
+
+  /**
    * Intercept fetch and XHR requests whose URL matches. The handler
    * gets a Route to fulfill, continue, abort, fall back or fetch.
    * Navigations, images, scripts and stylesheets are not intercepted.
@@ -619,7 +689,20 @@ export class Page {
   async goto(target: string, _options: { waitUntil?: string; timeout?: number; referer?: string } = {}): Promise<Response | null> {
     try {
       await this.events.beforeNavigation();
-      await this.navigate(target);
+      // Shim mode: the in-page shim cannot see a document request, so
+      // the page's routes decide it here.
+      const url = this.baseURL ? new URL(target, this.baseURL).href : target;
+      const routed = /^https?:/.test(url) ? await this.events.routeDocument(url) : null;
+      if (routed?.kind === 'abort') this.events.netNavAborted();
+      if (routed?.kind === 'abort') throw new Error('aborted by route');
+      if (routed?.kind === 'fulfill') {
+        await this.navigate(url, routed.body);
+        const res = new Response(routed.req, { url, status: routed.status, statusText: '', headers: routed.headers });
+        res.bodyLoader = async () => routed.body;
+        routed.req.responseValue = res;
+        return res;
+      }
+      await this.navigate(routed?.kind === 'continue' ? routed.url : target);
     } catch (e) {
       // A route that aborted the document fails the navigation the way WebKit reports it.
       if (this.events.abortedNavigation()) throw new Error(`page.goto: Blocked by Web Inspector`);
@@ -682,13 +765,14 @@ export class Page {
     return res;
   }
 
-  private async navigate(target: string): Promise<void> {
+  /** `html`: load that document under the URL instead of fetching it (a routed document). */
+  private async navigate(target: string, html?: Buffer): Promise<void> {
     const url = this.baseURL ? new URL(target, this.baseURL).href : target;
+    const gotoFlags: Record<string, string> = { session: this.sessionId };
+    if (html) gotoFlags['html'] = html.toString('base64');
     if (this.pageId && this.navInPlace) {
       try {
-        const resp = await this.client.call('vs_goto', [this.pageId, url], {
-          session: this.sessionId,
-        });
+        const resp = await this.client.call('vs_goto', [this.pageId, url], gotoFlags);
         this.token = resp.token;
         this.snapshot = null;
         this.synced = false;
@@ -713,7 +797,7 @@ export class Page {
     this.fresh = false;
     // Init scripts have to be in place before the first document, so
     // a page that has them opens blank, installs them, then loads.
-    const first = this.initScripts.length > 0 ? 'about:blank' : url;
+    const first = this.initScripts.length > 0 || html ? 'about:blank' : url;
     const resp = await this.client.call('vs_open', [first], { session: this.sessionId });
     const id = resp.body[0];
     if (!id) throw new Error(`vs_open returned no page id for ${url}`);
@@ -724,7 +808,7 @@ export class Page {
       for (const src of this.initScripts) {
         await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
       }
-      const nav = await this.client.call('vs_goto', [id, url], { session: this.sessionId });
+      const nav = await this.client.call('vs_goto', [id, url], gotoFlags);
       this.token = nav.token;
     }
     this.events.documentChanged();
@@ -1015,7 +1099,11 @@ export class Page {
         await this.refreshFrames();
       }
     }
-    if (this.events.hasBindings && !body.startsWith('E.doc')) await this.events.flush();
+    // Bindings, console messages and page errors a call caused are
+    // delivered before it returns, as Playwright's protocol events are.
+    if ((this.events.hasBindings || this.events.hasListeners('console') || this.events.hasListeners('pageerror')) && !body.startsWith('E.doc')) {
+      await this.events.flush();
+    }
     if (r.e) {
       // As Playwright prints a page exception: "TypeError: Load failed".
       const name = r.e.name && r.e.name !== 'Error' ? r.e.name : null;
@@ -1123,13 +1211,23 @@ export class Page {
     fn: string | ((arg: A) => unknown),
     arg?: A,
     options: { timeout?: number; polling?: number | 'raf' } = {},
-  ): Promise<T> {
+  ): Promise<JSHandle & { jsonValue(): Promise<T> }> {
     const budget = options.timeout ?? this.timeouts.action;
     const deadline = Date.now() + budget;
     const every = typeof options.polling === 'number' ? options.polling : 16;
+    const a = JSON.stringify(serializeValue(arg));
+    const src = typeof fn === 'function' ? fn.toString() : fn;
+    // A truthy value is adopted in the same call and handed back as a JSHandle, as in Playwright.
+    const body =
+      `(function(){var f=(${src});var v=typeof f==='function'?f(E.des(${a})):f;` +
+      `var fin=function(x){return x?E.adoptValue(x):null;};return v&&typeof v.then==='function'?v.then(fin):fin(v);})()`;
     for (;;) {
-      const v = await this.evaluate<T, A>(fn, arg);
-      if (v) return v;
+      const r = (await this.engineCall(body)) as { id: number; el: boolean; p?: string } | null;
+      if (r) {
+        const h = r.el ? new ElementHandle(this, r.id) : new JSHandle(this, r.id);
+        h.previewText = r.p ?? '';
+        return h as JSHandle & { jsonValue(): Promise<T> };
+      }
       if (budget > 0 && Date.now() >= deadline) {
         throw new Error(`page.waitForFunction: Timeout ${budget}ms exceeded.`);
       }
@@ -1294,80 +1392,85 @@ export class Page {
   }
 
   // Selector shorthands (Playwright's page.click(selector) family).
+  // Not strict unless asked (`strict: true`): the first match acts, as in Playwright.
+  private pick(selector: string, options?: object): Locator {
+    const l = this.locator(selector);
+    return (options as { strict?: boolean } | undefined)?.strict ? l : l.first();
+  }
   click(selector: string, options?: ClickOptions): Promise<void> {
-    return this.locator(selector).click(options);
+    return this.pick(selector, options).click(options);
   }
   dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    return this.locator(selector).dblclick(options);
+    return this.pick(selector, options).dblclick(options);
   }
   tap(selector: string, options?: ClickOptions): Promise<void> {
-    return this.locator(selector).tap(options);
+    return this.pick(selector, options).tap(options);
   }
   hover(selector: string, options?: { timeout?: number; force?: boolean }): Promise<void> {
-    return this.locator(selector).hover(options);
+    return this.pick(selector, options).hover(options);
   }
   focus(selector: string, options?: { timeout?: number }): Promise<void> {
-    return this.locator(selector).focus(options);
+    return this.pick(selector, options).focus(options);
   }
   fill(selector: string, value: string, options?: { timeout?: number; force?: boolean }): Promise<void> {
-    return this.locator(selector).fill(value, options);
+    return this.pick(selector, options).fill(value, options);
   }
   type(selector: string, text: string, options?: { timeout?: number }): Promise<void> {
-    return this.locator(selector).type(text, options);
+    return this.pick(selector, options).type(text, options);
   }
   press(selector: string, key: string, options?: { timeout?: number }): Promise<void> {
-    return this.locator(selector).press(key, options);
+    return this.pick(selector, options).press(key, options);
   }
   check(selector: string, options?: ClickOptions): Promise<void> {
-    return this.locator(selector).check(options);
+    return this.pick(selector, options).check(options);
   }
   uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    return this.locator(selector).uncheck(options);
+    return this.pick(selector, options).uncheck(options);
   }
   setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    return this.locator(selector).setChecked(checked, options);
+    return this.pick(selector, options).setChecked(checked, options);
   }
   selectOption(selector: string, values: SelectOptionValue | SelectOptionValue[] | null, options?: { timeout?: number }): Promise<string[]> {
-    return this.locator(selector).selectOption(values, options);
+    return this.pick(selector, options).selectOption(values, options);
   }
   setInputFiles(selector: string, files: InputFile | InputFile[], options?: { timeout?: number }): Promise<void> {
-    return this.locator(selector).setInputFiles(files, options);
+    return this.pick(selector, options).setInputFiles(files, options);
   }
   dispatchEvent(selector: string, type: string, eventInit?: Record<string, unknown>, options?: { timeout?: number }): Promise<void> {
-    return this.locator(selector).dispatchEvent(type, eventInit, options);
+    return this.pick(selector, options).dispatchEvent(type, eventInit, options);
   }
   textContent(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.locator(selector).textContent(options);
+    return this.pick(selector, options).textContent(options);
   }
   innerText(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.locator(selector).innerText(options);
+    return this.pick(selector, options).innerText(options);
   }
   innerHTML(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.locator(selector).innerHTML(options);
+    return this.pick(selector, options).innerHTML(options);
   }
   getAttribute(selector: string, name: string, options?: { timeout?: number }): Promise<string | null> {
-    return this.locator(selector).getAttribute(name, options);
+    return this.pick(selector, options).getAttribute(name, options);
   }
   inputValue(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.locator(selector).inputValue(options);
+    return this.pick(selector, options).inputValue(options);
   }
   isVisible(selector: string): Promise<boolean> {
-    return this.locator(selector).isVisible();
+    return this.pick(selector).isVisible();
   }
   isHidden(selector: string): Promise<boolean> {
-    return this.locator(selector).isHidden();
+    return this.pick(selector).isHidden();
   }
   isChecked(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.locator(selector).isChecked(options);
+    return this.pick(selector, options).isChecked(options);
   }
   isDisabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.locator(selector).isDisabled(options);
+    return this.pick(selector, options).isDisabled(options);
   }
   isEnabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.locator(selector).isEnabled(options);
+    return this.pick(selector, options).isEnabled(options);
   }
   isEditable(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.locator(selector).isEditable(options);
+    return this.pick(selector, options).isEditable(options);
   }
 
   /**
@@ -1603,6 +1706,33 @@ export class Page {
       const to = this.pointer;
       if (from.x === to.x && from.y === to.y) await this.clickAt(to.x, to.y, options?.mode);
       else await this.cursorOp('vs_drag', [from.x, from.y, to.x, to.y], options?.mode, true);
+    },
+    /**
+     * Scroll by (deltaX, deltaY) at the pointer: a wheel event goes to
+     * the element there and, unless the page cancels it, the nearest
+     * scrollable box scrolls. The event is dispatched in the page, so
+     * it is not trusted.
+     */
+    wheel: async (deltaX: number, deltaY: number): Promise<void> => {
+      const { x, y } = this.pointer;
+      await this.evaluate(
+        `([x, y, dx, dy]) => new Promise((done) => {
+          const t = document.elementFromPoint(x, y) || document.scrollingElement || document.body;
+          const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true, composed: true });
+          if (t.dispatchEvent(ev)) {
+            let s = t instanceof Element ? t : null;
+            const scrolls = (e) => {
+              const st = getComputedStyle(e);
+              return (/(auto|scroll|overlay)/.test(st.overflowY) && e.scrollHeight > e.clientHeight) || (/(auto|scroll|overlay)/.test(st.overflowX) && e.scrollWidth > e.clientWidth);
+            };
+            while (s && s !== document.documentElement && s !== document.body && !scrolls(s)) s = s.parentElement;
+            const box = s && s !== document.documentElement && s !== document.body ? s : (document.scrollingElement || document.documentElement);
+            box.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+          }
+          requestAnimationFrame(() => requestAnimationFrame(() => done(0)));
+        })`,
+        [x, y, deltaX, deltaY],
+      );
     },
     /** Press at (x1, y1), move along a path, release at (x2, y2). Fires the HTML5 drag events too. */
     drag: (

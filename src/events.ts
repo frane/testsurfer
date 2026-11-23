@@ -408,12 +408,41 @@ export class Dialog {
   }
 }
 
+/** A console argument, as a value already copied out of the page. */
+export class ConsoleArg {
+  private readonly value: unknown;
+  constructor(value: unknown) {
+    this.value = value;
+  }
+  async jsonValue(): Promise<unknown> {
+    return this.value;
+  }
+  async dispose(): Promise<void> {}
+  toString(): string {
+    return this.value === undefined ? 'undefined' : typeof this.value === 'object' && this.value !== null ? 'JSHandle@object' : String(this.value);
+  }
+}
+
 export class ConsoleMessage {
   private readonly kind: string;
   private readonly message: string;
-  constructor(kind: string, message: string) {
+  private readonly values: { v?: unknown; u?: number }[];
+  private readonly owner: unknown;
+  constructor(kind: string, message: string, values: { v?: unknown; u?: number }[] = [], owner: unknown = null) {
     this.kind = kind;
     this.message = message;
+    this.values = values;
+    this.owner = owner;
+  }
+  /** The arguments passed to console.*, as handles whose jsonValue() is the value. */
+  args(): ConsoleArg[] {
+    return this.values.map((a) => new ConsoleArg(a.u ? undefined : a.v));
+  }
+  page(): unknown {
+    return this.owner;
+  }
+  location(): { url: string; lineNumber: number; columnNumber: number } {
+    return { url: '', lineNumber: 0, columnNumber: 0 };
   }
   /** `log`, `info`, `warning`, `error` or `debug`. */
   type(): string {
@@ -792,6 +821,50 @@ export class PageEvents {
     return (this.listeners.get(name)?.size ?? 0) > 0;
   }
 
+  /**
+   * Shim mode: run this page's routes for a main-document navigation
+   * to `url`, which the in-page shim cannot see. A fulfilled document
+   * is loaded under `url` (vs goto --html); `continue` may change the
+   * URL; null means no route decided and the page navigates as usual.
+   */
+  async routeDocument(
+    url: string,
+  ): Promise<
+    | { kind: 'fulfill'; status: number; headers: Record<string, string>; body: Buffer; req: Request }
+    | { kind: 'continue'; url: string }
+    | { kind: 'abort' }
+    | null
+  > {
+    if (this.proxied || this.routes.length === 0) return null;
+    const req = new Request({ id: 0, url, method: 'GET', headers: {}, body: null, type: 'document', navigation: true });
+    req.frameValue = this.host.mainFrame?.() ?? null;
+    let out: Awaited<ReturnType<PageEvents['routeDocument']>> = null;
+    const decide: NetDecider = {
+      fulfill: async (status, headers, body) => {
+        out = { kind: 'fulfill', status, headers, body, req };
+      },
+      continue: async (o) => {
+        out = { kind: 'continue', url: o.url ?? url };
+      },
+      abort: async () => {
+        out = { kind: 'abort' };
+      },
+      fetch: async (o) => {
+        const r = await fetch(o.url ?? url, {
+          method: o.method ?? 'GET',
+          headers: { ...this.netExtraHeaders(), ...(o.headers ?? {}) },
+          ...(o.postData !== undefined ? { body: o.postData } : {}),
+          redirect: 'follow',
+        });
+        const headers: Record<string, string> = {};
+        r.headers.forEach((v, k) => (headers[k] = v));
+        return new APIResponse({ status: r.status, statusText: r.statusText, headers, body: Buffer.from(await r.arrayBuffer()), url: r.url });
+      },
+    };
+    const handled = await this.netHandle(req, decide, {});
+    return handled ? out : null;
+  }
+
   async netHandle(req: Request, decide: NetDecider, fallthrough: ContinueOptions): Promise<boolean> {
     for (const entry of [...this.routes]) {
       // A handler unrouted by an earlier one no longer runs.
@@ -948,7 +1021,7 @@ export class PageEvents {
         this.pendingBindings.push(this.runBinding(e));
         break;
       case 'console':
-        this.emit('console', new ConsoleMessage(e.type ?? 'log', e.text ?? ''));
+        this.emit('console', new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[]));
         break;
       case 'pageerror': {
         const err = new Error(e.message ?? '');

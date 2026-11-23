@@ -28,10 +28,16 @@ export const PAGE_SHIM = String.raw`(function () {
     if (a instanceof Error) return a.stack || String(a);
     try { return JSON.stringify(a); } catch (e) { return String(a); }
   }
+  // An argument as msg.args()[i].jsonValue() gives it: JSON data, or {u: 1} for undefined.
+  function val(a) {
+    if (a === undefined) return { u: 1 };
+    if (a === null || typeof a !== 'object') return typeof a === 'function' || typeof a === 'symbol' ? { u: 1 } : { v: a };
+    try { return { v: JSON.parse(JSON.stringify(a)) }; } catch (e) { return { v: String(a) }; }
+  }
   ['log', 'info', 'warn', 'error', 'debug'].forEach(function (k) {
     var orig = console[k];
     console[k] = function () {
-      try { emit({ t: 'console', type: k === 'warn' ? 'warning' : k, text: [].map.call(arguments, fmt).join(' ') }); } catch (e) {}
+      try { emit({ t: 'console', type: k === 'warn' ? 'warning' : k, text: [].map.call(arguments, fmt).join(' '), args: [].map.call(arguments, val) }); } catch (e) {}
       return orig.apply(console, arguments);
     };
   });

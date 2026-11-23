@@ -97,6 +97,9 @@ const args = [
   '--test',
   `--test-reporter=${reporter}`,
   `--test-concurrency=${workers}`,
+  // A file is done when its tests are, as with Playwright's workers:
+  // a timer a test left running must not keep it alive.
+  '--test-force-exit',
   ...(grep ? [`--test-name-pattern=${grep}`] : []),
   ...files,
 ];
