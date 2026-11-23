@@ -6,6 +6,11 @@ name: bench
 
 on:
   workflow_dispatch:
+    inputs:
+      vibesurfer-ref:
+        description: Build vibesurfer from this git ref instead of the pinned release (empty = release)
+        required: false
+        default: ""
 
 jobs:
   bench:
@@ -29,6 +34,22 @@ jobs:
           npm ci
           npx playwright install --with-deps webkit chromium
       - uses: ./
+      - name: Build vibesurfer from source
+        if: inputs.vibesurfer-ref != ''
+        env:
+          REF: ${{ inputs.vibesurfer-ref }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get install -y --no-install-recommends libwebkitgtk-6.0-dev libsoup-3.0-dev libgtk-4-dev nasm pkg-config
+          else
+            brew install nasm
+          fi
+          git clone --quiet https://github.com/frane/vibesurfer "$RUNNER_TEMP/vibesurfer"
+          git -C "$RUNNER_TEMP/vibesurfer" checkout --quiet "$REF"
+          cargo build --release --manifest-path "$RUNNER_TEMP/vibesurfer/Cargo.toml" -p vibesurfer
+          "$TESTSURFER_VS" serve --stop >/dev/null 2>&1 || true
+          pkill -x vs || true
+          echo "TESTSURFER_VS=$RUNNER_TEMP/vibesurfer/target/release/vs" >> "$GITHUB_ENV"
       - name: Record the vibesurfer version
         run: echo "VS_VERSION=$($TESTSURFER_VS --version)" >> "$GITHUB_ENV"
       - name: Run the benchmark
