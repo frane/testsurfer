@@ -34,7 +34,7 @@ jobs:
       - name: Run the benchmark
         working-directory: bench
         run: |
-          node bench.mjs > table.md
+          TESTSURFER_PROFILE=1 node bench.mjs > table.md
           cat table.md
           {
             echo "## testsurfer vs Playwright"
