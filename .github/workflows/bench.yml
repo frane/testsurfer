@@ -44,3 +44,12 @@ jobs:
             echo
             cat table.md
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run the lab on both engines
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then export PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright"; else export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"; fi
+          LAB_VS_LABEL="$VS_VERSION" node lab/run.mjs
+          {
+            echo "## Lab"
+            echo
+            sed -n '1,40p' lab/RESULTS.md
+          } >> "$GITHUB_STEP_SUMMARY"

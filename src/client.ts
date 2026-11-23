@@ -115,6 +115,23 @@ function connectOnce(socketPath: string): Promise<net.Socket> {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** TESTSURFER_PROFILE=1: count and time every wire call, printed per process at exit. */
+const PROFILE = !!process.env['TESTSURFER_PROFILE'];
+const profile = new Map<string, { n: number; ms: number }>();
+function profileAdd(key: string, ms: number): void {
+  const e = profile.get(key) ?? { n: 0, ms: 0 };
+  e.n += 1;
+  e.ms += ms;
+  profile.set(key, e);
+}
+if (PROFILE) {
+  process.on('exit', () => {
+    const rows = [...profile].sort((a, b) => b[1].ms - a[1].ms);
+    const lines = rows.map(([k, e]) => `${k}\t${e.n}\t${e.ms.toFixed(0)}`);
+    process.stderr.write(`\n[ts-profile ${process.pid}]\n${lines.join('\n')}\n`);
+  });
+}
+
 export class WireClient {
   private sock: net.Socket | null = null;
   private buf = '';
@@ -347,7 +364,7 @@ export class WireClient {
     if (!sock) throw new Error('not connected');
     const line = encodeRequest(primitive, args, flags);
     const budget = opts.timeoutMs ?? this.opts.requestTimeout ?? 70_000;
-    return new Promise<WireResponse>((resolve, reject) => {
+    const p = new Promise<WireResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         // A timed-out call desyncs the response order; drop the
         // connection so the next call starts clean.
@@ -356,6 +373,10 @@ export class WireClient {
       this.queue.push({ resolve, reject, timer, line, extraSections: opts.extraSections ?? 0 });
       sock.write(line);
     });
+    if (!PROFILE) return p;
+    const t0 = performance.now();
+    const key = primitive === 'vs_inspect' ? `vs_inspect ${args[0]}` : primitive;
+    return p.finally(() => profileAdd(key, performance.now() - t0));
   }
 
   /** A second connection to the same daemon, with the same options. */

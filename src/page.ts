@@ -1506,6 +1506,19 @@ export class Page {
     this.dpr = dpr;
   }
 
+  /**
+   * @internal Take over a blank page the browser opened ahead of time
+   * (see Browser.newContext), already sized to `sized`. The first goto
+   * then navigates it in place instead of opening a web view.
+   */
+  async adoptBlank(pageId: string, token: string, sized: { width: number; height: number; dpr: number } | null): Promise<void> {
+    this.pageId = pageId;
+    this.token = token;
+    const same = sized && this.viewport && sized.width === this.viewport.width && sized.height === this.viewport.height && sized.dpr === this.dpr;
+    if (!same) await this.applyViewport();
+    this.events.documentChanged();
+  }
+
   private async applyViewport(): Promise<void> {
     if (!this.viewport || !this.pageId) return;
     await this.client.call('vs_viewport', [this.pageId, `${this.viewport.width}x${this.viewport.height}`], {

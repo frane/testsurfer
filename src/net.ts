@@ -154,6 +154,24 @@ export class NetHub {
     return this.conn().then((c) => c.call(prim, args, { session: this.sessionId, ...flags }));
   }
 
+  // The long poll has a connection of its own: a connection answers one
+  // request at a time, so a decision sent behind a waiting poll would
+  // wait out the poll first (about 250 ms per routed request).
+  private pollClient: WireClient | null = null;
+  private pollOpening: Promise<WireClient> | null = null;
+
+  private async pollConn(): Promise<WireClient> {
+    if (this.pollClient) return this.pollClient;
+    this.pollOpening ??= this.open();
+    const c = await this.pollOpening;
+    if (this.closed) {
+      c.close();
+      throw new Error('network hub closed');
+    }
+    this.pollClient = c;
+    return c;
+  }
+
   attach(page: NetPage): void {
     this.pages.add(page);
     this.loop();
@@ -199,6 +217,9 @@ export class NetHub {
     this.client?.close();
     this.client = null;
     void this.opening?.then((c) => c.close(), () => {});
+    this.pollClient?.close();
+    this.pollClient = null;
+    void this.pollOpening?.then((c) => c.close(), () => {});
     hubs.delete(this.sessionId);
   }
 
@@ -208,7 +229,8 @@ export class NetHub {
     void (async () => {
       while (this.running && (this.pages.size > 0 || this.ctx)) {
         try {
-          const resp = await this.call('vs_net_poll', [], { 'wait-ms': '250' });
+          const c = await this.pollConn();
+          const resp = await c.call('vs_net_poll', [], { session: this.sessionId, 'wait-ms': '250' });
           this.handle(resp.body);
         } catch {
           if (!this.running) return;

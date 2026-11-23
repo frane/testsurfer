@@ -60,6 +60,14 @@ export interface LaunchOptions extends ClientOptions {
   deviceScaleFactor?: number;
 }
 
+/** A session and blank page opened ahead of the context that will use them. */
+interface Spare {
+  sessionId: string;
+  pageId: string;
+  token: string;
+  sized: { width: number; height: number; dpr: number } | null;
+}
+
 export class Browser {
   private readonly client: WireClient;
   readonly sessionId: string;
@@ -151,12 +159,74 @@ export class Browser {
       flags['intercept'] = true;
       flags['popups'] = true;
     }
+    // A context opened ahead of time with the same flags, if there is one;
+    // then start the next, so a run of tests never waits for a web view.
+    // Take the spare only when it is ready and matches; never wait for
+    // one (parallel tests call this at once). Claim it before any await.
+    const key = JSON.stringify(flags);
+    const ready = this.spareReady && this.spareKey === key ? this.spareReady : null;
+    if (ready) {
+      this.spare = null;
+      this.spareReady = null;
+    } else if (this.spare && this.spareKey !== key) {
+      void this.dropSpare(this.spare);
+      this.spare = null;
+      this.spareReady = null;
+    }
+    if (!this.spare && (flags['isolated'] || flags['intercept'])) this.warm(flags, key);
+    const spare = ready;
+    if (spare) {
+      const ctx = new BrowserContext(this, spare.sessionId, true, options.intercept ?? false);
+      ctx.warmPage = spare;
+      this.openContexts.add(ctx);
+      return ctx;
+    }
     const resp = await this.client.call('vs_session_open', [], flags);
     const id = resp.body[0];
     if (!id) throw new Error('vs_session_open returned no session id');
     const ctx = new BrowserContext(this, id, true, options.intercept ?? false);
     this.openContexts.add(ctx);
     return ctx;
+  }
+
+  private spare: Promise<Spare | null> | null = null;
+  /** The spare, once it is open. */
+  private spareReady: Spare | null = null;
+  private spareKey = '';
+  private warmer: Promise<WireClient> | null = null;
+
+  /** Open a session with `flags` and a blank, sized page in it, on a connection of its own. */
+  private warm(flags: Record<string, true>, key: string): void {
+    this.spareKey = key;
+    const p: Promise<Spare | null> = (async (): Promise<Spare | null> => {
+      const c = await (this.warmer ??= this.client.sibling());
+      const sessionId = (await c.call('vs_session_open', [], flags)).body[0];
+      if (!sessionId) return null;
+      const r = await c.call('vs_open', ['about:blank'], { session: sessionId });
+      const pageId = r.body[0];
+      if (!pageId) {
+        await c.call('vs_session_close', [sessionId], {}).catch(() => {});
+        return null;
+      }
+      let sized: Spare['sized'] = null;
+      if (this.viewport) {
+        const v = this.viewport;
+        await c.call('vs_viewport', [pageId, `${v.width}x${v.height}`], { session: sessionId, dpr: String(this.deviceScaleFactor) });
+        sized = { ...v, dpr: this.deviceScaleFactor };
+      }
+      return { sessionId, pageId, token: r.token, sized };
+    })().catch(() => null);
+    this.spare = p;
+    void p.then((s) => {
+      // Still the current spare (not dropped or replaced): mark it ready.
+      if (this.spare === p) this.spareReady = s;
+    });
+  }
+
+  /** Close a spare nobody will take (its flags did not match). */
+  private async dropSpare(spare: Promise<Spare | null>): Promise<void> {
+    const s = await spare;
+    if (s) await this.client.call('vs_session_close', [s.sessionId], {}).catch(() => {});
   }
 
   /** A context over this browser's own session; closing it closes its pages only. */
@@ -216,6 +286,10 @@ export class Browser {
     for (const ctx of [...this.openContexts]) await ctx.close().catch(() => {});
     // The default context shares the browser's session; closing it closes its pages and their pollers.
     if (this.defaultCtx) await this.defaultCtx.close().catch(() => {});
+    if (this.spare) await this.dropSpare(this.spare);
+    this.spare = null;
+    this.spareReady = null;
+    if (this.warmer) (await this.warmer.catch(() => null))?.close();
     await this.client.call('vs_session_close', [this.sessionId], {}).catch(() => {});
     this.client.close();
   }
@@ -419,8 +493,14 @@ export class BrowserContext {
     else this.pendingCookies.push(name);
   }
 
+  /** @internal A blank page Browser.newContext opened ahead of time; the first newPage() takes it. */
+  warmPage: Spare | null = null;
+
   async newPage(): Promise<Page> {
     const page = this.owner.makePage(this.sessionId);
+    const warm = this.warmPage;
+    this.warmPage = null;
+    if (warm) await page.adoptBlank(warm.pageId, warm.token, warm.sized);
     this.adopt(page);
     for (const name of this.pendingCookies.splice(0)) await page.loadCookieBlob(name);
     for (const s of this.scripts) await page.addInitScript(s.script, s.arg);
