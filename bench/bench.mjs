@@ -72,10 +72,13 @@ function makeTargets() {
       async newPage() {
         // Untimed page pre-warm, mirroring the Playwright targets where
         // newContext+newPage are also outside the timer; the timed
-        // goto is then a nav-in-place on protocol-v1 daemons.
-        const page = this.browser.newPage();
+        // goto is then a nav-in-place. A fresh isolated context per
+        // iteration, as Playwright's target gets and as testsurfer's
+        // own runner gives every test.
+        const context = await this.browser.newContext();
+        const page = await context.newPage();
         await page.goto('about:blank');
-        return { page, done: () => page.close() };
+        return { page, done: () => context.close() };
       },
       async teardown() {
         await this.browser.close();
