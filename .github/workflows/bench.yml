@@ -83,3 +83,7 @@ jobs:
         if: always()
         working-directory: lab
         run: node ../dist/cli.js test 2>&1 | grep -vE '^\s+at ' | awk '/failing tests/{f=1} f' | head -150 || true
+      - name: Checkbox case with debug output
+        if: always() && runner.os == 'Linux'
+        working-directory: lab
+        run: TESTSURFER_DEBUG=1 node ../dist/cli.js test tests/actions.spec.ts 2>&1 | grep -E "ts-debug|✖|Error" | head -60 || true
