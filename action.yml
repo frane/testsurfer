@@ -31,8 +31,11 @@ runs:
       shell: bash
       run: |
         # Trusted input goes through XTest, so the web view needs a
-        # real X display, not just an offscreen surface.
-        Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+        # real X display, not just an offscreen surface. Room for a
+        # 4x3 grid of 1600x1000 tiles: vibesurfer gives each page window
+        # its own, and each page its own pointer, so parallel tests never
+        # share clicks or hover.
+        Xvfb :99 -screen 0 6416x3016x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
         for _ in $(seq 1 50); do
           [ -e /tmp/.X11-unix/X99 ] && break
           sleep 0.1
