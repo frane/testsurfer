@@ -589,8 +589,40 @@ export class Locator {
     if (synthetic) {
       await this.waitOne('locator.click', 'synthClick', options, options.timeout);
     } else {
-      await this.owner.clickAt(pt.x, pt.y);
-      await this.run('settleFocus', {}, { first: true }).catch(() => {});
+      let at = pt;
+      for (let attempt = 0; ; attempt++) {
+        await this.owner.clickAt(at.x, at.y);
+        await this.run('settleFocus', {}, { first: true }).catch(() => {});
+        if (attempt === 2 || !(await this.clickWasLost())) break;
+        // The page re-rendered between press and release, so the two
+        // landed on different elements and no click fired: click the
+        // element again while it is there.
+        const again = await this.run<{ x: number; y: number }>(
+          'clickPoint',
+          { position: options.position, force: options.force },
+          { first: true },
+        ).catch(() => null);
+        if (!again || again.none || isRetry(again.v)) break;
+        at = again.v as { x: number; y: number };
+      }
+    }
+  }
+
+  /**
+   * Whether the last native click's release reached the page without a
+   * click event. The page can answer before the mouse events arrive
+   * (WebKit sends each once the last is acknowledged), so this waits
+   * for the release first; click follows mouseup in the same dispatch.
+   */
+  private async clickWasLost(): Promise<boolean> {
+    const deadline = Date.now() + 500;
+    for (;;) {
+      const r = await this.run<{ up: boolean; click: boolean }>('clickSeen', {}, { first: true }).catch(() => null);
+      if (!r || r.none || !r.v) return false;
+      if (r.v.click) return false;
+      if (r.v.up) return true;
+      if (Date.now() >= deadline) return false;
+      await sleep(10);
     }
   }
 

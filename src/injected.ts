@@ -1478,6 +1478,20 @@ export function installEngine(SER) {
       d.addEventListener('focusout', mark, true);
       Object.defineProperty(d, '__tsFocusWatch', { value: true });
     }
+    // Remembered so a click whose press and release landed on
+    // different elements (the page re-rendered in between, and no click
+    // event fired) can be sent again.
+    clickSeen.up = false;
+    clickSeen.click = false;
+    if (!d.__tsClickWatch && d.defaultView) {
+      d.defaultView.addEventListener('mouseup', (ev) => {
+        if (ev.isTrusted) clickSeen.up = true;
+      }, true);
+      d.defaultView.addEventListener('click', (ev) => {
+        if (ev.isTrusted) clickSeen.click = true;
+      }, true);
+      Object.defineProperty(d, '__tsClickWatch', { value: true });
+    }
     return { x: t.x + (first.left - r.left) + lx, y: t.y + (first.top - r.top) + ly };
   }
 
@@ -1497,6 +1511,8 @@ export function installEngine(SER) {
   }
 
   let focusMoved = true;
+  /** Trusted mouseup and click events since the last clickPoint. */
+  const clickSeen = { up: true, click: true };
 
   /**
    * After a native click: a press on content moves focus to its nearest
@@ -1562,6 +1578,7 @@ export function installEngine(SER) {
     eval: (e, a) => a.fnc(e, SER.des(a.arg)),
     clickPoint: (e, a) => clickPoint(e, a),
     settleFocus: (e) => settleFocus(e),
+    clickSeen: () => ({ up: clickSeen.up, click: clickSeen.click }),
     synthClick: (e, a) => {
       if (typeof e.scrollIntoViewIfNeeded === 'function') e.scrollIntoViewIfNeeded(true);
       synthClick(e, a);
