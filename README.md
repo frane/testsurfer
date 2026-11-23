@@ -32,7 +32,7 @@ From a `playwright.config.*` it takes `use.baseURL`, `use.testIdAttribute`, `use
 
 vibesurfer is a daemon that owns one real WebKit engine and speaks a line protocol over a Unix socket. testsurfer is a TypeScript client for that protocol. Locators resolve inside the page, in one evaluate per call, with Playwright's semantics: CSS that pierces open shadow roots, text, role and label queries, strict mode, actionability checks. vibesurfer supplies trusted native input, screenshots, navigation and the accessibility tree behind `toMatchAriaSnapshot`.
 
-The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.15` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
+The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.16` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
 
 ## CI
 
@@ -233,7 +233,7 @@ await browser.close();
 
 ## Status
 
-This version pins vibesurfer 0.2.16 and speaks its frozen wire protocol (v1). Isolated contexts, the proxy network mode, popups and cross-origin frames need 0.2.16; routes, page events, `addInitScript` and same-origin frames need 0.2.15; `level`, `checked` and `<label>` lookups need 0.2.12; the rest works with older daemons. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
+This version pins vibesurfer 0.2.16 and speaks its frozen wire protocol (v1). Isolated contexts, the proxy network mode, popups, dialogs, cross-origin frames and routed main documents need 0.2.16; routes, page events, `addInitScript` and same-origin frames need 0.2.15; `level`, `checked` and `<label>` lookups need 0.2.12; the rest works with older daemons. Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower than the benchmark below; it is tracked in the vibesurfer repo.
 
 [`compat/`](compat) runs Playwright's own page specs against testsurfer, unmodified except for the import of their fixtures; [`compat/RESULTS.md`](compat/RESULTS.md) has the current numbers.
 

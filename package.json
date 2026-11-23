@@ -1,6 +1,6 @@
 {
   "name": "testsurfer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "End-to-end testing for the web, driven by vibesurfer. Playwright-style locators and auto-retrying assertions over a real WebKit engine with trusted native input.",
   "license": "Apache-2.0",
   "type": "module",
