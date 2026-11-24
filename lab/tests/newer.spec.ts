@@ -44,3 +44,26 @@ test('locator.normalize and locator.drop', async ({ page }) => {
 test('chromium-only APIs throw as on Playwright WebKit', async ({ page }) => {
   await expect(page.pdf()).rejects.toThrow(/only supported/i);
 });
+
+test('launchPersistentContext keeps cookies and storage in its directory', async () => {
+  const { webkit } = await import('@playwright/test');
+  const dir = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'lab-profile-'));
+  const url = `http://127.0.0.1:${process.env.LAB_PORT ?? 4173}/page/storage.html`;
+  const a = await webkit.launchPersistentContext(dir);
+  const p1 = a.pages()[0] ?? (await a.newPage());
+  await p1.goto(url);
+  await p1.evaluate(() => localStorage.setItem('kept', 'yes'));
+  await a.addCookies([
+    { name: 'kept', value: 'yes', url, expires: Math.floor(Date.now() / 1000) + 3600 },
+    { name: 'session', value: 'gone', url },
+  ]);
+  await a.close();
+  const b = await webkit.launchPersistentContext(dir);
+  const p2 = b.pages()[0] ?? (await b.newPage());
+  await p2.goto(url);
+  expect(await p2.evaluate(() => localStorage.getItem('kept'))).toBe('yes');
+  const cookies = await p2.evaluate(() => document.cookie);
+  expect(cookies).toContain('kept=yes');
+  expect(cookies).not.toContain('session=');
+  await b.close();
+});

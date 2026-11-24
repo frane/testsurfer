@@ -1043,10 +1043,30 @@ export function browserType(name: string) {
     launch: (options: LaunchOptions = {}) => Browser.launch(options),
     /** Connect to a daemon socket (browser.bind's endpoint). */
     connect: (endpoint: string, options: LaunchOptions = {}) => Browser.launch({ ...options, socketPath: endpoint }),
-    /** A context in the daemon's persistent jar, so logins survive the run (the jar lives with the daemon, not in userDataDir). */
-    launchPersistentContext: async (_userDataDir: string, options: LaunchOptions & ContextOptions = {}) => {
+    /**
+     * A context whose cookies and localStorage live in `userDataDir`:
+     * loaded from it on launch, written back on close, so a later
+     * launch with the same directory starts where this one ended.
+     */
+    launchPersistentContext: async (userDataDir: string, options: LaunchOptions & ContextOptions = {}) => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const file = path.join(userDataDir, 'testsurfer-state.json');
+      fs.mkdirSync(userDataDir, { recursive: true });
       const b = await Browser.launch(options);
-      return b.newContext({ ...options, isolated: false });
+      const ctx = await b.newContext({ ...options, ...(fs.existsSync(file) ? { storageState: file } : {}) });
+      const close = ctx.close.bind(ctx);
+      ctx.close = async () => {
+        // Session cookies end with the browser, as they do in Playwright.
+        const state = await ctx.storageState().catch(() => null);
+        if (state) {
+          state.cookies = state.cookies.filter((c) => c.expires > 0);
+          fs.writeFileSync(file, JSON.stringify(state, null, 2));
+        }
+        await close();
+        await b.close();
+      };
+      return ctx;
     },
   };
 }
