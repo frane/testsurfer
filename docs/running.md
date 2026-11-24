@@ -90,7 +90,7 @@ jobs:
 
 vibesurfer is a daemon that owns one real WebKit engine and speaks a line protocol over a Unix socket. testsurfer is a TypeScript client for that protocol. Locators resolve inside the page, in one evaluate per call, with Playwright's semantics: CSS that pierces open shadow roots, text, role and label queries, strict mode, actionability checks. vibesurfer supplies trusted native input, screenshots, navigation and the accessibility tree behind `toMatchAriaSnapshot`.
 
-The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.17` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
+The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.18` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
 
 ## Working on testsurfer
 

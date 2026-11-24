@@ -1,11 +1,11 @@
 # testsurfer lab
 
-84 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`; `testsurfer.config.ts` adds the proxy network mode). 2026-11-22, darwin arm64, vibesurfer main at 9fc43c8 (release build), Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
+84 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`; `testsurfer.config.ts` adds the proxy network mode). 2026-11-23, darwin arm64, vibesurfer 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
 
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
-| cases passed | 84 of 84 | 84 of 84 |
-| wall time, whole lab | 12.6 s | 9.2 s |
+| cases passed | 84 of 84 | 83 of 84 |
+| wall time, whole lab | 12.6 s | 35.9 s |
 | install | 10.4 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
@@ -38,7 +38,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | assertions | expect.poll and soft assertions | pass | pass |
 | assertions | a failed assertion names the locator and the value | pass | pass |
 | dynamic pages | an element that appears later | pass | pass |
-| dynamic pages | clicks land while the element is re-rendered | pass | pass |
+| dynamic pages | clicks land while the element is re-rendered | pass | FAIL |
 | dynamic pages | a list that grows | pass | pass |
 | dynamic pages | debounced search results | pass | pass |
 | dynamic pages | client-side routing | pass | pass |

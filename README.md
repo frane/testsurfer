@@ -51,7 +51,7 @@ Locators, auto-waiting, web-first assertions, fixtures, routes, screenshots and 
 | Input | native OS events | events sent over a browser protocol |
 | `navigator.webdriver` | `undefined` | `true` |
 | API | Playwright's | Playwright's |
-| Suite run time | slower today (see evidence) | faster |
+| Bench suite (CI runners) | 364-405 ms | 576-600 ms |
 
 Playwright's own page specs pass 488 of 488 on testsurfer. An unedited open-source suite (docsify, 105 tests) passes 99, where Playwright's WebKit passes 104. Numbers and how to reproduce them: [compatibility and evidence](docs/compatibility.md).
 
