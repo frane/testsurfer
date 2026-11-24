@@ -64,6 +64,14 @@ const SNAPSHOT_JS = `() => {
 }`;
 const inCall = new AsyncLocalStorage<boolean>();
 const active = new Set<Tracing>();
+/** Per page: a callback shown each action (page.screencast.showActions). */
+const annotators = new Map<unknown, (method: string, selector: string | undefined) => Promise<void>>();
+
+/** @internal Label actions on `page` (null stops). */
+export function setActionAnnotator(page: unknown, fn: ((method: string, selector: string | undefined) => Promise<void>) | null): void {
+  if (fn) annotators.set(page, fn);
+  else annotators.delete(page);
+}
 
 export class Tracing {
   private readonly ctx: TracedContext;
@@ -279,7 +287,7 @@ interface TraceRequest {
 export function instrument(
   proto: object,
   cls: string,
-  tracerOf: (self: unknown) => { tracing: Tracing | null; pageId?: string | undefined; selector?: string | undefined },
+  tracerOf: (self: unknown) => { tracing: Tracing | null; pageId?: string | undefined; selector?: string | undefined; page?: unknown },
   skip: string[] = [],
 ): void {
   for (const name of Object.getOwnPropertyNames(proto)) {
@@ -290,9 +298,14 @@ export function instrument(
     Object.defineProperty(proto, name, {
       ...d,
       value: function (this: unknown, ...args: unknown[]) {
-        if (active.size === 0 || inCall.getStore()) return orig.apply(this, args);
-        const { tracing, pageId, selector } = tracerOf(this);
-        if (!tracing || !active.has(tracing)) return orig.apply(this, args);
+        if ((active.size === 0 && annotators.size === 0) || inCall.getStore()) return orig.apply(this, args);
+        const { tracing, pageId, selector, page } = tracerOf(this);
+        const note = page !== undefined ? annotators.get(page) : undefined;
+        if (note && cls !== 'Expect') {
+          const sel = selector ?? (cls === 'Locator' ? (this as { toString?: () => string }).toString?.() : undefined);
+          void note(name, sel).catch(() => {});
+        }
+        if (!tracing || !active.has(tracing)) return note ? inCall.run(true, () => orig.apply(this, args)) : orig.apply(this, args);
         const params: Record<string, unknown> = {};
         const sel = selector ?? (cls === 'Locator' ? (this as { toString?: () => string }).toString?.() : undefined);
         if (sel) params['selector'] = sel;

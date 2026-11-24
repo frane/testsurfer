@@ -58,6 +58,7 @@ import { WORKER_SHIM, Worker } from './worker.ts';
 import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
 import { Video } from './video.ts';
 import { FILECHOOSER_SHIM, FileChooser } from './filechooser.ts';
+import { Screencast } from './screencast.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -552,6 +553,24 @@ export class Page {
       return route.abort();
     });
   }
+
+  /** Frames, recordings and on-page annotations (Playwright's page.screencast). */
+  readonly screencast = new Screencast({
+    evaluate: (fn, arg) => this.evaluate(fn, arg),
+    screenshot: () => this.screenshot(),
+    viewportSize: () => this.viewportSize(),
+    recordTo: async (width) => {
+      await this.ensureOpen();
+      const flags: Record<string, string> = { session: this.sessionId, fps: '25' };
+      if (width) flags['width'] = String(width);
+      await this.client.call('vs_record', ['start', this.id], flags);
+      return async () => {
+        const r = await this.client.call('vs_record', ['stop', this.id], { session: this.sessionId }).catch(() => null);
+        const line = r?.body.find((l) => l.startsWith('path\t'));
+        return line ? line.slice(5) : null;
+      };
+    },
+  });
 
   private videoValue: Video | null = null;
   private videoSize: { width: number } | null = null;

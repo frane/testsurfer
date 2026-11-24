@@ -79,13 +79,13 @@ import { Locator as TracedLocator } from './locator.ts';
 import { Frame as TracedFrame } from './frame.ts';
 import { LocatorAssertions, PageAssertions } from './expect.ts';
 type AnyRec = Record<string, unknown>;
-const ctxOfPage = (p: unknown): { tracing: Tracing | null; pageId?: string } => {
+const ctxOfPage = (p: unknown): { tracing: Tracing | null; pageId?: string; page?: unknown } => {
   try {
     const page = p as TracedPage;
     const id = page.wireId();
-    return { tracing: (page.context() as unknown as { tracing: Tracing }).tracing, ...(id ? { pageId: `page@${id}` } : {}) };
+    return { page, tracing: (page.context() as unknown as { tracing: Tracing }).tracing, ...(id ? { pageId: `page@${id}` } : {}) };
   } catch {
-    return { tracing: null };
+    return { tracing: null, page: p };
   }
 };
 const internal = ['runLocatorHandlers', 'engineCall', 'engineRun', 'adoptResult', 'openedId', 'clickAt', 'loadCookieBlob', 'refreshNetwork', 'wsCall', 'recordVideo', 'adoptBlank', 'storeCookies', 'applyStorageState', 'configure'];
