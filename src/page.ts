@@ -55,6 +55,7 @@ import { Download, parseDownloadList } from './download.ts';
 import { Clock } from './clock.ts';
 import { WS_SHIM, WebSocket, WebSocketRoute, type WireFrame } from './websocket.ts';
 import { WORKER_SHIM, Worker } from './worker.ts';
+import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -518,6 +519,39 @@ export class Page {
     this.events.addRoute(url, handler, options.times ?? null);
     await this.events.sync();
   }
+
+  /**
+   * Answer requests matching `options.url` (all by default) from a HAR
+   * file. With `update`, requests go to the network instead and the
+   * file is (re)written from what came back when the context closes.
+   */
+  async routeFromHAR(
+    file: string,
+    options: { url?: UrlMatcher; notFound?: 'abort' | 'fallback'; update?: boolean; updateContent?: 'embed' | 'attach'; updateMode?: 'full' | 'minimal' } = {},
+  ): Promise<void> {
+    const match = options.url ?? '**/*';
+    if (options.update) {
+      const rec = new HarRecorder(file, { content: options.updateContent ?? (file.endsWith('.zip') ? 'attach' : 'embed') });
+      this.harWriters.push(rec);
+      await this.route(match, async (route) => {
+        const res = await route.fetch();
+        const body = await res.body();
+        rec.addExchange(route.request(), res.status(), res.statusText(), res.headers(), body);
+        await route.fulfill({ response: res, body });
+      });
+      return;
+    }
+    const { har, files } = readHar(file);
+    await this.route(match, async (route) => {
+      const e = findEntry(har, route.request());
+      if (e) return fulfillFromEntry(route, e, files);
+      if (options.notFound === 'fallback') return route.fallback();
+      return route.abort();
+    });
+  }
+
+  /** @internal HARs being written (routeFromHAR update, recordHar), saved on close. */
+  readonly harWriters: HarRecorder[] = [];
 
   /** Remove routes for `url` (only `handler`'s, when given). */
   async unroute(url: UrlMatcher, handler?: RouteHandler): Promise<void> {
@@ -2216,6 +2250,7 @@ export class Page {
 
   async close(): Promise<void> {
     if (this.closedFlag) return;
+    for (const h of this.harWriters.splice(0)) await h.save().catch(() => {});
     if (this.downloadTimer) clearInterval(this.downloadTimer);
     const id = this.pageId;
     this.pageId = null;

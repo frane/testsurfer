@@ -32,6 +32,7 @@ import { APIRequestContext } from './request.ts';
 import { geolocationScript, localeScript, onlineScript, timezoneScript, touchScript, userAgentScript, type Geolocation } from './emulation.ts';
 import type { MediaOptions } from './media.ts';
 import { Clock } from './clock.ts';
+import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
 
 /** Playwright's browser.newContext() / `use` options that testsurfer applies per context. */
 export interface ContextOptions {
@@ -56,13 +57,15 @@ export interface ContextOptions {
   acceptDownloads?: boolean;
   baseURL?: string;
   storageState?: StorageState | string;
+  /** Record every request of the context into a HAR file, written on close. */
+  recordHar?: { path: string; content?: 'embed' | 'attach' | 'omit'; omitContent?: boolean; mode?: 'full' | 'minimal'; urlFilter?: string | RegExp };
 }
 
 /** The keys of ContextOptions, for picking them out of `use` and test.use(). */
 export const CONTEXT_OPTION_KEYS = [
   'colorScheme', 'reducedMotion', 'forcedColors', 'contrast', 'extraHTTPHeaders', 'userAgent', 'locale', 'timezoneId',
   'geolocation', 'permissions', 'offline', 'httpCredentials', 'javaScriptEnabled', 'hasTouch', 'isMobile', 'bypassCSP',
-  'serviceWorkers', 'ignoreHTTPSErrors', 'acceptDownloads', 'storageState',
+  'serviceWorkers', 'ignoreHTTPSErrors', 'acceptDownloads', 'storageState', 'recordHar',
 ] as const;
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
@@ -462,6 +465,15 @@ export class BrowserContext {
     if (o.javaScriptEnabled === false) {
       this.jsDisabled = true;
       await this.ensureInternalRoute();
+    }
+    if (o.recordHar) {
+      const rec = new HarRecorder(o.recordHar.path, {
+        content: o.recordHar.omitContent ? 'omit' : (o.recordHar.content ?? (o.recordHar.path.endsWith('.zip') ? 'attach' : 'embed')),
+        ...(o.recordHar.urlFilter ? { urlFilter: o.recordHar.urlFilter } : {}),
+      });
+      this.harWriters.push(rec);
+      this.on('requestfinished', ((req: import('./events.ts').Request) => rec.add(req, req.responseValue ?? null)) as (arg: never) => void);
+      this.on('requestfailed', ((req: import('./events.ts').Request) => rec.add(req, null)) as (arg: never) => void);
     }
     if (o.bypassCSP) {
       this.cspBypass = true;
@@ -900,6 +912,39 @@ export class BrowserContext {
     for (const p of this.open) await p.routeWebSocket(url, handler);
   }
 
+  /**
+   * Answer requests matching `options.url` (all by default) from a HAR
+   * file. With `update`, requests go to the network instead and the
+   * file is (re)written from what came back when the context closes.
+   */
+  async routeFromHAR(
+    file: string,
+    options: { url?: UrlMatcher; notFound?: 'abort' | 'fallback'; update?: boolean; updateContent?: 'embed' | 'attach'; updateMode?: 'full' | 'minimal' } = {},
+  ): Promise<void> {
+    const match = options.url ?? '**/*';
+    if (options.update) {
+      const rec = new HarRecorder(file, { content: options.updateContent ?? (file.endsWith('.zip') ? 'attach' : 'embed') });
+      this.harWriters.push(rec);
+      await this.route(match, async (route) => {
+        const res = await route.fetch();
+        const body = await res.body();
+        rec.addExchange(route.request(), res.status(), res.statusText(), res.headers(), body);
+        await route.fulfill({ response: res, body });
+      });
+      return;
+    }
+    const { har, files } = readHar(file);
+    await this.route(match, async (route) => {
+      const e = findEntry(har, route.request());
+      if (e) return fulfillFromEntry(route, e, files);
+      if (options.notFound === 'fallback') return route.fallback();
+      return route.abort();
+    });
+  }
+
+  /** @internal HARs being written (routeFromHAR update, recordHar), saved on close. */
+  readonly harWriters: HarRecorder[] = [];
+
   /** Remove routes for `url`: all of them, or the one with `handler`. */
   async unroute(url: UrlMatcher, handler?: RouteHandler): Promise<void> {
     for (let i = this.routes.length - 1; i >= 0; i--) {
@@ -923,6 +968,7 @@ export class BrowserContext {
   /** Close every page, and the session when the context opened one. */
   async close(): Promise<void> {
     this.closedFlag = true;
+    for (const h of this.harWriters.splice(0)) await h.save().catch(() => {});
     for (const p of this.open.splice(0)) await p.close().catch(() => {});
     if (this.blankJarPage && !this.ownsSession) {
       await this.owner.rawCall('vs_close', [this.blankJarPage], { session: this.sessionId }).catch(() => {});
