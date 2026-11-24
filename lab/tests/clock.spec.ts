@@ -3,10 +3,10 @@ import { test, expect } from '@playwright/test';
 test.describe('clock', () => {
   test('install, fastForward and runFor drive timers and Date', async ({ page }) => {
     await page.clock.install({ time: new Date('2024-02-02T08:00:00Z') });
-    await page.goto('/page/timer.html');
+    await page.goto('/page/timer5.html');
     expect(await page.evaluate(() => new Date().toISOString())).toMatch(/^2024-02-02T08:00:0/);
     await expect(page.locator('#o')).toHaveText('wait');
-    await page.clock.runFor(600);
+    await page.clock.runFor(5100);
     await expect(page.locator('#o')).toHaveText('ready');
     await page.clock.fastForward('01:00:00');
     expect(await page.evaluate(() => new Date().toISOString())).toMatch(/^2024-02-02T09:00:/);

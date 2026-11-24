@@ -780,6 +780,68 @@ export class Locator {
    * release from center to center. vibesurfer also fires the HTML5
    * drag events, so native draggable and react-dnd lists see the drop.
    */
+  /**
+   * A locator for the same element written the recommended way: by
+   * test id, else by role and accessible name, else by exact text;
+   * this locator when none of those picks it alone.
+   */
+  async normalize(): Promise<Locator> {
+    const page = this.owner as unknown as {
+      getByTestId(id: string): Locator;
+      getByRole(role: string, o: { name: string; exact: boolean }): Locator;
+      getByText(t: string, o: { exact: boolean }): Locator;
+      testIdAttribute?: string | null;
+    };
+    const attr = page.testIdAttribute || 'data-testid';
+    const id = await this.getAttribute(attr).catch(() => null);
+    const unique = async (l: Locator) => (await l.count().catch(() => 0)) === 1;
+    if (id) {
+      const l = page.getByTestId(id);
+      if (await unique(l)) return l;
+    }
+    const first = (await this.ariaSnapshot().catch(() => '')).split('\n')[0] ?? '';
+    const m = /^- ([\w-]+)(?: "((?:[^"\\]|\\.)*)")?/.exec(first);
+    if (m && m[2] !== undefined && m[1] !== 'text') {
+      const l = page.getByRole(m[1]!, { name: m[2].replace(/\\(.)/g, '$1'), exact: true });
+      if (await unique(l)) return l;
+    }
+    const text = (await this.textContent().catch(() => '') ?? '').trim();
+    if (text) {
+      const l = page.getByText(text, { exact: true });
+      if (await unique(l)) return l;
+    }
+    return this;
+  }
+
+  /** Drop external data (files, or mime type to string) onto the element: dragenter, dragover and drop at its center. */
+  async drop(
+    payload: { files?: string | string[] | { name: string; mimeType: string; buffer: Buffer } | { name: string; mimeType: string; buffer: Buffer }[]; data?: Record<string, string> },
+    options: { timeout?: number } = {},
+  ): Promise<void> {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const list = payload.files === undefined ? [] : Array.isArray(payload.files) ? payload.files : [payload.files];
+    const files = await Promise.all(
+      list.map(async (f) =>
+        typeof f === 'string'
+          ? { name: path.basename(f), mimeType: '', b64: (await fs.readFile(f)).toString('base64') }
+          : { name: f.name, mimeType: f.mimeType, b64: f.buffer.toString('base64') },
+      ),
+    );
+    await this.waitFor({ state: 'visible', ...(options.timeout === undefined ? {} : { timeout: options.timeout }) });
+    await this.evaluate(
+      `(el, p) => {
+        const dt = new DataTransfer();
+        for (const [k, v] of Object.entries(p.data || {})) dt.setData(k, v);
+        for (const f of p.files) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.mimeType }));
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        for (const t of ['dragenter', 'dragover', 'drop']) el.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: dt }));
+      }`,
+      { files, data: payload.data ?? {} },
+    );
+  }
+
   async dragTo(target: Locator, options: { timeout?: number } = {}): Promise<void> {
     const from = await this.boundingBox(options);
     if (!from) throw new TimeoutError(`locator.dragTo: ${this.toString()} is not rendered`);

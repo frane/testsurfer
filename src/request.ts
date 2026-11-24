@@ -6,7 +6,7 @@
  * back into the jar, so the page and the requests share one login.
  */
 
-import { cookieHeader, parseSetCookie, type Cookie, type WireCookie } from './cookies.ts';
+import { cookieHeader, fromWire, parseSetCookie, type Cookie, type StorageState, type WireCookie } from './cookies.ts';
 import { APIResponse } from './events.ts';
 
 /** Where an APIRequestContext reads and stores cookies. */
@@ -121,4 +121,67 @@ export class APIRequestContext {
     return this.fetch(url, { ...options, method: 'DELETE' });
   }
   async dispose(): Promise<void> {}
+
+  /** The jar's cookies (and no origins: a request context has no storage), as Playwright saves them. */
+  async storageState(options: { path?: string } = {}): Promise<StorageState> {
+    const state: StorageState = { cookies: this.jar ? await this.jar.cookies() : [], origins: [] };
+    if (options.path) {
+      const fs = await import('node:fs/promises');
+      await fs.writeFile(options.path, JSON.stringify(state, null, 2));
+    }
+    return state;
+  }
 }
+
+/** A cookie jar in memory, for request.newContext(). */
+class MemoryJar implements CookieJar {
+  private jar: Cookie[] = [];
+  async cookies(): Promise<Cookie[]> {
+    const now = Date.now() / 1000;
+    this.jar = this.jar.filter((c) => c.expires < 0 || c.expires > now);
+    return [...this.jar];
+  }
+  async store(list: WireCookie[]): Promise<void> {
+    for (const w of list) {
+      const c = fromWire(w);
+      this.jar = this.jar.filter((x) => !(x.name === c.name && x.domain === c.domain && x.path === c.path));
+      if (c.expires < 0 || c.expires > Date.now() / 1000) this.jar.push(c);
+    }
+  }
+  load(cookies: Cookie[]): void {
+    this.jar = [...cookies];
+  }
+}
+
+export interface NewRequestContextOptions {
+  baseURL?: string;
+  extraHTTPHeaders?: Record<string, string>;
+  httpCredentials?: { username: string; password: string; origin?: string };
+  ignoreHTTPSErrors?: boolean;
+  storageState?: StorageState | string;
+  userAgent?: string;
+}
+
+/** Playwright's `request`: API request contexts of their own, outside any browser. */
+export const request = {
+  async newContext(options: NewRequestContextOptions = {}): Promise<APIRequestContext> {
+    const jar = new MemoryJar();
+    if (options.storageState) {
+      const st: StorageState =
+        typeof options.storageState === 'string'
+          ? (JSON.parse(await (await import('node:fs/promises')).readFile(options.storageState, 'utf8')) as StorageState)
+          : options.storageState;
+      jar.load(st.cookies ?? []);
+    }
+    const headers: Record<string, string> = { ...(options.extraHTTPHeaders ?? {}) };
+    if (options.userAgent) headers['user-agent'] = options.userAgent;
+    const creds = options.httpCredentials;
+    const extra = (): Record<string, string> => {
+      const h = { ...headers };
+      if (creds) h['authorization'] = `Basic ${Buffer.from(`${creds.username}:${creds.password}`).toString('base64')}`;
+      return h;
+    };
+    if (options.ignoreHTTPSErrors) process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
+    return new APIRequestContext(options.baseURL, jar, extra);
+  },
+};

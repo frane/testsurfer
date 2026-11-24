@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Drop</title>
+<div id="zone" style="width:200px;height:120px;border:2px dashed #888" data-testid="zone">Drop here</div>
+<p id="out">nothing</p>
+<script>
+  zone.addEventListener('dragover', (e) => e.preventDefault());
+  zone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    out.textContent = (f ? f.name + ':' + (await f.text()) : '') + '|' + e.dataTransfer.getData('text/plain');
+  });
+</script>

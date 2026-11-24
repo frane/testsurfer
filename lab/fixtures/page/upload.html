@@ -1,0 +1,7 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Upload</title>
+<input type="file" id="f" multiple>
+<button id="pick" onclick="document.getElementById('f').click()">Choose files</button>
+<p id="names">none</p>
+<script>document.getElementById('f').addEventListener('change', (e) => { names.textContent = [...e.target.files].map((x) => x.name).join(','); });</script>

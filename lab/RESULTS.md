@@ -1,12 +1,12 @@
 # testsurfer lab
 
-109 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
+117 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
 
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
-| cases passed | 109 of 109 | 109 of 109 |
-| wall time, whole lab | 16.6 s | 16.3 s |
-| install | 10.7 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
+| cases passed | 116 of 117 | 117 of 117 |
+| wall time, whole lab | 15.5 s | 15.6 s |
+| install | 10.8 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
 
@@ -44,7 +44,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | dynamic pages | client-side routing | pass | pass |
 | dynamic pages | content from fetch | pass | pass |
 | dynamic pages | waitFor detached | pass | pass |
-| clock | install, fastForward and runFor drive timers and Date | pass | pass |
+| clock | install, fastForward and runFor drive timers and Date | FAIL | pass |
 | clock | pauseAt holds time, resume lets it run | pass | pass |
 | clock | setFixedTime and setSystemTime | pass | pass |
 | context options | colorScheme, locale, timezoneId and userAgent from test.use | pass | pass |
@@ -58,6 +58,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | mobile | isMobile lays a page without a viewport tag out 980 px wide | pass | pass |
 | page events | download from a link and from a blob | pass | pass |
 | page events | load, domcontentloaded and framenavigated | pass | pass |
+|  | filechooser from a button that clicks the input | pass | pass |
 | frames | frameLocator into a same-origin iframe | pass | pass |
 | frames | nested iframes | pass | pass |
 | frames | srcdoc iframe | pass | pass |
@@ -68,6 +69,8 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | popups | window.open gives a popup with an opener | pass | pass |
 | popups | target=_blank opens a new page in the context | pass | pass |
 | popups | a popup that closes itself | pass | pass |
+|  | recordHar writes the exchanges; routeFromHAR answers from them | pass | pass |
+|  | recordVideo writes a video when the page closes | pass | pass |
 | locators | getByRole with name, exact and substring | pass | pass |
 | locators | getByLabel: for, wrapping, aria-labelledby | pass | pass |
 | locators | aria-label names | pass | pass |
@@ -92,6 +95,10 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | network | an aborted image | pass | pass |
 | network | goto follows redirects and returns the final response | pass | pass |
 | network | cookies set by the server, and context.addCookies | pass | pass |
+|  | consoleMessages, pageErrors and requests | pass | pass |
+|  | page.localStorage and sessionStorage | pass | pass |
+|  | request.newContext keeps its own cookies | pass | pass |
+|  | locator.normalize and locator.drop | pass | pass |
 | keyboard | Tab and Shift+Tab move focus between fields | pass | pass |
 | keyboard | shortcuts with modifiers, Escape | pass | pass |
 | keyboard | Backspace and select-all editing | pass | pass |
@@ -121,3 +128,4 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | websocket | page.on(websocket) reports frames both ways | pass | pass |
 | websocket | routeWebSocket answers without a server | pass | pass |
 | websocket | routeWebSocket with connectToServer changes what the server says | pass | pass |
+|  | worker events and worker.evaluate | pass | pass |

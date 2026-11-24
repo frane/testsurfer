@@ -47,7 +47,9 @@ export const PAGE_SHIM = String.raw`(function () {
   });
   window.addEventListener('error', function (e) {
     if (e.target && e.target !== window) return;
-    emit({ t: 'pageerror', message: e.message || String(e.error), stack: (e.error && e.error.stack) || '' });
+    var err = e.error;
+    var own = err && typeof err === 'object' && typeof err.message === 'string';
+    emit({ t: 'pageerror', message: own ? err.message : e.message || String(err), name: own ? err.name : undefined, stack: (err && err.stack) || '' });
   });
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason;

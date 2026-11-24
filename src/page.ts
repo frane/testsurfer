@@ -57,6 +57,7 @@ import { WS_SHIM, WebSocket, WebSocketRoute, type WireFrame } from './websocket.
 import { WORKER_SHIM, Worker } from './worker.ts';
 import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
 import { Video } from './video.ts';
+import { FILECHOOSER_SHIM, FileChooser } from './filechooser.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -121,7 +122,7 @@ export type ClickVia = 'click-at' | 'act';
 
 /** Options for how the page tracks daemon state across mutations. */
 /** What every page gets at document start: the event shim and the WebSocket hook. */
-export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}`;
+export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}\n${FILECHOOSER_SHIM}`;
 
 export interface ProtocolOptions {
   /**
@@ -600,6 +601,7 @@ export class Page {
   on(event: string, listener: (arg: never) => void): this {
     if (event === 'download') this.watchDownloads();
     if (event === 'websocket' || event === 'worker') void this.ensureWsShim().catch(() => {});
+    if (event === 'filechooser') void this.interceptFileChooser().catch(() => {});
     this.events.on(event, listener);
     void this.events.sync().catch(() => {});
     return this;
@@ -631,6 +633,7 @@ export class Page {
     const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
     if (event === 'download') this.watchDownloads();
     if (event === 'websocket' || event === 'worker') await this.ensureWsShim();
+    if (event === 'filechooser') await this.interceptFileChooser();
     return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
   }
 
@@ -871,6 +874,66 @@ export class Page {
     await this.evaluate(`(a) => window.__ts && window.__ts.${fn} && window.__ts.${fn}(...a)`, args);
   }
 
+  /** Up to 200 recent console messages; `since-navigation` keeps the current document's. */
+  async consoleMessages(options: { filter?: 'all' | 'since-navigation' } = {}): Promise<ConsoleMessage[]> {
+    await this.events.flush().catch(() => {});
+    const log = this.events.consoleLog as ConsoleMessage[];
+    return options.filter === 'since-navigation' ? log.slice(this.events.navMark.console) : [...log];
+  }
+
+  /** Up to 200 recent uncaught errors; `since-navigation` keeps the current document's. */
+  async pageErrors(options: { filter?: 'all' | 'since-navigation' } = {}): Promise<Error[]> {
+    await this.events.flush().catch(() => {});
+    const log = this.events.errorLog as Error[];
+    return options.filter === 'since-navigation' ? log.slice(this.events.navMark.errors) : [...log];
+  }
+
+  async clearConsoleMessages(): Promise<void> {
+    this.events.consoleLog.length = 0;
+    this.events.navMark.console = 0;
+  }
+
+  async clearPageErrors(): Promise<void> {
+    this.events.errorLog.length = 0;
+    this.events.navMark.errors = 0;
+  }
+
+  /** Up to 100 recent requests of this page. */
+  async requests(): Promise<Request[]> {
+    return [...(this.events.requestLog as Request[])];
+  }
+
+  /** The page's localStorage, for the current origin. */
+  readonly localStorage = this.webStorage('localStorage');
+  /** The page's sessionStorage, for the current origin. */
+  readonly sessionStorage = this.webStorage('sessionStorage');
+
+  private webStorage(kind: 'localStorage' | 'sessionStorage') {
+    const run = <T>(body: string, arg?: unknown) => this.evaluate<T>(`(a) => { const s = window.${kind}; ${body} }`, arg);
+    return {
+      clear: () => run<void>('s.clear();'),
+      getItem: (name: string) => run<string | null>('return s.getItem(a);', name),
+      setItem: (name: string, value: string) => run<void>('s.setItem(a[0], a[1]);', [name, value]),
+      removeItem: (name: string) => run<void>('s.removeItem(a);', name),
+      items: () => run<{ name: string; value: string }[]>('const out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push({ name: k, value: s.getItem(k) }); } return out;'),
+    };
+  }
+
+  /** Every page has its own window here; nothing is in front of another. */
+  async bringToFront(): Promise<void> {}
+
+  private fileChooserOn = false;
+
+  /** Report file inputs as `filechooser` events instead of opening a dialog. */
+  private async interceptFileChooser(): Promise<void> {
+    if (this.fileChooserOn) return;
+    this.fileChooserOn = true;
+    await this.ensureWsShim();
+    const on = 'window.__ts && (window.__ts.fc = true);';
+    await this.addInitSource(on);
+    if (this.pageId) await this.evaluate(`() => { ${on} }`).catch(() => {});
+  }
+
   private readonly workerList = new Map<number, Worker>();
 
   /** The page's dedicated workers. */
@@ -884,6 +947,11 @@ export class Page {
       const w = new Worker(this, id, String(e['url']));
       this.workerList.set(id, w);
       this.events.emitPageEvent('worker', w);
+      return;
+    }
+    if (e['t'] === 'filechooser') {
+      const h = await this.evaluateHandle(`() => window.__ts.fcEls[${id}]`);
+      this.events.emitPageEvent('filechooser', new FileChooser(this, h as unknown as import('./locator.ts').ElementHandle, !!e['multiple']));
       return;
     }
     if (e['t'] === 'workerClose') {

@@ -428,11 +428,20 @@ export class ConsoleMessage {
   private readonly message: string;
   private readonly values: { v?: unknown; u?: number }[];
   private readonly owner: unknown;
+  private readonly at = Date.now();
   constructor(kind: string, message: string, values: { v?: unknown; u?: number }[] = [], owner: unknown = null) {
     this.kind = kind;
     this.message = message;
     this.values = values;
     this.owner = owner;
+  }
+  /** When the message was logged, in ms since the epoch. */
+  timestamp(): number {
+    return this.at;
+  }
+  /** The worker that logged it: page messages only here, so null. */
+  worker(): null {
+    return null;
   }
   /** The arguments passed to console.*, as handles whose jsonValue() is the value. */
   args(): ConsoleArg[] {
@@ -725,6 +734,7 @@ export class PageEvents {
   }
 
   private emit(name: string, arg: unknown): void {
+    if (name === 'request') this.noteRequest(arg);
     for (const fn of [...(this.listeners.get(name) ?? [])]) {
       try {
         (fn as (a: unknown) => void)(arg);
@@ -820,6 +830,27 @@ export class PageEvents {
   /** Report an event that is not network traffic (popup, close). */
   emitPageEvent(name: string, arg: unknown): void {
     this.emit(name, arg);
+  }
+
+  /** The last 200 console messages and page errors, and the last 100 requests (page.consoleMessages() and friends). */
+  readonly consoleLog: unknown[] = [];
+  readonly errorLog: unknown[] = [];
+  readonly requestLog: unknown[] = [];
+  /** Where the current document's entries start. */
+  navMark = { console: 0, errors: 0 };
+
+  private keep(log: unknown[], v: unknown, cap = 200): void {
+    log.push(v);
+    if (log.length > cap) {
+      const drop = log.length - cap;
+      log.splice(0, drop);
+      this.navMark = { console: Math.max(0, this.navMark.console - (log === this.consoleLog ? drop : 0)), errors: Math.max(0, this.navMark.errors - (log === this.errorLog ? drop : 0)) };
+    }
+  }
+
+  /** @internal A request reached the page (any network mode). */
+  noteRequest(r: unknown): void {
+    this.keep(this.requestLog, r, 100);
   }
 
   /** Whether anyone listens for `name`. */
@@ -919,7 +950,9 @@ export class PageEvents {
   async sync(): Promise<void> {
     if (this.proxied) {
       const { sessionId } = this.host.target();
-      if (this.active && !this.hub) {
+      // Always attached when proxied: page.requests() reports the
+      // page's requests whether or not anyone listened for them.
+      if (!this.hub) {
         this.hub = NetHub.for(sessionId, () => this.host.openPoller());
         this.hub.attach(this);
       }
@@ -1026,10 +1059,14 @@ export class PageEvents {
       case 'call':
         this.pendingBindings.push(this.runBinding(e));
         break;
-      case 'console':
-        this.emit('console', new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[]));
+      case 'console': {
+        const m = new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[]);
+        this.keep(this.consoleLog, m);
+        this.emit('console', m);
         break;
+      }
       case 'nav':
+        this.navMark = { console: this.consoleLog.length, errors: this.errorLog.length };
         if (e.url) this.host.noteURL?.(e.url);
         this.emitPageEvent('framenavigated', this.host.mainFrame?.() ?? null);
         break;
@@ -1038,10 +1075,12 @@ export class PageEvents {
         this.emitPageEvent(e.t, this.host.page?.() ?? null);
         break;
       default:
-        if (e.t.startsWith('ws') || e.t.startsWith('worker')) this.host.wsEvent?.(e as unknown as Record<string, unknown>);
+        if (e.t.startsWith('ws') || e.t.startsWith('worker') || e.t === 'filechooser') this.host.wsEvent?.(e as unknown as Record<string, unknown>);
       case 'pageerror': {
         const err = new Error(e.message ?? '');
+        if (e.name) err.name = e.name;
         if (e.stack) err.stack = e.stack;
+        this.keep(this.errorLog, err);
         this.emit('pageerror', err);
         break;
       }
