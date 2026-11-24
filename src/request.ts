@@ -1,10 +1,19 @@
 /**
  * page.request / context.request: HTTP calls from the test process
  * (Playwright's APIRequestContext). Requests go out through Node's
- * fetch, not the browser, so they do not share the page's cookies.
+ * fetch. With a jar (a context's), each request carries the jar's
+ * cookies for its URL and every Set-Cookie of every redirect hop goes
+ * back into the jar, so the page and the requests share one login.
  */
 
+import { cookieHeader, parseSetCookie, type Cookie, type WireCookie } from './cookies.ts';
 import { APIResponse } from './events.ts';
+
+/** Where an APIRequestContext reads and stores cookies. */
+export interface CookieJar {
+  cookies(): Promise<Cookie[]>;
+  store(cookies: WireCookie[]): Promise<void>;
+}
 
 export interface RequestOptions {
   method?: string;
@@ -20,9 +29,13 @@ export interface RequestOptions {
 
 export class APIRequestContext {
   private readonly baseURL: string | undefined;
+  private readonly jar: CookieJar | null;
+  private readonly extraHeaders: () => Record<string, string>;
 
-  constructor(baseURL?: string) {
+  constructor(baseURL?: string, jar?: CookieJar, extraHeaders?: () => Record<string, string>) {
     this.baseURL = baseURL;
+    this.jar = jar ?? null;
+    this.extraHeaders = extraHeaders ?? (() => ({}));
   }
 
   async fetch(urlOrRequest: string, options: RequestOptions = {}): Promise<APIResponse> {
@@ -44,16 +57,40 @@ export class APIRequestContext {
         headers['content-type'] ??= 'application/json';
       }
     }
-    const init: RequestInit = {
-      method: options.method ?? (body !== undefined ? 'POST' : 'GET'),
-      headers,
-      redirect: options.maxRedirects === 0 ? 'manual' : 'follow',
-      signal: AbortSignal.timeout(options.timeout ?? 30_000),
-    };
-    if (body !== undefined) init.body = body;
-    const res = await fetch(url, init);
+    let method = options.method ?? (body !== undefined ? 'POST' : 'GET');
+    const maxRedirects = options.maxRedirects ?? 20;
+    const deadline = AbortSignal.timeout(options.timeout ?? 30_000);
+    let current = url.href;
+    let res: Response;
+    for (let hop = 0; ; hop++) {
+      const h: Record<string, string> = { ...this.extraHeaders(), ...headers };
+      const hasCookie = Object.keys(h).some((k) => k.toLowerCase() === 'cookie');
+      if (this.jar && !hasCookie) {
+        const c = cookieHeader(await this.jar.cookies(), current);
+        if (c) h['cookie'] = c;
+      }
+      const init: RequestInit = { method, headers: h, redirect: 'manual', signal: deadline };
+      if (body !== undefined) init.body = body;
+      res = await fetch(current, init);
+      if (this.jar) {
+        const set = res.headers.getSetCookie().map((v) => parseSetCookie(v, current)).filter((c): c is WireCookie => c !== null);
+        if (set.length) await this.jar.store(set);
+      }
+      const location = res.headers.get('location');
+      const redirect = !!location && res.status >= 300 && res.status < 400 && res.status !== 304;
+      if (!redirect || maxRedirects === 0) break;
+      if (hop >= maxRedirects) throw new Error('apiRequestContext.fetch: Max redirect count exceeded');
+      await res.arrayBuffer().catch(() => {});
+      current = new URL(location, current).href;
+      // 303, and 301/302 after a POST, follow with a GET and no body.
+      if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
+        method = 'GET';
+        body = undefined;
+        for (const k of Object.keys(headers)) if (/^content-/i.test(k)) delete headers[k];
+      }
+    }
     const out = new APIResponse({
-      url: res.url || url.href,
+      url: current,
       status: res.status,
       statusText: res.statusText,
       headers: Object.fromEntries(res.headers.entries()),

@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Service worker</title>
+<p id="state">starting</p>
+<script>
+  navigator.serviceWorker.register('/parity/sw.js', { scope: '/parity/' }).then(() => navigator.serviceWorker.ready).then(async () => {
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
+    }
+    state.textContent = 'ready';
+  });
+  window.ask = async () => (await fetch('/parity/built')).text();
+</script>

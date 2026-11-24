@@ -1,9 +1,12 @@
 /**
  * page.emulateMedia without a browser protocol: matchMedia answers
- * for the emulated features, and the page's @media rules (same-origin
- * and inline sheets, including ones added later) are rewritten so CSS
- * follows too. Covers prefers-reduced-motion, prefers-color-scheme,
- * forced-colors and the print/screen media type.
+ * for the emulated features, and the page's @media rules (inline and
+ * same-origin sheets, including ones added later) are rewritten so CSS
+ * follows too. Cross-origin sheets, which the page cannot read, are
+ * fetched by the page object and put in as readable copies (see
+ * Page.adoptSheets). Covers prefers-reduced-motion,
+ * prefers-color-scheme, forced-colors, prefers-contrast and the
+ * print/screen media type.
  */
 
 export interface MediaOptions {
@@ -11,6 +14,7 @@ export interface MediaOptions {
   colorScheme?: 'light' | 'dark' | 'no-preference' | null;
   reducedMotion?: 'reduce' | 'no-preference' | null;
   forcedColors?: 'active' | 'none' | null;
+  contrast?: 'more' | 'no-preference' | null;
 }
 
 /** A script that applies `cfg` to the document it runs in (idempotent; the last call wins). */
@@ -28,7 +32,8 @@ const MEDIA_JS = String.raw`function (cfg) {
   var FEATURES = {
     'prefers-reduced-motion': 'reducedMotion',
     'prefers-color-scheme': 'colorScheme',
-    'forced-colors': 'forcedColors'
+    'forced-colors': 'forcedColors',
+    'prefers-contrast': 'contrast'
   };
   function rewrite(text) {
     var c = w.__tsMediaCfg;
@@ -89,3 +94,29 @@ const MEDIA_JS = String.raw`function (cfg) {
     }
   }).observe(document, { childList: true, subtree: true, characterData: true });
 }`;
+
+/** Absolute URLs for every url() in `css`, a sheet fetched from `base`. */
+export function absolutizeCss(css: string, base: string): string {
+  return css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (m, q: string, u: string) => {
+    if (/^(data|blob|about):/i.test(u) || u.startsWith('#')) return m;
+    try {
+      return `url(${q}${new URL(u, base).href}${q})`;
+    } catch {
+      return m;
+    }
+  });
+}
+
+/** `@import` rules of `css`: the whole rule, its URL and its media list. */
+export function cssImports(css: string, base: string): { rule: string; url: string; media: string }[] {
+  const out: { rule: string; url: string; media: string }[] = [];
+  const re = /@import\s+(?:url\(\s*)?(['"]?)([^'")\s;]+)\1\s*\)?\s*([^;]*);/g;
+  for (let m = re.exec(css); m; m = re.exec(css)) {
+    try {
+      out.push({ rule: m[0], url: new URL(m[2]!, base).href, media: (m[3] ?? '').trim() });
+    } catch {
+      /* not a URL */
+    }
+  }
+  return out;
+}

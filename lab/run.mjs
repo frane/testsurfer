@@ -104,7 +104,7 @@ const pwVersion = fs.existsSync(path.join(pwRoot, '@playwright', 'test', 'packag
 const lines = [
   '# testsurfer lab',
   '',
-  `${cases.length} cases, each a small page in \`fixtures/\` and a test in \`tests/\` written against \`@playwright/test\`. The same files run on Playwright's WebKit and on testsurfer (\`testsurfer test\` reads \`playwright.config.ts\`; \`testsurfer.config.ts\` adds the proxy network mode). ${new Date().toISOString().slice(0, 10)}, ${process.platform} ${process.arch}, ${vsVersion || 'vs'}, Playwright ${pwVersion}. Reproduce with \`node lab/run.mjs\`.`,
+  `${cases.length} cases, each a small page in \`fixtures/\` and a test in \`tests/\` written against \`@playwright/test\`. The same files run on Playwright's WebKit and on testsurfer (\`testsurfer test\` reads \`playwright.config.ts\`). ${new Date().toISOString().slice(0, 10)}, ${process.platform} ${process.arch}, ${vsVersion || 'vs'}, Playwright ${pwVersion}. Reproduce with \`node lab/run.mjs\`.`,
   '',
   '| | testsurfer | Playwright WebKit |',
   '| --- | --- | --- |',

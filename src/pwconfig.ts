@@ -39,6 +39,7 @@ export interface PlaywrightUse {
   navigationTimeout?: number;
   defaultBrowserType?: string;
   browserName?: string;
+  storageState?: string | { cookies: unknown[]; origins: unknown[] };
 }
 
 export interface WebServer {
@@ -81,6 +82,7 @@ export function runnerOptionsFrom(cfg: PlaywrightConfig, configDir: string): Rec
   if (use.testIdAttribute) out['testIdAttribute'] = use.testIdAttribute;
   if (use.viewport) out['viewport'] = use.viewport;
   if (use.deviceScaleFactor) out['deviceScaleFactor'] = use.deviceScaleFactor;
+  if (use.storageState) out['storageState'] = typeof use.storageState === 'string' ? path.resolve(configDir, use.storageState) : use.storageState;
   const timeouts: Record<string, number> = {};
   // 0 means "no limit" in Playwright; the test's own timeout then bounds it.
   const limit = (v: number | undefined) => (v === 0 ? (cfg.timeout ?? 30_000) : v);

@@ -4,8 +4,8 @@ Small fixture pages, one hard case each, with tests written against `@playwright
 
 - `fixtures/` the pages, grouped by area (locators, actions, assertions, dynamic, frames, shadow, popups, network, keyboard, page, canvas).
 - `tests/` one spec file per group of areas.
-- `server.mjs` serves `fixtures/` plus a few dynamic routes (JSON, header echo, redirects, cookies) on every host of its port, so `lab.localhost` and `lab2.localhost` are two origins.
-- `playwright.config.ts` starts the server as a `webServer` and sets `baseURL`; `testsurfer test` reads it. `testsurfer.config.ts` adds `network: 'proxy'` for testsurfer.
+- `server.mjs` serves `fixtures/` plus a few dynamic routes (JSON, header echo, redirects, cookies) on every host of its port, so `127.0.0.1` and `localhost` are two origins.
+- `playwright.config.ts` starts the server as a `webServer` and sets `baseURL`; `testsurfer test` reads it.
 
 Run it:
 

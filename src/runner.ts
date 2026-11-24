@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Browser, type BrowserContext, type LaunchOptions } from './browser.ts';
+import type { StorageState } from './cookies.ts';
 import { currentTestInfo, testInfoStore, updateSnapshotsFromEnv, type TestInfo, type UpdateSnapshots } from './testinfo.ts';
 import type { Page } from './page.ts';
 import { findPlaywrightConfig, importPlaywrightConfig, runnerOptionsFrom } from './pwconfig.ts';
@@ -54,15 +55,15 @@ export interface RunnerOptions extends LaunchOptions {
    */
   isolate?: boolean;
   /**
-   * How page.route() and network events see requests. `shim` (default)
-   * patches fetch and XHR in the page. `proxy` sends every http(s)
-   * request through vibesurfer's intercepting proxy, so documents,
-   * iframes, scripts and images are reported and routable too, and
-   * popups open as their own pages (macOS). On macOS requests to
-   * localhost or 127.0.0.1 bypass the proxy; use a name under
-   * .localhost instead.
+   * How page.route() and network events see requests. `proxy` (default)
+   * sends every http(s) request through vibesurfer's intercepting
+   * proxy: documents, iframes, scripts, images, fetch and XHR are
+   * reported and routable, and popups and dialogs are events. `shim`
+   * patches fetch and XHR in the page instead and has neither.
    */
   network?: 'shim' | 'proxy';
+  /** Cookies and localStorage every test's context starts with (Playwright's `use.storageState`): a state object or a JSON file. */
+  storageState?: StorageState | string;
   /** Where toMatchSnapshot(name) keeps baselines; Playwright's tokens. */
   snapshotPathTemplate?: string;
 }
@@ -119,8 +120,38 @@ function ensureTeardown(): void {
   if (teardownRegistered) return;
   teardownRegistered = true;
   after(async () => {
+    // Worker fixtures tear down before the browser they may use closes.
+    for (const t of workerTeardowns.splice(0).reverse()) await t().catch(() => {});
     if (shared) await (await shared).close();
   });
+}
+
+/** Worker-scoped fixture values, set up once per worker process (by definition) and torn down at its end. */
+const workerValues = new Map<FixtureFn, Promise<unknown>>();
+const workerTeardowns: (() => Promise<void>)[] = [];
+
+function workerValue(fn: FixtureFn, base: Fixtures): Promise<unknown> {
+  let p = workerValues.get(fn);
+  if (!p) {
+    p = new Promise<unknown>((resolve, reject) => {
+      let release!: () => void;
+      const done = new Promise<void>((r) => (release = r));
+      let used = false;
+      const run = fn(base, async (v) => {
+        used = true;
+        resolve(v);
+        await done;
+      }).then(() => {
+        if (!used) reject(new Error('worker fixture did not call use()'));
+      }, reject);
+      workerTeardowns.push(async () => {
+        release();
+        await run;
+      });
+    });
+    workerValues.set(fn, p);
+  }
+  return p;
 }
 
 function sharedBrowser(): Promise<Browser> {
@@ -311,8 +342,10 @@ async function withFixtures(
   const step = async (i: number, acc: Fixtures): Promise<void> => {
     if (i === entries.length) return inner(acc);
     const [key, def] = entries[i]!;
-    const value = Array.isArray(def) && def.length === 2 && typeof def[1] === 'object' ? def[0] : def;
+    const opts = Array.isArray(def) && def.length === 2 && typeof def[1] === 'object' && def[1] !== null ? (def[1] as { scope?: string }) : null;
+    const value = opts ? (def as unknown[])[0] : def;
     if (typeof value !== 'function') return step(i + 1, { ...acc, [key]: value });
+    if (opts?.scope === 'worker') return step(i + 1, { ...acc, [key]: await workerValue(value as FixtureFn, acc) });
     let used = false;
     let innerError: unknown = null;
     await (value as FixtureFn)(acc, async (v) => {
@@ -340,10 +373,18 @@ async function runTest(
   const afters = chain.flatMap((s) => s.afterEach).reverse();
   const browser = await sharedBrowser();
   // Each test gets a fresh, isolated context unless the suite opts out.
+  const stateDef = defs['storageState'];
+  const storageState = (typeof stateDef === 'string' || (stateDef && typeof stateDef === 'object' && !Array.isArray(stateDef)) ? stateDef : options.storageState) as
+    | StorageState
+    | string
+    | undefined;
   const context =
     options.isolate === false
       ? browser.sharedContext()
-      : await browser.newContext(options.network === 'proxy' ? { intercept: true } : {});
+      : await browser.newContext({
+          intercept: options.network !== 'shim',
+          ...(storageState ? { storageState } : {}),
+        });
   const page = await context.newPage();
   try {
     if (options.auth) {
@@ -429,10 +470,14 @@ export interface TestApi<F extends object> {
   extend: <E extends object>(defs: { [K in keyof E]: FixtureDefFor<F & E, E[K]> }) => TestApi<F & E>;
 }
 
-/** A fixture value, a setup function that calls `use(value)`, or `[value, { option: true }]`. */
+/**
+ * A fixture value, a setup function that calls `use(value)`, or either
+ * with options: `[value, { option: true }]`, `[fn, { scope: 'worker' }]`
+ * (set up once per worker and shared by its tests), `auto`, `timeout`.
+ */
 export type FixtureDefFor<All, V> =
   | V
-  | [V, { option?: boolean }]
+  | [V | ((fixtures: All, use: (value: V) => Promise<void>) => Promise<void>), { option?: boolean; scope?: 'test' | 'worker'; auto?: boolean; timeout?: number; box?: boolean }]
   | ((fixtures: All, use: (value: V) => Promise<void>) => Promise<void>);
 
 function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F> {

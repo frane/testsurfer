@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wheel</title>
+<style>
+  body { margin: 0; height: 3000px; }
+  #box { position: absolute; left: 20px; top: 20px; width: 300px; height: 200px; overflow: auto; border: 1px solid #888; }
+  #box div { height: 2000px; }
+</style>
+<div id="box"><div>scroll me</div></div>
+<p id="log" style="position: fixed; right: 10px; top: 10px">none</p>
+<script>
+  box.addEventListener('wheel', (e) => { log.textContent = (e.isTrusted ? 'trusted' : 'untrusted') + ' ' + (e.deltaY > 0 ? 'down' : 'up'); }, { passive: true });
+</script>

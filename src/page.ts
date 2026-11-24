@@ -53,7 +53,7 @@ import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
-import { mediaScript, type MediaOptions } from './media.ts';
+import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
 import { decodePng, downscale, encodePng } from './png.ts';
 
@@ -129,6 +129,10 @@ export interface ProtocolOptions {
    * every goto. Falls back to close+open when the daemon rejects it.
    */
   navInPlace?: boolean;
+  /** vibesurfer 0.2.19+: `vs_wheel`, a trusted native wheel turn. Negotiated from the wheel flag. */
+  nativeWheel?: boolean;
+  /** vibesurfer 0.2.19+: `vs_cookies`, the jar read and written host-side. Negotiated from the cookies flag. */
+  cookies?: boolean;
 }
 
 export interface LayoutRect {
@@ -175,9 +179,14 @@ export class Page {
   readonly clickVia: ClickVia;
   readonly actDeltas: boolean;
   readonly navInPlace: boolean;
+  private readonly nativeWheel: boolean;
   readonly baseURL: string | undefined;
   /** HTTP requests from the test process (not the browser). */
-  readonly request: APIRequestContext;
+  private readonly ownRequest: APIRequestContext;
+  /** HTTP calls from the test process that share the context's cookie jar (Playwright's page.request). */
+  get request(): APIRequestContext {
+    return this.ctx?.request ?? this.ownRequest;
+  }
   private testIdOption: string | null = null;
 
   /** Attribute getByTestId matches: the `testIdAttribute` launch option, else selectors.setTestIdAttribute(), else `data-testid`. */
@@ -203,7 +212,7 @@ export class Page {
     baseURL?: string,
   ) {
     this.baseURL = baseURL;
-    this.request = new APIRequestContext(baseURL);
+    this.ownRequest = new APIRequestContext(baseURL);
     this.client = client;
     this.sessionId = sessionId;
     this.timeouts = timeouts;
@@ -211,6 +220,7 @@ export class Page {
     this.clickVia = clickVia;
     this.actDeltas = protocol.actDeltas ?? false;
     this.navInPlace = protocol.navInPlace ?? false;
+    this.nativeWheel = protocol.nativeWheel ?? false;
     this.events = new PageEvents({
       openPoller: () => this.client.sibling(),
       target: () => ({ pageId: this.pageId, sessionId: this.sessionId }),
@@ -345,12 +355,84 @@ export class Page {
    * document and later ones.
    */
   async emulateMedia(options: MediaOptions = {}): Promise<void> {
-    for (const k of ['media', 'colorScheme', 'reducedMotion', 'forcedColors'] as const) {
+    for (const k of ['media', 'colorScheme', 'reducedMotion', 'forcedColors', 'contrast'] as const) {
       if (k in options) (this.media as Record<string, string | null>)[k] = options[k] ?? null;
     }
     const src = mediaScript(this.media);
     await this.addInitSource(src);
     if (this.pageId) await this.rawEval(`(${src.replace(/;\s*$/, '')}, 0)`).catch(() => {});
+    // Cross-origin stylesheets: now, and whenever one loads later.
+    if (!this.adoptHooked) {
+      this.adoptHooked = true;
+      this.on('response', (res: Response) => {
+        if (res.request().resourceType() === 'stylesheet') this.scheduleAdopt();
+      });
+    }
+    if (this.pageId) await this.adoptSheets().catch(() => {});
+  }
+
+  private adoptHooked = false;
+  private adoptTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleAdopt(): void {
+    if (this.adoptTimer) return;
+    this.adoptTimer = setTimeout(() => {
+      this.adoptTimer = null;
+      void this.adoptSheets().catch(() => {});
+    }, 30);
+  }
+
+  /**
+   * Stylesheets the page cannot read (cross-origin, so their @media
+   * rules cannot be rewritten in place): fetch each with the context's
+   * cookies, inline its @imports, make its url()s absolute, and put the
+   * copy in a <style> right after the original, which is disabled. The
+   * media script then rewrites the copy like any other sheet.
+   */
+  private async adoptSheets(): Promise<void> {
+    const hrefs = (await this.evaluate(`() => {
+      const out = [];
+      for (const s of document.styleSheets) {
+        try { void s.cssRules; } catch (e) {
+          if (s.href && s.ownerNode && !s.ownerNode.__tsAdopted) out.push(s.href);
+        }
+      }
+      return out;
+    }`)) as string[];
+    for (const href of [...new Set(hrefs)]) {
+      const css = await this.fetchSheet(href, 0).catch(() => null);
+      if (css === null) continue;
+      await this.evaluate(
+        `([href, css]) => {
+          for (const s of document.styleSheets) {
+            const n = s.ownerNode;
+            if (s.href !== href || !n || n.__tsAdopted) continue;
+            n.__tsAdopted = true;
+            const st = document.createElement('style');
+            st.setAttribute('data-testsurfer-sheet', href);
+            if (n.media && n.media.mediaText) st.media = n.media.mediaText;
+            st.textContent = css;
+            n.after(st);
+            s.disabled = true;
+          }
+          if (window.__tsMediaApply) window.__tsMediaApply();
+        }`,
+        [href, css],
+      );
+    }
+  }
+
+  private async fetchSheet(href: string, depth: number): Promise<string> {
+    const res = await this.request.get(href);
+    if (!res.ok()) throw new Error(`stylesheet ${href}: ${res.status()}`);
+    let css = absolutizeCss(await res.text(), href);
+    if (depth < 4) {
+      for (const imp of cssImports(css, href)) {
+        const inner = await this.fetchSheet(imp.url, depth + 1).catch(() => '');
+        css = css.replace(imp.rule, imp.media ? `@media ${imp.media} {\n${inner}\n}` : inner);
+      }
+    }
+    return css;
   }
 
   private media: MediaOptions = {};
@@ -666,6 +748,12 @@ export class Page {
    * A new page starts at about:blank, as in Playwright: the first call
    * that needs a document opens one (with the init scripts installed).
    */
+  /** @internal The page's wire id, opening its web view first if it has none yet. */
+  async openedId(): Promise<string> {
+    await this.ensureOpen();
+    return this.id;
+  }
+
   private async ensureOpen(): Promise<void> {
     if (this.pageId) return;
     if (this.closedFlag) throw new Error('Target page, context or browser has been closed');
@@ -1721,13 +1809,19 @@ export class Page {
       else await this.cursorOp('vs_drag', [from.x, from.y, to.x, to.y], options?.mode, true);
     },
     /**
-     * Scroll by (deltaX, deltaY) at the pointer: a wheel event goes to
-     * the element there and, unless the page cancels it, the nearest
-     * scrollable box scrolls. The event is dispatched in the page, so
-     * it is not trusted.
+     * Scroll by (deltaX, deltaY) at the pointer: a trusted native wheel
+     * event goes to the element there and, unless the page cancels it,
+     * the nearest scrollable box scrolls. Returns once the page has
+     * handled it (two animation frames later).
      */
-    wheel: async (deltaX: number, deltaY: number): Promise<void> => {
+    wheel: async (deltaX: number, deltaY: number, options?: { mode?: InputMode }): Promise<void> => {
       const { x, y } = this.pointer;
+      if (this.nativeWheel) {
+        await this.cursorOp('vs_wheel', [x, y, deltaX, deltaY], options?.mode, false);
+        await this.evaluate('() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(0))))').catch(() => {});
+        return;
+      }
+      // Daemons before 0.2.19 have no native wheel: dispatch one in the page.
       await this.evaluate(
         `([x, y, dx, dy]) => new Promise((done) => {
           const t = document.elementFromPoint(x, y) || document.scrollingElement || document.body;

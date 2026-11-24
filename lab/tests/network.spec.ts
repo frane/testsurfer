@@ -70,7 +70,7 @@ test.describe('network', () => {
   });
 
   test('cookies set by the server, and context.addCookies', async ({ page, context }) => {
-    await context.addCookies([{ name: 'pre', value: 'set', url: `http://lab.localhost:${process.env.LAB_PORT ?? 4173}/` }]);
+    await context.addCookies([{ name: 'pre', value: 'set', url: `http://127.0.0.1:${process.env.LAB_PORT ?? 4173}/` }]);
     await page.goto('/network/cookie.html');
     await page.getByRole('button', { name: 'Cookie' }).click();
     await expect(page.locator('#o')).toContainText('lab=1');

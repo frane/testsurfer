@@ -25,7 +25,9 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
   }
   return caps;
 }
+import { fromWire, matches, toWire, type Cookie, type CookieInput, type StorageState, type WireCookie } from './cookies.ts';
 import { Dialog, type RouteHandler, type UrlMatcher } from './events.ts';
+import { APIRequestContext } from './request.ts';
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
   Page,
@@ -125,6 +127,8 @@ export class Browser {
       {
         actDeltas: options.protocol?.actDeltas ?? caps.flags.has('actDeltas'),
         navInPlace: options.protocol?.navInPlace ?? caps.proto >= 1,
+        nativeWheel: options.protocol?.nativeWheel ?? caps.flags.has('wheel'),
+        cookies: options.protocol?.cookies ?? caps.flags.has('cookies'),
       },
       options.baseURL,
     );
@@ -148,9 +152,18 @@ export class Browser {
    * By default the session is isolated (vibesurfer 0.2.16+): its own
    * in-memory cookie and storage jar, discarded on close, as a
    * Playwright context is. `{ isolated: false }` shares the engine's
-   * persistent jar (logins survive across runs).
+   * persistent jar (logins survive across runs). Every request goes
+   * through vibesurfer's intercepting proxy unless `{ intercept: false }`
+   * (an isolated context only; the shared jar cannot be proxied).
    */
-  async newContext(options: { isolated?: boolean; intercept?: boolean } = {}): Promise<BrowserContext> {
+  async newContext(options: { isolated?: boolean; intercept?: boolean; storageState?: StorageState | string } = {}): Promise<BrowserContext> {
+    const ctx = await this.openContext(options);
+    if (options.storageState) await ctx.applyStorageState(options.storageState);
+    return ctx;
+  }
+
+  private async openContext(opts: { isolated?: boolean; intercept?: boolean }): Promise<BrowserContext> {
+    const options = { ...opts, intercept: opts.intercept ?? opts.isolated !== false };
     const flags: Record<string, true> = options.isolated === false ? {} : { isolated: true };
     // Every http request goes through vibesurfer's proxy (0.2.16+); see
     // src/net.ts. Popups then open as their own pages, reported on the
@@ -176,7 +189,7 @@ export class Browser {
     if (!this.spare && (flags['isolated'] || flags['intercept'])) this.warm(flags, key);
     const spare = ready;
     if (spare) {
-      const ctx = new BrowserContext(this, spare.sessionId, true, options.intercept ?? false);
+      const ctx = new BrowserContext(this, spare.sessionId, true, options.intercept);
       ctx.warmPage = spare;
       this.openContexts.add(ctx);
       return ctx;
@@ -184,7 +197,7 @@ export class Browser {
     const resp = await this.client.call('vs_session_open', [], flags);
     const id = resp.body[0];
     if (!id) throw new Error('vs_session_open returned no session id');
-    const ctx = new BrowserContext(this, id, true, options.intercept ?? false);
+    const ctx = new BrowserContext(this, id, true, options.intercept);
     this.openContexts.add(ctx);
     return ctx;
   }
@@ -253,6 +266,16 @@ export class Browser {
     return this.client.sibling();
   }
 
+  /** @internal The daemon reads and writes cookie jars host-side (`vs_cookies`, vibesurfer 0.2.19+). */
+  get hostCookies(): boolean {
+    return this.protocol.cookies ?? false;
+  }
+
+  /** @internal The baseURL launch option. */
+  get base(): string | undefined {
+    return this.baseURL;
+  }
+
   /** @internal One wire call on the browser's own connection. */
   rawCall(prim: string, args: string[], flags: Record<string, string | true> = {}) {
     return this.client.call(prim, args, flags);
@@ -316,6 +339,127 @@ export class BrowserContext {
     this.sessionId = sessionId;
     this.ownsSession = ownsSession;
     this.intercept = intercept;
+    this.request = new APIRequestContext(
+      owner.base,
+      { cookies: () => this.cookies(), store: (list) => this.storeCookies(list) },
+      () => this.extraHeaders,
+    );
+  }
+
+  /** HTTP calls from the test process that share this context's cookies (Playwright's context.request). */
+  readonly request: APIRequestContext;
+
+  /** A page whose data store holds the context's jar: an open page, or a blank one kept for this. */
+  private async jarPage(): Promise<string> {
+    const open = this.open[0];
+    if (open) return open.openedId();
+    if (this.blankJarPage) return this.blankJarPage;
+    const r = await this.owner.rawCall('vs_open', ['about:blank'], { session: this.sessionId });
+    const id = r.body[0];
+    if (!id) throw new Error('vs_open returned no page id');
+    this.blankJarPage = id;
+    return id;
+  }
+
+  private blankJarPage: string | null = null;
+
+  private async jar(op: 'list' | 'clear' | 'set', list?: WireCookie[]): Promise<Cookie[]> {
+    const page = await this.jarPage();
+    const args = [page, op];
+    if (list) args.push(Buffer.from(JSON.stringify(list)).toString('base64'));
+    const r = await this.owner.rawCall('vs_cookies', args, { session: this.sessionId });
+    const wire = JSON.parse(r.body[0] ?? '[]') as WireCookie[];
+    return wire.map(fromWire);
+  }
+
+  /** @internal Put cookies a response set into the jar. */
+  async storeCookies(list: WireCookie[]): Promise<void> {
+    if (!this.owner.hostCookies) return;
+    await this.jar('set', list);
+  }
+
+  /** The context's cookies, HttpOnly included; with `urls`, only those that go with a request to one of them. */
+  async cookies(urls?: string | string[]): Promise<Cookie[]> {
+    if (!this.owner.hostCookies) throw new Error('browserContext.cookies needs vibesurfer 0.2.19 or later');
+    const all = await this.jar('list');
+    const list = urls === undefined ? [] : Array.isArray(urls) ? urls : [urls];
+    return list.length ? all.filter((c) => list.some((u) => matches(c, u))) : all;
+  }
+
+  /** Remove cookies: all of them, or those matching `name`, `domain` and `path` (strings or RegExps). */
+  async clearCookies(filter: { name?: string | RegExp; domain?: string | RegExp; path?: string | RegExp } = {}): Promise<void> {
+    if (!this.owner.hostCookies) throw new Error('browserContext.clearCookies needs vibesurfer 0.2.19 or later');
+    const test = (want: string | RegExp | undefined, v: string) =>
+      want === undefined || (typeof want === 'string' ? want === v : want.test(v));
+    const keep =
+      filter.name === undefined && filter.domain === undefined && filter.path === undefined
+        ? []
+        : (await this.jar('list')).filter((c) => !(test(filter.name, c.name) && test(filter.domain, c.domain) && test(filter.path, c.path)));
+    await this.jar('clear');
+    if (keep.length) await this.jar('set', keep.map(toWire));
+  }
+
+  /**
+   * The context's cookies and the localStorage of its pages' origins,
+   * as Playwright saves them; written to `path` as JSON when given.
+   */
+  async storageState(options: { path?: string; indexedDB?: boolean } = {}): Promise<StorageState> {
+    const cookies = await this.cookies();
+    const origins: StorageState['origins'] = [];
+    const seen = new Set<string>();
+    for (const p of this.open) {
+      const got = (await p
+        .evaluate(`() => {
+          const o = location.origin;
+          if (!o || o === 'null') return null;
+          const items = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k !== null) items.push({ name: k, value: localStorage.getItem(k) ?? '' });
+          }
+          return { origin: o, localStorage: items };
+        }`)
+        .catch(() => null)) as StorageState['origins'][number] | null;
+      if (got && !seen.has(got.origin) && got.localStorage.length) {
+        seen.add(got.origin);
+        origins.push(got);
+      }
+    }
+    const state = { cookies, origins };
+    if (options.path) {
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      await fs.mkdir(path.dirname(options.path), { recursive: true });
+      await fs.writeFile(options.path, JSON.stringify(state, null, 2));
+    }
+    return state;
+  }
+
+  /**
+   * @internal Load a storage state into the context: its cookies into
+   * the jar, and each origin's localStorage by opening that origin on a
+   * blank routed document and writing the items there.
+   */
+  async applyStorageState(state: StorageState | string): Promise<void> {
+    const s: StorageState =
+      typeof state === 'string'
+        ? (JSON.parse(await (await import('node:fs/promises')).readFile(state, 'utf8')) as StorageState)
+        : state;
+    if (s.cookies?.length) await this.addCookies(s.cookies);
+    const origins = (s.origins ?? []).filter((o) => o.localStorage?.length);
+    if (!origins.length) return;
+    const page = await this.newPage();
+    try {
+      for (const o of origins) {
+        const url = `${o.origin}/__testsurfer_storage_state__`;
+        await page.route(url, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>storage</title>' }));
+        await page.goto(url);
+        await page.evaluate('(items) => { for (const i of items) localStorage.setItem(i.name, i.value); }', o.localStorage);
+        await page.unroute(url);
+      }
+    } finally {
+      await page.close();
+    }
   }
 
   browser(): Browser {
@@ -453,20 +597,12 @@ export class BrowserContext {
    * secure and sameSite. HttpOnly cookies work too: they go in through
    * the engine's cookie store, not document.cookie.
    */
-  async addCookies(
-    cookies: {
-      name: string;
-      value: string;
-      url?: string;
-      domain?: string;
-      path?: string;
-      expires?: number;
-      httpOnly?: boolean;
-      secure?: boolean;
-      sameSite?: 'Strict' | 'Lax' | 'None';
-    }[],
-  ): Promise<void> {
-    const list = cookies.map((c) => {
+  async addCookies(cookies: (CookieInput | Cookie)[]): Promise<void> {
+    if (this.owner.hostCookies) {
+      await this.jar('set', cookies.map(toWire));
+      return;
+    }
+    const list = (cookies as CookieInput[]).map((c) => {
       const u = c.url ? new URL(c.url) : null;
       const domain = c.domain ?? u?.hostname;
       if (!domain) throw new Error('browserContext.addCookies: a cookie needs url or domain');
@@ -481,7 +617,7 @@ export class BrowserContext {
         ...(c.sameSite ? { sameSite: c.sameSite } : {}),
       };
     });
-    const first = cookies[0];
+    const first = (cookies as CookieInput[])[0];
     const origin = first?.url ? new URL(first.url).origin : `http://${list[0]?.domain ?? 'localhost'}`;
     const blob = { version: 2, url: `${origin}/`, origin, cookies: list, localStorage: {}, sessionStorage: {} };
     const name = `testsurfer-cookies-${this.sessionId}-${++this.cookieSeq}`;
@@ -532,6 +668,10 @@ export class BrowserContext {
   /** Close every page, and the session when the context opened one. */
   async close(): Promise<void> {
     for (const p of this.open.splice(0)) await p.close().catch(() => {});
+    if (this.blankJarPage && !this.ownsSession) {
+      await this.owner.rawCall('vs_close', [this.blankJarPage], { session: this.sessionId }).catch(() => {});
+    }
+    this.blankJarPage = null;
     this.hub?.detachContext();
     this.hub = null;
     this.emit('close', this);

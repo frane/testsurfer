@@ -1,7 +1,7 @@
 // Static server for the lab fixtures, plus the few dynamic routes the
 // network cases need. Serves every host on its port, so
-// http://lab.localhost:PORT and http://lab2.localhost:PORT are two
-// origins of the same server.
+// http://127.0.0.1:PORT and http://localhost:PORT are two origins of
+// the same server.
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
@@ -52,4 +52,4 @@ http
     res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'application/octet-stream' });
     fs.createReadStream(file).pipe(res);
   })
-  .listen(port, '127.0.0.1', () => console.log(`lab on http://lab.localhost:${port}`));
+  .listen(port, '127.0.0.1', () => console.log(`lab on http://127.0.0.1:${port}`));

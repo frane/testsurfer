@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Image</title>
+<img id="pic" src="/parity/missing.png" alt="pic">
+<p id="state">loading</p>
+<script>
+  pic.onload = () => { state.textContent = 'loaded ' + pic.naturalWidth; };
+  pic.onerror = () => { state.textContent = 'error'; };
+</script>

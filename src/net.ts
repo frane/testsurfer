@@ -316,6 +316,9 @@ export class NetHub {
         case 'close':
           this.ctx?.netPageClosed(parts[1] ?? '');
           break;
+        case 'sw':
+          this.serviceWorkerResponse(parts[1] ?? '');
+          break;
         case 'dialog': {
           // dialog <page> <id> <kind> <message-b64> <default-b64>
           const dec = (s: string | undefined) => Buffer.from(s ?? '', 'base64').toString('utf8');
@@ -429,6 +432,59 @@ export class NetHub {
       }
     }
     this.emit('response', res, this.owners.get(p.id));
+  }
+
+  /** Ids for service-worker responses, below the proxy's. */
+  private swSeq = 0;
+
+  /**
+   * `sw <base64 JSON>`: a response the page's service worker built or
+   * took from its cache, which no network request carried. Reported as
+   * the page's request and response, with fromServiceWorker() true.
+   */
+  private serviceWorkerResponse(b64: string): void {
+    let r: {
+      url: string;
+      method: string;
+      headers: [string, string][];
+      status: number;
+      statusText: string;
+      responseHeaders: [string, string][];
+      body: string;
+    };
+    try {
+      r = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+    } catch {
+      return;
+    }
+    const lower = (list: [string, string][]) => Object.fromEntries(list.map(([k, v]) => [k.toLowerCase(), v]));
+    const raw = (list: [string, string][]) => list.map(([name, value]) => ({ name, value }));
+    const id = -++this.swSeq;
+    const page = [...this.pages].find((pg) => !pg.netIsPopup?.()) ?? [...this.pages][0];
+    const req = new Request({
+      id,
+      url: r.url,
+      method: r.method,
+      headers: lower(r.headers),
+      body: null,
+      bodyBytes: null,
+      raw: raw(r.headers),
+      type: 'fetch',
+      navigation: false,
+      frame: 'main',
+    });
+    req.frameValue = page ? () => page.netFrame('main', r.url) : null;
+    req.viaServiceWorker = true;
+    this.emit('request', req);
+    const res = new Response(req, { url: r.url, status: r.status, statusText: r.statusText, headers: lower(r.responseHeaders) });
+    res.rawHeaders = raw(r.responseHeaders);
+    res.viaServiceWorker = true;
+    const body = Buffer.from(r.body, 'base64');
+    res.bodyLoader = async () => body;
+    req.responseValue = res;
+    req.markSettled();
+    this.emit('response', res);
+    this.emit('requestfinished', req);
   }
 
   /** Offer a held request to each page's routes; continue when none decides. */
