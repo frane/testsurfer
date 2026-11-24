@@ -18,6 +18,7 @@ import * as zlib from 'node:zlib';
 interface Recording {
   title: string | undefined;
   screenshots: boolean;
+  snapshots: boolean;
   events: Record<string, unknown>[];
   network: string[];
   resources: Map<string, Buffer>;
@@ -27,11 +28,40 @@ interface Recording {
 
 /** What the tracer needs from its context. */
 export interface TracedContext {
-  pages(): { screenshot(): Promise<Buffer>; viewportSize(): { width: number; height: number } | null; wireId(): string | null }[];
+  pages(): { evaluate<T>(fn: string): Promise<T>; screenshot(): Promise<Buffer>; viewportSize(): { width: number; height: number } | null; wireId(): string | null }[];
   on(event: string, fn: (arg: never) => void): unknown;
 }
 
 const mono = () => performance.now();
+
+/** The document as nested [tag, attributes, ...children] arrays and text strings, with form state. */
+const SNAPSHOT_JS = `() => {
+  const visit = (n) => {
+    if (n.nodeType === 3) return n.nodeValue;
+    if (n.nodeType !== 1) return null;
+    const tag = n.tagName;
+    if (tag === 'SCRIPT' || tag === 'NOSCRIPT') return null;
+    const attrs = {};
+    for (const a of n.attributes) attrs[a.name] = a.value;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') attrs['__playwright_value_'] = n.value;
+    if (tag === 'INPUT' && (n.type === 'checkbox' || n.type === 'radio') && n.checked) attrs['__playwright_checked_'] = 'true';
+    if (tag === 'OPTION' && n.selected) attrs['__playwright_selected_'] = 'true';
+    if (n.scrollTop) attrs['__playwright_scroll_top_'] = String(n.scrollTop);
+    if (n.scrollLeft) attrs['__playwright_scroll_left_'] = String(n.scrollLeft);
+    const kids = [];
+    if (n.shadowRoot) {
+      const sr = ['template', { __playwright_shadow_root_: '' }];
+      for (const c of n.shadowRoot.childNodes) { const v = visit(c); if (v !== null) sr.push(v); }
+      kids.push(sr);
+    }
+    if (tag === 'STYLE' && n.sheet) {
+      try { return [tag, attrs, [...n.sheet.cssRules].map((r) => r.cssText).join('\\n')]; } catch (e) {}
+    }
+    for (const c of n.childNodes) { const v = visit(c); if (v !== null) kids.push(v); }
+    return [tag, attrs, ...kids];
+  };
+  return { html: visit(document.documentElement), doctype: document.doctype ? document.doctype.name : '', viewport: { width: innerWidth, height: innerHeight }, url: location.href };
+}`;
 const inCall = new AsyncLocalStorage<boolean>();
 const active = new Set<Tracing>();
 
@@ -48,7 +78,7 @@ export class Tracing {
   /** Start recording: API calls, network and console, and a screenshot after each call with `screenshots`. */
   async start(options: { name?: string; title?: string; screenshots?: boolean; snapshots?: boolean; sources?: boolean } = {}): Promise<void> {
     if (this.rec) throw new Error('Tracing has been already started');
-    this.rec = { title: options.title ?? options.name, screenshots: options.screenshots ?? false, events: [], network: [], resources: new Map(), callSeq: 0, groups: [] };
+    this.rec = { title: options.title ?? options.name, screenshots: options.screenshots ?? false, snapshots: options.snapshots ?? false, events: [], network: [], resources: new Map(), callSeq: 0, groups: [] };
     this.rec.events.push({
       version: 8,
       type: 'context-options',
@@ -116,7 +146,12 @@ export class Tracing {
     const rec = this.rec;
     if (!rec) return run();
     const callId = `call@${++rec.callSeq}`;
-    rec.events.push({ type: 'before', callId, startTime: mono(), class: cls, method, params, ...(pageId ? { pageId } : {}), ...(this.parent() ? { parentId: this.parent() } : {}) });
+    const before: Record<string, unknown> = { type: 'before', callId, startTime: mono(), class: cls, method, params, ...(pageId ? { pageId } : {}), ...(this.parent() ? { parentId: this.parent() } : {}) };
+    if (rec.snapshots && pageId) {
+      before['beforeSnapshot'] = `before@${callId}`;
+      await inCall.run(true, () => this.snapshot(pageId, callId, `before@${callId}`)).catch(() => {});
+    }
+    rec.events.push(before);
     let error: unknown = null;
     try {
       return await run();
@@ -125,13 +160,43 @@ export class Tracing {
       throw e;
     } finally {
       if (rec.screenshots) await inCall.run(true, () => this.frame()).catch(() => {});
+      const snap = rec.snapshots && pageId ? `after@${callId}` : null;
+      if (snap && pageId) await inCall.run(true, () => this.snapshot(pageId, callId, snap)).catch(() => {});
       rec.events.push({
         type: 'after',
         callId,
         endTime: mono(),
+        ...(snap ? { afterSnapshot: snap } : {}),
         ...(error ? { error: { message: error instanceof Error ? error.message : String(error), name: error instanceof Error ? error.name : 'Error' } } : {}),
       });
     }
+  }
+
+  /** The DOM of `pageId` as the viewer replays it (Playwright's frame-snapshot). */
+  private async snapshot(pageId: string, callId: string, name: string): Promise<void> {
+    const rec = this.rec;
+    if (!rec) return;
+    const page = this.ctx.pages().find((p) => `page@${p.wireId()}` === pageId);
+    if (!page) return;
+    const got = await page.evaluate<{ html: unknown; doctype: string; viewport: { width: number; height: number }; url: string }>(SNAPSHOT_JS);
+    rec.events.push({
+      type: 'frame-snapshot',
+      snapshot: {
+        callId,
+        snapshotName: name,
+        pageId,
+        frameId: `${pageId}-main`,
+        frameUrl: got.url,
+        doctype: got.doctype,
+        html: got.html,
+        viewport: got.viewport,
+        timestamp: mono(),
+        wallTime: Date.now(),
+        collectionTime: 0,
+        resourceOverrides: [],
+        isMainFrame: true,
+      },
+    });
   }
 
   /** A screenshot of each page, as screencast frames. */
