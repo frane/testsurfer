@@ -24,7 +24,7 @@ test('sign in', async ({ page }) => {
 });
 ```
 
-Locators, auto-waiting, web-first assertions, fixtures, routes, screenshots and aria snapshots all work as you know them from Playwright.
+Locators, auto-waiting, web-first assertions, fixtures, projects, routes, HAR, WebSockets, the clock, traces, videos and aria snapshots all work as you know them from Playwright.
 
 ## Why testsurfer
 
@@ -53,7 +53,7 @@ Locators, auto-waiting, web-first assertions, fixtures, routes, screenshots and 
 | API | Playwright's | Playwright's |
 | Bench suite (CI runners) | 364-405 ms | 576-600 ms |
 
-Playwright's own page specs pass 488 of 488 on testsurfer. An unedited open-source suite (docsify, 105 tests) passes 99, where Playwright's WebKit passes 104. Numbers and how to reproduce them: [compatibility and evidence](docs/compatibility.md).
+Playwright's own page specs pass 488 of 488 on testsurfer. An unedited open-source suite (docsify, 105 tests) passes 105 of 105, as on Playwright's WebKit. Numbers and how to reproduce them: [compatibility and evidence](docs/compatibility.md).
 
 ## CI
 
@@ -72,7 +72,7 @@ macOS, Linux and Windows runners are supported.
 
 - [Running tests](docs/running.md): the CLI, Playwright configs, the runner, options, CI, how it works
 - [API](docs/api.md): locators, actions, assertions, aria snapshots, the page, saved logins
-- [Network](docs/network.md): routes, events, the proxy mode, popups and dialogs
+- [Network](docs/network.md): routes, events, WebSockets, HAR, popups and dialogs
 - [Compatibility and evidence](docs/compatibility.md): differences from Playwright, test results, benchmarks
 - [Example project](examples/todo): a small app with a complete suite
 - [For AI agents](skills/testsurfer/SKILL.md): a skill file shipped in the package; copy `node_modules/testsurfer/skills/testsurfer` into your agent's skills folder (`.claude/skills/` for Claude Code)

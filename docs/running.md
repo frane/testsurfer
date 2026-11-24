@@ -15,7 +15,7 @@ The `test` export wraps node:test with Playwright's test API. Each test gets fre
 - `test.only`, `test.skip(name, fn)` and `test.fixme(name, fn)` register; `test.skip(condition, reason)` inside a test skips it there.
 - `test.step(name, fn)` runs a named part of a test and puts the name in its errors.
 - `test.extend({ ... })` adds fixtures: a value, `[value, { option: true }]`, or a setup function that receives the other fixtures and calls `use(value)`, with teardown after `use` returns.
-- `context.newPage()` opens more pages in a test; `browser.newContext()` opens another context with its own cookie and storage jar. Each test gets a fresh context, as in Playwright; `isolate: false` runs a file's tests in one shared jar instead. `context.on('page')`, `context.on('request')` and `context.waitForEvent(name)` report what the context's pages do (proxy mode).
+- `context.newPage()` opens more pages in a test; `browser.newContext()` opens another context with its own cookie and storage jar. Each test gets a fresh context, as in Playwright; `isolate: false` runs a file's tests in one shared jar instead. `context.on('page')`, `context.on('request')` and `context.waitForEvent(name)` report what the context's pages do.
 
 ```ts
 const it = test.extend<{ todos: TodoPage }>({
@@ -63,7 +63,7 @@ export default defineConfig({ baseURL: 'http://localhost:3000', screenshot: 'onl
 - `inputMode`: `robotic` (default, instant), `careful`, or `human` (a humanized cursor path for flows that score input behavior).
 - `testIdAttribute`: the attribute `getByTestId` reads, default `data-testid`.
 - `updateSnapshots`: `missing` (default), `all` or `none`, for `toHaveScreenshot` baselines. `TESTSURFER_UPDATE_SNAPSHOTS=1` means `all`.
-- `network`: `shim` (default) or `proxy` (see [Network](network.md)).
+- `network`: `proxy` (default) or `shim` (see [Network](network.md)).
 - `isolate`: `true` (default) gives every test its own context and jar; `false` shares the browser's session.
 
 ## CI
@@ -90,7 +90,7 @@ jobs:
 
 vibesurfer is a daemon that owns one real WebKit engine and speaks a line protocol over a Unix socket. testsurfer is a TypeScript client for that protocol. Locators resolve inside the page, in one evaluate per call, with Playwright's semantics: CSS that pierces open shadow roots, text, role and label queries, strict mode, actionability checks. vibesurfer supplies trusted native input, screenshots, navigation and the accessibility tree behind `toMatchAriaSnapshot`.
 
-The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.18` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
+The daemon is fetched automatically. If `vs` is not on your PATH, testsurfer runs `npx vibesurfer@0.2.19` (pinned, checksum-verified) to download and start it. Set `TESTSURFER_VS` to point at a specific binary. testsurfer reads the daemon's protocol version and feature flags at launch and uses what it offers, so a newer `vs` on your PATH works too.
 
 ## Working on testsurfer
 

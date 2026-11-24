@@ -27,12 +27,12 @@ import {
 } from './wire.ts';
 
 /** The vibesurfer release testsurfer is built and tested against. */
-export const PINNED_VIBESURFER = '0.2.18';
+export const PINNED_VIBESURFER = '0.2.19';
 
 export interface ClientOptions {
   /** Socket path. Default: `~/.vibesurfer/daemon.sock`. */
   socketPath?: string;
-  /** Command used to reach the vs binary, e.g. `['vs']` or `['npx', '-y', 'vibesurfer@0.2.18']`. */
+  /** Command used to reach the vs binary, e.g. `['vs']` or `['npx', '-y', 'vibesurfer@0.2.19']`. */
   vsCommand?: string[];
   /** Per-request timeout in ms. Default 70000 (above the daemon's 60s wait cap). */
   requestTimeout?: number;

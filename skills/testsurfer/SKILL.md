@@ -44,12 +44,10 @@ Write tests as for Playwright: role and label locators, web-first `expect`, no f
 - `screenshot: 'only-on-failure'` in `testsurfer.config.ts` saves a PNG to `test-results/` and puts its path in the error. Read the PNG.
 - Daemon log: `~/.vibesurfer/daemon.log`.
 
-## Differences from Playwright
+## The engine
 
-- One engine per OS, not Chromium/Firefox/WebKit. From `projects`, the WebKit project's `use` applies (else the first project's); the suite runs once.
-- Default network mode (`shim`) sees and routes the page's `fetch`/XHR and main documents. Images, scripts, stylesheets, iframes, popups (`page.on('popup')`) and dialogs (`page.on('dialog')`) need `network: 'proxy'` in `testsurfer.config.ts`.
-- On macOS, requests to `localhost`/`127.0.0.1` bypass the proxy: serve the app as `http://app.localhost:PORT`.
-- `toHaveScreenshot` baselines must be recorded by testsurfer; Playwright's will not match.
-- `page.request` does not share the page's cookies.
+- Pages render in the OS web view (WKWebView, WebKitGTK, WebView2). Every project in `playwright.config` runs, each with its own `use`, `testMatch` and `dependencies`; one named `chromium` or `firefox` runs on that engine too.
+- Every request goes through vibesurfer's proxy, on any host: routes, HAR, network events and `page.request` see everything.
+- `toHaveScreenshot` keeps its own baselines, as Playwright keeps one per browser.
 
 Full docs: https://github.com/frane/testsurfer/tree/main/docs

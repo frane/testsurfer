@@ -17,14 +17,16 @@ await page.route('**/analytics/**', (route) => route.abort());
 
 ## Events
 
-`page.on(event, listener)` (and `once`, `off`) reports `console` (`msg.type()`, `msg.text()`, `msg.args()`), `pageerror`, `request`, `response`, `requestfinished` and `requestfailed`. Console messages and page errors a call caused arrive before the call returns. `page.waitForRequest(url)`, `page.waitForResponse(url)` and `page.waitForEvent(name, predicate)` wait for one.
+`page.on(event, listener)` (and `once`, `off`) reports `console` (`msg.type()`, `msg.text()`, `msg.args()`, `msg.worker()`), `pageerror`, `request`, `response`, `requestfinished`, `requestfailed`, `load`, `domcontentloaded`, `framenavigated`, `popup`, `dialog`, `download`, `filechooser`, `websocket`, `worker`, `crash` and `close`. Console messages and page errors a call caused arrive before the call returns. `page.waitForRequest(url)`, `page.waitForResponse(url)` and `page.waitForEvent(name, predicate)` wait for one; `page.consoleMessages()`, `page.pageErrors()` and `page.requests()` return the recent ones.
 
-## Two network modes
+## How requests are seen
 
-**`shim` (default).** A script testsurfer installs in the page sees what page script does: `fetch`, `XMLHttpRequest`, `console`, uncaught errors. While a page has routes, each `fetch` and XHR waits a poll interval (15ms) for the handler's decision. A route that matches a `page.goto` URL also serves the main document, on any host.
+Every request goes through vibesurfer's intercepting proxy, http and https: documents, iframes, scripts, stylesheets, images, fetch and XHR, each redirect hop on its own, on any host including `localhost` and `127.0.0.1`. All of them are reported and routable, `page.goto` returns the real response, `setExtraHTTPHeaders` reaches every request, and the context's cookies are one jar for the pages, `context.cookies()` and `page.request`. Popups open as their own pages (`page.on('popup')`, `context.on('page')`, `page.opener()`, `close` when they call `window.close()`), `page.on('dialog')` gets `alert`, `confirm` and `prompt` to accept or dismiss (with no listener they are dismissed, as in Playwright), and responses a service worker hands on or builds itself report `fromServiceWorker()`.
 
-**`proxy`.** With `configure({ network: 'proxy' })` every request goes through vibesurfer's intercepting proxy, http and https: documents, iframes, scripts, stylesheets, images, fetch and XHR, each redirect hop on its own. All of them are reported and routable, `page.goto` returns the real response, `setExtraHTTPHeaders` reaches every request, and `context.addCookies` sets cookies in the context's jar. Popups open as their own pages (`page.on('popup')`, `context.on('page')`, `page.opener()`, `close` when they call `window.close()`), `page.on('dialog')` gets `alert`, `confirm` and `prompt` to accept or dismiss (with no listener they are dismissed, as in Playwright), and a response a service worker handed on reports `fromServiceWorker()`.
+`configure({ network: 'shim' })` turns the proxy off: a script in the page then sees `fetch` and XHR only, and popups load in place.
 
-Limits of proxy mode:
+## WebSockets and HAR
 
-- On macOS, WebKit sends requests to `localhost` and `127.0.0.1` around any proxy. Serve the app under a `.localhost` name (`http://app.localhost:3000`), which resolves to the same loopback address.
+`page.routeWebSocket(url, handler)` answers a page's WebSockets from the test; `ws.connectToServer()` puts the real server behind it, and `onMessage` on either side takes the messages instead of passing them on. `page.on('websocket')` reports every socket with its `framesent` and `framereceived` events.
+
+`page.routeFromHAR(file, { url, notFound, update })` answers matching requests from a HAR file (`.har` or `.zip`); with `update` it records them instead. The `recordHar` context option writes every request of a context.

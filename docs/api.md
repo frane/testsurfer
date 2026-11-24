@@ -65,14 +65,23 @@ Template siblings must appear in that order, and a child can sit at any depth un
 - A new page starts at `about:blank`. `page.goto(url)` navigates and returns the main document's response (status, headers, body); relative URLs resolve against the `baseURL` option. `page.setContent(html)` and `page.content()` set and read the document.
 - `page.evaluate(fn, arg)` runs in the page and awaits promises; values round-trip with their types (`undefined`, `Date`, `RegExp`, `Map`, `Set`, `BigInt`, ...), and handles can be passed in. `page.evaluateHandle`, `page.$eval`, `page.$$eval`, `page.waitForFunction` (resolves to a handle) and `page.exposeFunction` / `exposeBinding` work as in Playwright.
 - `page.addScriptTag({ url | path | content })` and `page.addStyleTag(...)` add a script or stylesheet and wait for it to load.
-- `page.emulateMedia({ media, colorScheme, reducedMotion, forcedColors })` makes `matchMedia` and the page's readable `@media` rules follow. `media` attributes on `<link>` and cross-origin stylesheets do not.
+- `page.emulateMedia({ media, colorScheme, reducedMotion, forcedColors, contrast })` makes `matchMedia` and the page's `@media` rules follow, cross-origin stylesheets included.
 - `page.screenshot({ path, fullPage, clip })` returns the PNG and writes it to `path` when given. The viewport is 1280x720 by default; `page.setViewportSize()` changes it.
 - `page.keyboard.press(key)`, `down`, `up`, `insertText` and `type`, with the browser's default actions (Enter submits a form, Tab moves focus, Backspace deletes).
 - `page.mainFrame()`, `page.frames()` and `page.frame(name)` reach iframes, with `evaluate` running in the frame's own window, cross-origin ones included.
 - `page.click(selector)`, `page.fill(selector, value)` and the rest of the selector shorthands, `page.waitForSelector`, `page.waitForNavigation`, `page.addLocatorHandler`.
-- `page.mouse.move(x, y)`, `page.mouse.click(x, y)`, `page.mouse.down()` / `up()` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop. `page.mouse.wheel(dx, dy)` dispatches a wheel event (not trusted) and scrolls.
+- `page.mouse.move(x, y)`, `page.mouse.click(x, y, { button, clickCount })`, `page.mouse.dblclick(x, y)`, `page.mouse.down()` / `up()`, `page.mouse.wheel(dx, dy)` and `page.mouse.drag(x1, y1, x2, y2)` send trusted pointer input at viewport coordinates, for canvas, maps, sliders and other surfaces with no accessibility tree. A drag also fires the HTML5 drag events, so native `draggable` lists see the drop. Right, middle, double and modified clicks (`locator.click({ button, clickCount, modifiers })`) are native too. `page.touchscreen.tap(x, y)` sends touch events and the click a tap makes.
 - `page.reload()`, `page.goBack()`, `page.goForward()`, `page.waitForURL(url)`, `page.waitForTimeout(ms)`.
 - `page.addInitScript(fn | string | { path }, arg)` runs a script at document start in every later document, before the page's own scripts. The page's Content Security Policy does not block it.
+- `page.clock.install({ time })`, `fastForward`, `runFor`, `pauseAt`, `resume`, `setFixedTime` and `setSystemTime` control the page's Date, timers, animation frames and `performance.now()`.
+- `page.localStorage` and `page.sessionStorage` (`getItem`, `setItem`, `removeItem`, `items`, `clear`), `page.requestGC()`, `page.workers()`, `page.video()`, `page.screencast` (frames, a video file, chapters, overlays, action labels).
+
+## Contexts, cookies and storage
+
+- `context.cookies(urls?)`, `context.addCookies(...)` and `context.clearCookies({ name, domain, path })` read and write the context's jar, HttpOnly cookies included. `page.request` and `context.request` send with that jar and keep the cookies responses set.
+- `context.storageState({ path })` saves cookies and localStorage; `browser.newContext({ storageState })`, `use: { storageState }` and `context.setStorageState()` load them.
+- `browser.newContext({ ... })` and `use` take Playwright's context options: `colorScheme`, `locale`, `timezoneId`, `userAgent`, `geolocation` and `permissions`, `offline`, `httpCredentials`, `javaScriptEnabled`, `isMobile` (the viewport meta tag decides the layout width) and `hasTouch`, `extraHTTPHeaders`, `bypassCSP`, `ignoreHTTPSErrors`, `serviceWorkers`, `recordVideo`, `recordHar`. `devices['iPhone 13']` and the rest of Playwright's device list spread into them.
+- `context.tracing.start({ screenshots, snapshots })` and `stop({ path })` write a trace for `npx playwright show-trace`.
 
 ## Logging in once
 
