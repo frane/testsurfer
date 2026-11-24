@@ -290,6 +290,7 @@ export class NetHub {
           const req = this.requests.get(id);
           if (req) {
             req.markSettled();
+            req.markDone();
             this.emit('requestfinished', req, this.owners.get(id));
             this.requests.delete(id);
             this.owners.delete(id);
@@ -302,6 +303,7 @@ export class NetHub {
             // WebKit reports a request a route aborted this way.
             req.failureText = req.abortedByRoute ? 'Blocked by Web Inspector' : parts.slice(2).join(' ') || 'failed';
             req.markSettled();
+            req.markDone();
             this.emit('requestfailed', req, this.owners.get(id));
             this.requests.delete(id);
             this.owners.delete(id);
@@ -420,6 +422,8 @@ export class NetHub {
     res.rawHeaders = p.raw;
     res.viaServiceWorker = req.viaServiceWorker;
     res.bodyLoader = async () => {
+      // As in Playwright, the body is there once the response completed.
+      await req.done;
       const r = await this.call('vs_net_body', [String(p.id)]);
       const line = r.body.find((l) => l.startsWith('body ')) ?? 'body ';
       return Buffer.from(line.slice(5), 'base64');

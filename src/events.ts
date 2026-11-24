@@ -208,6 +208,14 @@ export class Request {
     for (const w of this.waiters.splice(0)) w();
   }
 
+  private resolveDone: () => void = () => {};
+  /** @internal Resolves when the whole response body has arrived (or the request failed). */
+  readonly done: Promise<void> = new Promise((r) => (this.resolveDone = r));
+  /** @internal */
+  markDone(): void {
+    this.resolveDone();
+  }
+
   async response(): Promise<Response | null> {
     if (this.responseValue || this.settled || !this.awaitsResponse) return this.responseValue;
     await new Promise<void>((res) => this.waiters.push(res));
