@@ -52,6 +52,7 @@ import {
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
 import { Download, parseDownloadList } from './download.ts';
+import { Clock } from './clock.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -761,6 +762,12 @@ export class Page {
    * that needs a document opens one (with the init scripts installed).
    */
   private navTimeoutSet = false;
+
+  /** Fake time for this page (Playwright's page.clock). */
+  readonly clock = new Clock({
+    evaluate: (script) => this.evaluate(`() => { ${script} }`),
+    addInitScript: (script) => this.addInitScript(script),
+  });
 
   /** Timeout for actions and, unless setDefaultNavigationTimeout() set one, navigations. */
   setDefaultTimeout(ms: number): void {

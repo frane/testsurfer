@@ -31,6 +31,7 @@ import { Dialog, type RouteHandler, type UrlMatcher } from './events.ts';
 import { APIRequestContext } from './request.ts';
 import { geolocationScript, localeScript, onlineScript, timezoneScript, touchScript, userAgentScript, type Geolocation } from './emulation.ts';
 import type { MediaOptions } from './media.ts';
+import { Clock } from './clock.ts';
 
 /** Playwright's browser.newContext() / `use` options that testsurfer applies per context. */
 export interface ContextOptions {
@@ -407,6 +408,14 @@ export class BrowserContext {
 
   /** HTTP calls from the test process that share this context's cookies (Playwright's context.request). */
   readonly request: APIRequestContext;
+
+  /** Fake time for every page of the context (Playwright's context.clock). */
+  readonly clock = new Clock({
+    evaluate: async (script) => {
+      for (const p of this.open) await p.evaluate(`() => { ${script} }`).catch(() => {});
+    },
+    addInitScript: (script) => this.addInitScript(script),
+  });
 
   private media: MediaOptions = {};
   private geo: Geolocation | null = null;
