@@ -177,6 +177,7 @@ export class Browser {
       options.baseURL,
     );
     browser.daemonVersion = caps.version;
+    browser.socketPath = client.endpoint;
     if (options.testIdAttribute) browser.testIdAttribute = options.testIdAttribute;
     if (options.viewport !== undefined) browser.viewport = options.viewport;
     if (options.deviceScaleFactor !== undefined) browser.deviceScaleFactor = options.deviceScaleFactor;
@@ -225,6 +226,33 @@ export class Browser {
   /** The browser type: WebKit, the engine vibesurfer drives. */
   browserType(): { name(): string } {
     return { name: () => 'webkit' };
+  }
+
+  /** @internal The daemon socket this browser talks to. */
+  socketPath = '';
+
+  /**
+   * Make this browser reachable for other clients: the vibesurfer
+   * daemon is already a shared server, so the endpoint is its socket,
+   * which browserType.connect() takes.
+   */
+  async bind(_title: string, _options: { host?: string; port?: number; metadata?: Record<string, unknown> } = {}): Promise<{ endpoint: string }> {
+    return { endpoint: this.socketPath };
+  }
+
+  async unbind(): Promise<void> {}
+
+  /** Chromium only, as in Playwright on WebKit. */
+  async newBrowserCDPSession(): Promise<never> {
+    throw new Error('browser.newBrowserCDPSession: CDP session is only available in Chromium');
+  }
+
+  async startTracing(): Promise<never> {
+    throw new Error('browser.startTracing: Browser tracing is only available in Chromium');
+  }
+
+  async stopTracing(): Promise<never> {
+    throw new Error('browser.stopTracing: Browser tracing is only available in Chromium');
   }
 
   private async openContext(opts: { isolated?: boolean; intercept?: boolean; ignoreHTTPSErrors?: boolean }): Promise<BrowserContext> {
@@ -589,6 +617,16 @@ export class BrowserContext {
 
   isClosed(): boolean {
     return this.closedFlag;
+  }
+
+  /** Chromium only, as in Playwright on WebKit. */
+  async newCDPSession(): Promise<never> {
+    throw new Error('browserContext.newCDPSession: CDP session is only available in Chromium');
+  }
+
+  /** Extension background pages: Chromium only; empty on WebKit, as here. */
+  backgroundPages(): never[] {
+    return [];
   }
 
   /** Service worker objects: Playwright has them on Chromium only; on WebKit the list is empty, as here. */
@@ -995,4 +1033,20 @@ export class BrowserContext {
       this.owner.forgetContext(this);
     }
   }
+}
+
+/** A Playwright BrowserType (webkit, chromium, firefox): every one drives the OS web view through vibesurfer. */
+export function browserType(name: string) {
+  return {
+    name: () => name,
+    executablePath: () => process.env['TESTSURFER_VS'] ?? 'vs',
+    launch: (options: LaunchOptions = {}) => Browser.launch(options),
+    /** Connect to a daemon socket (browser.bind's endpoint). */
+    connect: (endpoint: string, options: LaunchOptions = {}) => Browser.launch({ ...options, socketPath: endpoint }),
+    /** A context in the daemon's persistent jar, so logins survive the run (the jar lives with the daemon, not in userDataDir). */
+    launchPersistentContext: async (_userDataDir: string, options: LaunchOptions & ContextOptions = {}) => {
+      const b = await Browser.launch(options);
+      return b.newContext({ ...options, isolated: false });
+    },
+  };
 }

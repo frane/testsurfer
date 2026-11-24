@@ -116,7 +116,23 @@ try {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && envBefore[k] !== v) env[k] = v;
   if (cfg.fullyParallel) env['TESTSURFER_FULLY_PARALLEL'] = '1';
-  process.send({ ready: true, env });
+  // The CLI runs each project on its own (testMatch, testIgnore,
+  // dependencies); a RegExp travels as its source and flags.
+  type Pat = { re: string; flags: string } | { glob: string } | Pat[] | undefined;
+  const pat = (v: unknown): Pat =>
+    v instanceof RegExp ? { re: v.source, flags: v.flags } : Array.isArray(v) ? v.map(pat) : typeof v === 'string' ? { glob: v } : undefined;
+  const projects = (cfg.projects ?? []).map((p) => {
+    const q = p as { name?: string; testDir?: string; testMatch?: unknown; testIgnore?: unknown; dependencies?: string[] };
+    return {
+      name: q.name ?? '',
+      ...(q.testDir ? { testDir: path.resolve(path.dirname(file), q.testDir) } : {}),
+      ...(q.testMatch !== undefined ? { testMatch: pat(q.testMatch) } : {}),
+      ...(q.testIgnore !== undefined ? { testIgnore: pat(q.testIgnore) } : {}),
+      dependencies: q.dependencies ?? [],
+    };
+  });
+  const top = cfg as { testMatch?: unknown; testIgnore?: unknown };
+  process.send({ ready: true, env, projects, testMatch: pat(top.testMatch), testIgnore: pat(top.testIgnore) });
 } catch (e) {
   stopServers();
   process.send({ failed: e instanceof Error ? e.message : String(e) });

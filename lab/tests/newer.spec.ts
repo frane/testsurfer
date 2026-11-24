@@ -40,3 +40,7 @@ test('locator.normalize and locator.drop', async ({ page }) => {
   await page.locator('#zone').drop({ files: { name: 'n.txt', mimeType: 'text/plain', buffer: Buffer.from('hey') }, data: { 'text/plain': 'plain' } });
   await expect(page.locator('#out')).toHaveText('n.txt:hey|plain');
 });
+
+test('chromium-only APIs throw as on Playwright WebKit', async ({ page }) => {
+  await expect(page.pdf()).rejects.toThrow(/only supported/i);
+});

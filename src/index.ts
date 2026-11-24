@@ -11,7 +11,14 @@
  *     });
  */
 
-export { Browser, BrowserContext, type LaunchOptions } from './browser.ts';
+import { readFileSync } from 'node:fs';
+
+export { Browser, BrowserContext, browserType, type LaunchOptions } from './browser.ts';
+import { browserType as makeType } from './browser.ts';
+/** Playwright's browser types; all of them run on the OS web view. */
+export const webkit = makeType('webkit');
+export const chromium = makeType('chromium');
+export const firefox = makeType('firefox');
 export { Page, type ClickVia, type InputMode, type LayoutRect, type ProtocolOptions, type Timeouts } from './page.ts';
 export { ElementHandle, FrameLocator, JSHandle, Locator, type ByRoleOptions, type ByTextOptions, type FilterOptions, type LocatorOptions } from './locator.ts';
 export { expect, LocatorAssertions, PageAssertions, type ExpectOptions } from './expect.ts';
@@ -54,18 +61,14 @@ export type { Cookie, StorageState } from './cookies.ts';
 export type { ContextOptions } from './browser.ts';
 
 /**
- * Playwright's device descriptors, reduced to what testsurfer applies
- * (the viewport). Lets a playwright.config that spreads devices[...]
- * load.
+ * Playwright's device descriptors (user agent, viewport, scale,
+ * isMobile, hasTouch), from Playwright's deviceDescriptorsSource.json
+ * (Apache-2.0, Microsoft). Spread one into `use` or newContext().
  */
-export const devices: Record<string, { viewport: { width: number; height: number }; deviceScaleFactor: number; defaultBrowserType: string }> = {
-  'Desktop Chrome': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'chromium' },
-  'Desktop Edge': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'chromium' },
-  'Desktop Firefox': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, defaultBrowserType: 'firefox' },
-  'Desktop Safari': { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2, defaultBrowserType: 'webkit' },
-  'iPhone 13': { viewport: { width: 390, height: 664 }, deviceScaleFactor: 3, defaultBrowserType: 'webkit' },
-  'Pixel 5': { viewport: { width: 393, height: 727 }, deviceScaleFactor: 2.75, defaultBrowserType: 'chromium' },
-};
+export const devices: Record<
+  string,
+  { userAgent: string; viewport: { width: number; height: number }; screen?: { width: number; height: number }; deviceScaleFactor: number; isMobile: boolean; hasTouch: boolean; defaultBrowserType: string }
+> = JSON.parse(readFileSync(new URL('./devices.json', import.meta.url), 'utf8'));
 export { selectors } from './selectors.ts';
 
 // Record API calls for context.tracing (see src/tracing.ts).

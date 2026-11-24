@@ -938,6 +938,27 @@ export class Page {
     }
   }
 
+  /** Chromium only, as in Playwright on WebKit. */
+  async pdf(): Promise<never> {
+    throw new Error('page.pdf: PDF generation is only supported for Headless Chromium');
+  }
+
+  /** JS and CSS coverage: Chromium only, as in Playwright on WebKit. */
+  readonly coverage = {
+    startJSCoverage: async (): Promise<never> => {
+      throw new Error('coverage.startJSCoverage: Coverage is only supported in Chromium');
+    },
+    stopJSCoverage: async (): Promise<never> => {
+      throw new Error('coverage.stopJSCoverage: Coverage is only supported in Chromium');
+    },
+    startCSSCoverage: async (): Promise<never> => {
+      throw new Error('coverage.startCSSCoverage: Coverage is only supported in Chromium');
+    },
+    stopCSSCoverage: async (): Promise<never> => {
+      throw new Error('coverage.stopCSSCoverage: Coverage is only supported in Chromium');
+    },
+  };
+
   /** Every page has its own window here; nothing is in front of another. */
   async bringToFront(): Promise<void> {}
 

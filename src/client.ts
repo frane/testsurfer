@@ -165,6 +165,11 @@ export class WireClient {
     return this.opts.socketPath ?? this.address ?? defaultSocketPath();
   }
 
+  /** The daemon address this client uses. */
+  get endpoint(): string {
+    return this.socketPath();
+  }
+
   /**
    * On Windows the daemon listens on a named pipe whose name is a hash
    * of the socket path, so ask the vs binary for it (vibesurfer

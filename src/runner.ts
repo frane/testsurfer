@@ -287,7 +287,7 @@ function runWith(
       retry: 0,
       workerIndex: 0,
       parallelIndex: 0,
-      project: { name: 'webkit', use: {} },
+      project: { name: process.env['TESTSURFER_PROJECT'] ?? 'webkit', use: {} },
       timeout: options.testTimeout ?? 30_000,
       expectedStatus: 'passed',
       skip: (c, r) => {

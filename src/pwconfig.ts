@@ -70,6 +70,10 @@ export async function importPlaywrightConfig(file: string): Promise<PlaywrightCo
 /** `use` for the run: the top level, then a WebKit project's on top (else the first project's). */
 export function effectiveUse(cfg: PlaywrightConfig): PlaywrightUse {
   const projects = cfg.projects ?? [];
+  // `testsurfer test` runs each project in its own process, naming it here.
+  const named = process.env['TESTSURFER_PROJECT'];
+  const chosen = named !== undefined ? projects.find((p) => (p.name ?? '') === named) : undefined;
+  if (chosen) return { ...cfg.use, ...chosen.use };
   const webkit = projects.find((p) => p.use?.defaultBrowserType === 'webkit' || p.use?.browserName === 'webkit' || /webkit|safari/i.test(p.name ?? ''));
   return { ...cfg.use, ...(webkit ?? projects[0])?.use };
 }
