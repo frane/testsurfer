@@ -48,6 +48,7 @@ export { Download } from './download.ts';
 export { WebSocket, WebSocketRoute } from './websocket.ts';
 export { Clock } from './clock.ts';
 export { Worker } from './worker.ts';
+export { Video } from './video.ts';
 export type { Cookie, StorageState } from './cookies.ts';
 export type { ContextOptions } from './browser.ts';
 

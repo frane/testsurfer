@@ -57,6 +57,8 @@ export interface ContextOptions {
   acceptDownloads?: boolean;
   baseURL?: string;
   storageState?: StorageState | string;
+  /** Record each page to a video in `dir` (MP4), finished when the page closes. */
+  recordVideo?: { dir: string; size?: { width: number; height: number } };
   /** Record every request of the context into a HAR file, written on close. */
   recordHar?: { path: string; content?: 'embed' | 'attach' | 'omit'; omitContent?: boolean; mode?: 'full' | 'minimal'; urlFilter?: string | RegExp };
 }
@@ -65,7 +67,7 @@ export interface ContextOptions {
 export const CONTEXT_OPTION_KEYS = [
   'colorScheme', 'reducedMotion', 'forcedColors', 'contrast', 'extraHTTPHeaders', 'userAgent', 'locale', 'timezoneId',
   'geolocation', 'permissions', 'offline', 'httpCredentials', 'javaScriptEnabled', 'hasTouch', 'isMobile', 'bypassCSP',
-  'serviceWorkers', 'ignoreHTTPSErrors', 'acceptDownloads', 'storageState', 'recordHar',
+  'serviceWorkers', 'ignoreHTTPSErrors', 'acceptDownloads', 'storageState', 'recordHar', 'recordVideo',
 ] as const;
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
@@ -466,6 +468,7 @@ export class BrowserContext {
       this.jsDisabled = true;
       await this.ensureInternalRoute();
     }
+    if (o.recordVideo) this.videoDir = o.recordVideo;
     if (o.recordHar) {
       const rec = new HarRecorder(o.recordHar.path, {
         content: o.recordHar.omitContent ? 'omit' : (o.recordHar.content ?? (o.recordHar.path.endsWith('.zip') ? 'attach' : 'embed')),
@@ -482,8 +485,11 @@ export class BrowserContext {
   }
 
   /** @internal Per-page settings a new page (or popup) gets. */
+  private videoDir: { dir: string; size?: { width: number; height: number } } | null = null;
+
   private async preparePage(page: Page): Promise<void> {
     if (this.isMobile) page.enableMobile();
+    if (this.videoDir) await page.recordVideo(this.videoDir.dir, this.videoDir.size);
     if (Object.keys(this.media).length) await page.emulateMedia(this.media);
     if (this.timeoutDefaults.action !== undefined) page.setDefaultTimeout(this.timeoutDefaults.action);
     if (this.timeoutDefaults.navigation !== undefined) page.setDefaultNavigationTimeout(this.timeoutDefaults.navigation);

@@ -56,6 +56,7 @@ import { Clock } from './clock.ts';
 import { WS_SHIM, WebSocket, WebSocketRoute, type WireFrame } from './websocket.ts';
 import { WORKER_SHIM, Worker } from './worker.ts';
 import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
+import { Video } from './video.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -548,6 +549,25 @@ export class Page {
       if (options.notFound === 'fallback') return route.fallback();
       return route.abort();
     });
+  }
+
+  private videoValue: Video | null = null;
+  private videoSize: { width: number } | null = null;
+
+  /** The page's video, when its context records them (recordVideo); null otherwise. */
+  video(): Video | null {
+    return this.videoValue;
+  }
+
+  /** @internal Record this page from now on into `dir` (recordVideo). */
+  async recordVideo(dir: string, size?: { width: number; height: number }): Promise<void> {
+    if (this.videoValue) return;
+    this.videoValue = new Video(dir);
+    this.videoSize = size ? { width: size.width } : null;
+    await this.ensureOpen();
+    const flags: Record<string, string> = { session: this.sessionId, fps: '25' };
+    if (this.videoSize) flags['width'] = String(this.videoSize.width);
+    await this.client.call('vs_record', ['start', this.id], flags);
   }
 
   /** @internal HARs being written (routeFromHAR update, recordHar), saved on close. */
@@ -2251,6 +2271,11 @@ export class Page {
   async close(): Promise<void> {
     if (this.closedFlag) return;
     for (const h of this.harWriters.splice(0)) await h.save().catch(() => {});
+    if (this.videoValue && this.pageId) {
+      const r = await this.client.call('vs_record', ['stop', this.pageId], { session: this.sessionId }).catch(() => null);
+      const line = r?.body.find((l) => l.startsWith('path\t'));
+      if (line) await this.videoValue.finish(line.slice(5)).catch(() => {});
+    }
     if (this.downloadTimer) clearInterval(this.downloadTimer);
     const id = this.pageId;
     this.pageId = null;

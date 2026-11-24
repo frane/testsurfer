@@ -28,3 +28,16 @@ test('recordHar writes the exchanges; routeFromHAR answers from them', async ({ 
   await ctx.close();
   void testInfo;
 });
+
+test('recordVideo writes a video when the page closes', async ({ browser }) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-video-'));
+  const ctx = await browser.newContext({ recordVideo: { dir } });
+  const page = await ctx.newPage();
+  await page.goto(`http://127.0.0.1:${process.env.LAB_PORT ?? 4173}/page/nav-a.html`);
+  await page.waitForTimeout(500);
+  await page.close();
+  const file = await page.video()!.path();
+  expect(fs.statSync(file).size).toBeGreaterThan(1000);
+  expect(path.dirname(file)).toBe(dir);
+  await ctx.close();
+});
