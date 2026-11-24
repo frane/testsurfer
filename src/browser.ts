@@ -33,6 +33,7 @@ import { geolocationScript, localeScript, onlineScript, timezoneScript, touchScr
 import type { MediaOptions } from './media.ts';
 import { Clock } from './clock.ts';
 import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
+import { Tracing, type TracedContext } from './tracing.ts';
 
 /** Playwright's browser.newContext() / `use` options that testsurfer applies per context. */
 export interface ContextOptions {
@@ -415,6 +416,9 @@ export class BrowserContext {
 
   /** HTTP calls from the test process that share this context's cookies (Playwright's context.request). */
   readonly request: APIRequestContext;
+
+  /** Traces for Playwright's trace viewer (context.tracing). */
+  readonly tracing: Tracing = new Tracing(this as unknown as TracedContext);
 
   /** Fake time for every page of the context (Playwright's context.clock). */
   readonly clock = new Clock({

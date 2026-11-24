@@ -1,11 +1,11 @@
 # testsurfer lab
 
-117 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
+118 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
 
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
-| cases passed | 116 of 117 | 117 of 117 |
-| wall time, whole lab | 15.5 s | 15.6 s |
+| cases passed | 118 of 118 | 118 of 118 |
+| wall time, whole lab | 14.7 s | 15.5 s |
 | install | 10.8 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
@@ -44,7 +44,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | dynamic pages | client-side routing | pass | pass |
 | dynamic pages | content from fetch | pass | pass |
 | dynamic pages | waitFor detached | pass | pass |
-| clock | install, fastForward and runFor drive timers and Date | FAIL | pass |
+| clock | install, fastForward and runFor drive timers and Date | pass | pass |
 | clock | pauseAt holds time, resume lets it run | pass | pass |
 | clock | setFixedTime and setSystemTime | pass | pass |
 | context options | colorScheme, locale, timezoneId and userAgent from test.use | pass | pass |
@@ -125,6 +125,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | parity | emulateMedia reaches a cross-origin stylesheet | pass | pass |
 | parity | emulateMedia contrast | pass | pass |
 | parity | a response the service worker builds is reported | pass | pass |
+|  | tracing writes a trace with actions, screenshots and network | pass | pass |
 | websocket | page.on(websocket) reports frames both ways | pass | pass |
 | websocket | routeWebSocket answers without a server | pass | pass |
 | websocket | routeWebSocket with connectToServer changes what the server says | pass | pass |
