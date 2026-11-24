@@ -2,7 +2,7 @@
 
 ## Versions
 
-This version pins vibesurfer 0.2.19 and speaks its frozen wire protocol (v1). Native wheel input, the cookie jar API, right, middle, double and modified clicks, page zoom (`isMobile`), `ignoreHTTPSErrors`, crash events and interception of pages served from `localhost` or `127.0.0.1` on macOS need 0.2.19; popups, dialogs and cross-origin frames on Linux and Windows need 0.2.18; isolated contexts and the proxy network mode need 0.2.16; routes, page events, `addInitScript` and same-origin frames need 0.2.15. testsurfer reads the daemon's capability flags and uses what it offers.
+This version pins vibesurfer 0.2.19 and speaks its frozen wire protocol (v1). Native wheel input, native drops (`locator.drop`), WebM videos, the cookie jar API, right, middle, double and modified clicks, page zoom (`isMobile`), `ignoreHTTPSErrors`, crash events and interception of pages served from `localhost` or `127.0.0.1` on macOS need 0.2.19; popups, dialogs and cross-origin frames on Linux and Windows need 0.2.18; isolated contexts and the proxy network mode need 0.2.16; routes, page events, `addInitScript` and same-origin frames need 0.2.15. testsurfer reads the daemon's capability flags and uses what it offers.
 
 Known issue: on some macOS 27 machines each WebKit navigation stalls for about ten seconds inside the engine, which makes suites much slower. It is tracked in the vibesurfer repo.
 
