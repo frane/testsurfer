@@ -54,6 +54,7 @@ import { APIRequestContext } from './request.ts';
 import { Download, parseDownloadList } from './download.ts';
 import { Clock } from './clock.ts';
 import { WS_SHIM, WebSocket, WebSocketRoute, type WireFrame } from './websocket.ts';
+import { WORKER_SHIM, Worker } from './worker.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -118,7 +119,7 @@ export type ClickVia = 'click-at' | 'act';
 
 /** Options for how the page tracks daemon state across mutations. */
 /** What every page gets at document start: the event shim and the WebSocket hook. */
-export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}`;
+export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}`;
 
 export interface ProtocolOptions {
   /**
@@ -544,7 +545,7 @@ export class Page {
   on(event: string, listener: (arg: never) => void): this;
   on(event: string, listener: (arg: never) => void): this {
     if (event === 'download') this.watchDownloads();
-    if (event === 'websocket') void this.ensureWsShim().catch(() => {});
+    if (event === 'websocket' || event === 'worker') void this.ensureWsShim().catch(() => {});
     this.events.on(event, listener);
     void this.events.sync().catch(() => {});
     return this;
@@ -575,7 +576,7 @@ export class Page {
   ): Promise<T> {
     const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
     if (event === 'download') this.watchDownloads();
-    if (event === 'websocket') await this.ensureWsShim();
+    if (event === 'websocket' || event === 'worker') await this.ensureWsShim();
     return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
   }
 
@@ -816,8 +817,26 @@ export class Page {
     await this.evaluate(`(a) => window.__ts && window.__ts.${fn} && window.__ts.${fn}(...a)`, args);
   }
 
+  private readonly workerList = new Map<number, Worker>();
+
+  /** The page's dedicated workers. */
+  workers(): Worker[] {
+    return [...this.workerList.values()];
+  }
+
   private async onWsEvent(e: Record<string, unknown>): Promise<void> {
     const id = Number(e['id']);
+    if (e['t'] === 'worker') {
+      const w = new Worker(this, id, String(e['url']));
+      this.workerList.set(id, w);
+      this.events.emitPageEvent('worker', w);
+      return;
+    }
+    if (e['t'] === 'workerClose') {
+      this.workerList.get(id)?.closed();
+      this.workerList.delete(id);
+      return;
+    }
     const d = e['d'] as WireFrame | undefined;
     const code = e['code'] as number | undefined;
     const reason = e['reason'] as string | undefined;

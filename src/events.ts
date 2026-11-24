@@ -1038,7 +1038,7 @@ export class PageEvents {
         this.emitPageEvent(e.t, this.host.page?.() ?? null);
         break;
       default:
-        if (e.t.startsWith('ws')) this.host.wsEvent?.(e as unknown as Record<string, unknown>);
+        if (e.t.startsWith('ws') || e.t.startsWith('worker')) this.host.wsEvent?.(e as unknown as Record<string, unknown>);
       case 'pageerror': {
         const err = new Error(e.message ?? '');
         if (e.stack) err.stack = e.stack;
