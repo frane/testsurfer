@@ -82,3 +82,18 @@ test.describe('context methods', () => {
     expect(browser.isConnected()).toBe(true);
   });
 });
+
+test.describe('mobile', () => {
+  test('isMobile lays a page without a viewport tag out 980 px wide', async ({ browser }) => {
+    const context = await browser.newContext({ isMobile: true, hasTouch: true, viewport: { width: 390, height: 664 } } as never);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 390, height: 664 });
+    await page.goto('http://127.0.0.1:' + (process.env.LAB_PORT ?? 4173) + '/actions/click.html');
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(980);
+    await page.setContent('<meta name="viewport" content="width=device-width"><button onclick="this.textContent=\'hit\'" style="margin-left:300px">go</button>');
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(390);
+    await page.getByRole('button').click();
+    await expect(page.getByRole('button')).toHaveText('hit');
+    await context.close();
+  });
+});

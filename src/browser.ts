@@ -417,6 +417,7 @@ export class BrowserContext {
     addInitScript: (script) => this.addInitScript(script),
   });
 
+  private isMobile = false;
   private media: MediaOptions = {};
   private geo: Geolocation | null = null;
   private granted = new Set<string>();
@@ -441,6 +442,7 @@ export class BrowserContext {
     }
     if (o.timezoneId) await this.addInitScript(timezoneScript(o.timezoneId));
     if (o.hasTouch || o.isMobile) await this.addInitScript(touchScript());
+    if (o.isMobile) this.isMobile = true;
     if (o.serviceWorkers === 'block') {
       await this.addInitScript(`(() => { if (navigator.serviceWorker) navigator.serviceWorker.register = () => Promise.reject(new DOMException('Service workers are blocked', 'SecurityError')); })();`);
     }
@@ -467,6 +469,7 @@ export class BrowserContext {
 
   /** @internal Per-page settings a new page (or popup) gets. */
   private async preparePage(page: Page): Promise<void> {
+    if (this.isMobile) page.enableMobile();
     if (Object.keys(this.media).length) await page.emulateMedia(this.media);
     if (this.timeoutDefaults.action !== undefined) page.setDefaultTimeout(this.timeoutDefaults.action);
     if (this.timeoutDefaults.navigation !== undefined) page.setDefaultNavigationTimeout(this.timeoutDefaults.navigation);

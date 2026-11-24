@@ -531,6 +531,10 @@ export class Page {
   on(event: 'pageerror', listener: (error: Error) => void): this;
   on(event: 'request' | 'requestfinished' | 'requestfailed', listener: (request: Request) => void): this;
   on(event: 'response', listener: (response: Response) => void): this;
+  on(event: 'load' | 'domcontentloaded' | 'close' | 'crash', listener: (page: Page) => void): this;
+  on(event: 'framenavigated', listener: (frame: Frame) => void): this;
+  on(event: 'download', listener: (download: Download) => void): this;
+  on(event: string, listener: (arg: never) => void): this;
   on(event: string, listener: (arg: never) => void): this {
     if (event === 'download') this.watchDownloads();
     this.events.on(event, listener);
@@ -677,11 +681,13 @@ export class Page {
       await this.navigate(data);
       await this.rememberNav(shown, data);
       await this.refreshFrames();
+      if (this.mobile) await this.mobileZoom().catch(() => {});
       return;
     }
     await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
     // Like Playwright, return once the new document (stylesheets, images) has loaded.
     await this.waitForFunction("document.readyState === 'complete'", undefined, { timeout: this.timeouts.navigation }).catch(() => {});
+    if (this.mobile) await this.mobileZoom().catch(() => {});
     await this.refreshFrames();
     this.snapshot = null;
     this.synced = false;
@@ -762,6 +768,53 @@ export class Page {
    * that needs a document opens one (with the init scripts installed).
    */
   private navTimeoutSet = false;
+
+  /** isMobile: the viewport meta tag decides the layout width (see mobileZoom). */
+  private mobile = false;
+  /** View px per CSS px: 1, or below 1 for a mobile page laid out wider than the screen. */
+  private zoom = 1;
+  /** The document the zoom was worked out for. */
+  private zoomFor = '';
+
+  /** @internal Honor the viewport meta tag, as a mobile browser does (Playwright's isMobile). */
+  enableMobile(): void {
+    if (this.mobile) return;
+    this.mobile = true;
+    this.on('domcontentloaded', () => void this.mobileZoom().catch(() => {}));
+  }
+
+  /**
+   * Lay the page out as wide as its viewport meta tag asks (980 CSS px
+   * without one), scaled to fit the screen: a page zoom of
+   * screen width / layout width.
+   */
+  private async mobileZoom(): Promise<void> {
+    if (!this.mobile || !this.pageId) return;
+    const screen = this.viewport?.width ?? 980;
+    const got = (await this.evaluate(`(screen) => {
+      const m = document.querySelector('meta[name="viewport" i]');
+      const c = m ? (m.getAttribute('content') || '') : null;
+      const v = {};
+      if (c !== null) for (const part of c.split(/[,;]/)) { const [k, val] = part.split('=').map((x) => (x || '').trim().toLowerCase()); if (k) v[k] = val; }
+      let width = c === null ? 980 : v.width === 'device-width' || v.width === undefined ? screen : Number(v.width) || screen;
+      const scale = Number(v['initial-scale']);
+      if (c !== null && isFinite(scale) && scale > 0 && v.width === undefined) width = screen / scale;
+      return { width: Math.max(1, width), href: location.href + '#' + performance.timeOrigin + '#' + ((document.querySelector('meta[name="viewport" i]') || {}).content || '') };
+    }`, screen)) as { width: number; href: string };
+    this.zoomFor = got.href;
+    const zoom = Math.min(10, Math.max(0.1, screen / got.width));
+    if (Math.abs(zoom - this.zoom) < 1e-6) return;
+    this.zoom = zoom;
+    await this.client.call('vs_viewport', [this.id, 'keep'], { session: this.sessionId, zoom: String(zoom) });
+  }
+
+  /** Before an input at CSS coordinates: the zoom for the current document. */
+  private async zoomReady(): Promise<number> {
+    if (!this.mobile) return 1;
+    const href = await this.evaluate<string>(`() => location.href + '#' + performance.timeOrigin + '#' + ((document.querySelector('meta[name="viewport" i]') || {}).content || '')`).catch(() => '');
+    if (href !== this.zoomFor) await this.mobileZoom().catch(() => {});
+    return this.zoom;
+  }
 
   /** Fake time for this page (Playwright's page.clock). */
   readonly clock = new Clock({
@@ -1126,6 +1179,9 @@ export class Page {
     opts: { count?: number | undefined; button?: 'left' | 'right' | 'middle' | undefined; modifiers?: string[] | undefined } = {},
   ): Promise<void> {
     await this.ensureOpen();
+    const z = await this.zoomReady();
+    x *= z;
+    y *= z;
     const flags: Record<string, string> = { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode };
     if (opts.button && opts.button !== 'left') flags['button'] = opts.button;
     if (opts.count && opts.count > 1) flags['count'] = String(Math.min(3, opts.count));
@@ -1965,6 +2021,9 @@ export class Page {
 
   private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
     await this.ensureOpen();
+    const z = await this.zoomReady();
+    // A wheel's deltas are CSS px of scrolling, not points on the screen.
+    if (z !== 1) coords = coords.map((c, i) => (op === 'vs_wheel' && i >= 2 ? c : c * z));
     const flags: Record<string, string> = { session: this.sessionId, mode: mode ?? this.inputMode };
     if (mutates) flags['token'] = this.token ?? '0';
     try {
