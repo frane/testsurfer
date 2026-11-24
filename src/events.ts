@@ -633,6 +633,8 @@ export interface EventsHost {
   page?: () => unknown;
   /** The main document is now at `url` (a navigation the page made). */
   noteURL?: (url: string) => void;
+  /** A WebSocket event from the page (src/websocket.ts). */
+  wsEvent?: (e: Record<string, unknown>) => void;
 }
 
 /** Per-page routing and event state. The Page owns one. */
@@ -1035,6 +1037,8 @@ export class PageEvents {
       case 'load':
         this.emitPageEvent(e.t, this.host.page?.() ?? null);
         break;
+      default:
+        if (e.t.startsWith('ws')) this.host.wsEvent?.(e as unknown as Record<string, unknown>);
       case 'pageerror': {
         const err = new Error(e.message ?? '');
         if (e.stack) err.stack = e.stack;

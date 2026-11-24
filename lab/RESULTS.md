@@ -1,11 +1,11 @@
 # testsurfer lab
 
-106 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
+109 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
 
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
-| cases passed | 106 of 106 | 106 of 106 |
-| wall time, whole lab | 12.1 s | 10.9 s |
+| cases passed | 109 of 109 | 109 of 109 |
+| wall time, whole lab | 16.6 s | 16.3 s |
 | install | 10.7 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
@@ -118,3 +118,6 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | parity | emulateMedia reaches a cross-origin stylesheet | pass | pass |
 | parity | emulateMedia contrast | pass | pass |
 | parity | a response the service worker builds is reported | pass | pass |
+| websocket | page.on(websocket) reports frames both ways | pass | pass |
+| websocket | routeWebSocket answers without a server | pass | pass |
+| websocket | routeWebSocket with connectToServer changes what the server says | pass | pass |

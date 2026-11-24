@@ -89,6 +89,7 @@ export function runnerOptionsFrom(cfg: PlaywrightConfig, configDir: string): Rec
     if (v !== undefined) ctx[k] = v;
   }
   if (Object.keys(ctx).length) out['contextOptions'] = ctx;
+  if (cfg.timeout !== undefined) out['testTimeout'] = cfg.timeout;
   const timeouts: Record<string, number> = {};
   // 0 means "no limit" in Playwright; the test's own timeout then bounds it.
   const limit = (v: number | undefined) => (v === 0 ? (cfg.timeout ?? 30_000) : v);

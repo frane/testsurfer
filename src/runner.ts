@@ -64,6 +64,8 @@ export interface RunnerOptions extends LaunchOptions {
   network?: 'shim' | 'proxy';
   /** Cookies and localStorage every test's context starts with (Playwright's `use.storageState`): a state object or a JSON file. */
   storageState?: StorageState | string;
+  /** Per-test time limit in ms (Playwright's `timeout`); 0 for none. Default 30000. */
+  testTimeout?: number;
   /** newContext() options for every test (Playwright's `use`: colorScheme, locale, timezoneId, userAgent, ...). */
   contextOptions?: ContextOptions;
   /** Where toMatchSnapshot(name) keeps baselines; Playwright's tokens. */
@@ -286,7 +288,7 @@ function runWith(
       workerIndex: 0,
       parallelIndex: 0,
       project: { name: 'webkit', use: {} },
-      timeout: 30_000,
+      timeout: options.testTimeout ?? 30_000,
       expectedStatus: 'passed',
       skip: (c, r) => {
         const [on, reason] = when(c, r);
@@ -304,7 +306,10 @@ function runWith(
       },
       slow: (c, r) => {
         const [on, reason] = when(c, r);
-        if (on) info.annotations.push({ type: 'slow', description: reason });
+        if (!on) return;
+        info.annotations.push({ type: 'slow', description: reason });
+        // Like Playwright: a slow test gets three times the timeout.
+        info.timeout *= 3;
       },
       setTimeout: (ms) => {
         info.timeout = ms;
@@ -319,7 +324,7 @@ function runWith(
       await testInfoStore.run(info, async () => {
         let threw = false;
         try {
-          await runTest(name, fn, chain, defs, info);
+          await withTestTimeout(info, runTest(name, fn, chain, defs, info));
         } catch (e) {
           if (e instanceof SkipSignal || info.expectedStatus !== 'failed') throw e;
           threw = true;
@@ -332,6 +337,39 @@ function runWith(
       if (!(e instanceof SkipSignal)) throw e;
     }
   };
+}
+
+/** Contexts of running tests, closed when a test runs out of time. */
+const runningContexts = new WeakMap<TestInfo, BrowserContext>();
+
+/**
+ * Fail the test once it has run for `info.timeout` ms (0: no limit),
+ * as Playwright does; the limit can change while it runs
+ * (test.setTimeout, test.slow). Its context is closed so whatever it
+ * waits on ends too.
+ */
+async function withTestTimeout(info: TestInfo, run: Promise<void>): Promise<void> {
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<never>((_, reject) => {
+    const check = () => {
+      const limit = info.timeout;
+      const left = limit > 0 ? started + limit - Date.now() : 60_000;
+      if (limit > 0 && left <= 0) {
+        void runningContexts.get(info)?.close().catch(() => {});
+        reject(new Error(`Test timeout of ${limit}ms exceeded.`));
+        return;
+      }
+      timer = setTimeout(check, Math.min(left, 1000));
+      timer.unref?.();
+    };
+    check();
+  });
+  try {
+    await Promise.race([run, expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Set up test.extend() fixtures in order, run `inner` with all of them, tear down in reverse. */
@@ -388,6 +426,7 @@ async function runTest(
     options.isolate === false
       ? browser.sharedContext()
       : await browser.newContext({ intercept: options.network !== 'shim', ...ctxOpts });
+  runningContexts.set(info, context);
   const page = await context.newPage();
   try {
     if (options.auth) {

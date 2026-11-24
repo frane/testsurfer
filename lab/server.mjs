@@ -2,6 +2,7 @@
 // network cases need. Serves every host on its port, so
 // http://127.0.0.1:PORT and http://localhost:PORT are two origins of
 // the same server.
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
@@ -64,5 +65,33 @@ http
     }
     res.writeHead(200, { 'content-type': types[path.extname(file)] ?? 'application/octet-stream' });
     fs.createReadStream(file).pipe(res);
+  })
+  .on('upgrade', (req, sock) => {
+    // A minimal WebSocket echo server (RFC 6455), for the websocket cases.
+    const key = req.headers['sec-websocket-key'];
+    const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    let buf = Buffer.alloc(0);
+    const send = (op, data) => {
+      const len = data.length;
+      const head = len < 126 ? Buffer.from([0x80 | op, len]) : Buffer.from([0x80 | op, 126, len >> 8, len & 255]);
+      sock.write(Buffer.concat([head, data]));
+    };
+    sock.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 2) {
+        const op = buf[0] & 15;
+        let len = buf[1] & 127;
+        let off = 2;
+        if (len === 126) { len = buf.readUInt16BE(2); off = 4; }
+        if (buf.length < off + 4 + len) return;
+        const mask = buf.subarray(off, off + 4);
+        const data = Buffer.from(buf.subarray(off + 4, off + 4 + len).map((b, i) => b ^ mask[i % 4]));
+        buf = buf.subarray(off + 4 + len);
+        if (op === 8) { send(8, data.subarray(0, 2)); sock.end(); return; }
+        if (op === 1) send(1, Buffer.from('echo:' + data.toString()));
+      }
+    });
+    sock.on('error', () => {});
   })
   .listen(port, '127.0.0.1', () => console.log(`lab on http://127.0.0.1:${port}`));

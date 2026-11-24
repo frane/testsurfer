@@ -67,6 +67,7 @@ export const CONTEXT_OPTION_KEYS = [
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
   Page,
+  EAGER_SHIM,
   DEFAULT_TIMEOUTS,
   type ClickVia,
   type InputMode,
@@ -280,6 +281,7 @@ export class Browser {
         await c.call('vs_session_close', [sessionId], {}).catch(() => {});
         return null;
       }
+      await c.call('vs_init_script', [pageId, EAGER_SHIM], { session: sessionId });
       let sized: Spare['sized'] = null;
       if (this.viewport) {
         const v = this.viewport;
@@ -866,12 +868,16 @@ export class BrowserContext {
     const page = this.owner.makePage(this.sessionId);
     const warm = this.warmPage;
     this.warmPage = null;
-    if (warm) await page.adoptBlank(warm.pageId, warm.token, warm.sized);
+    if (warm) {
+      await page.adoptBlank(warm.pageId, warm.token, warm.sized);
+      page.markShimmed();
+    }
     this.adopt(page);
     for (const name of this.pendingCookies.splice(0)) await page.loadCookieBlob(name);
     for (const s of this.scripts) await page.addInitScript(s.script, s.arg);
     for (const r of this.routes) await page.route(r.url, r.handler, r.times === undefined ? {} : { times: r.times });
     for (const b of this.bindings) await page.exposeBinding(b.name, b.fn as Parameters<Page['exposeBinding']>[1]);
+    for (const w of this.wsRoutes) await page.routeWebSocket(w.url, w.handler);
     await this.preparePage(page);
     return page;
   }
@@ -884,6 +890,14 @@ export class BrowserContext {
   async route(url: UrlMatcher, handler: RouteHandler, options: { times?: number } = {}): Promise<void> {
     this.routes.push({ url, handler, ...(options.times === undefined ? {} : { times: options.times }) });
     for (const p of this.open) await p.route(url, handler, options);
+  }
+
+  private readonly wsRoutes: { url: UrlMatcher; handler: Parameters<Page['routeWebSocket']>[1] }[] = [];
+
+  /** routeWebSocket() for every page of the context, current and future. */
+  async routeWebSocket(url: UrlMatcher, handler: Parameters<Page['routeWebSocket']>[1]): Promise<void> {
+    this.wsRoutes.push({ url, handler });
+    for (const p of this.open) await p.routeWebSocket(url, handler);
   }
 
   /** Remove routes for `url`: all of them, or the one with `handler`. */

@@ -53,6 +53,7 @@ import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
 import { Download, parseDownloadList } from './download.ts';
 import { Clock } from './clock.ts';
+import { WS_SHIM, WebSocket, WebSocketRoute, type WireFrame } from './websocket.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -116,6 +117,9 @@ export type InputMode = 'human' | 'careful' | 'robotic';
 export type ClickVia = 'click-at' | 'act';
 
 /** Options for how the page tracks daemon state across mutations. */
+/** What every page gets at document start: the event shim and the WebSocket hook. */
+export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}`;
+
 export interface ProtocolOptions {
   /**
    * vibesurfer 0.2+ returns each mutation's tree delta inline (act and
@@ -203,8 +207,10 @@ export class Page {
     this.testIdOption = name;
   }
   /** Document-start scripts, replayed into the web view when it is created. */
-  private initScripts: string[] = [];
-  private shimInstalled = false;
+  /** Document-start scripts, in order; the event shim and the WebSocket hook are always the first. */
+  private initScripts: string[] = [EAGER_SHIM];
+  /** PAGE_SHIM is in initScripts from the start (EAGER_SHIM). */
+  private shimInstalled = true;
   private readonly events: PageEvents;
   private ctx: BrowserContext | null = null;
 
@@ -247,6 +253,7 @@ export class Page {
       noteURL: (url: string) => {
         this.lastHref = url;
       },
+      wsEvent: (e) => void this.onWsEvent(e).catch(() => {}),
       swControlled: () => this.swControlled,
       pageURL: () => this.lastHref,
     });
@@ -537,6 +544,7 @@ export class Page {
   on(event: string, listener: (arg: never) => void): this;
   on(event: string, listener: (arg: never) => void): this {
     if (event === 'download') this.watchDownloads();
+    if (event === 'websocket') void this.ensureWsShim().catch(() => {});
     this.events.on(event, listener);
     void this.events.sync().catch(() => {});
     return this;
@@ -567,6 +575,7 @@ export class Page {
   ): Promise<T> {
     const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
     if (event === 'download') this.watchDownloads();
+    if (event === 'websocket') await this.ensureWsShim();
     return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
   }
 
@@ -769,6 +778,96 @@ export class Page {
    */
   private navTimeoutSet = false;
 
+  private wsShim = false;
+  private readonly wsRoutes: { url: UrlMatcher; handler: (ws: WebSocketRoute) => unknown }[] = [];
+  private readonly sockets = new Map<number, WebSocket>();
+  private readonly wsRouted = new Map<number, WebSocketRoute>();
+
+  /**
+   * Watch or route WebSockets. The hook itself is in every page from
+   * its first document (EAGER_SHIM), so a socket opened before anyone
+   * listened is still reported; this keeps the shim queue polled.
+   */
+  private async ensureWsShim(): Promise<void> {
+    if (this.wsShim) return;
+    this.wsShim = true;
+    this.events.on('__ws', () => {});
+    await this.ensureShim();
+    await this.events.sync();
+  }
+
+  /** @internal The shim and the WebSocket hook are in this page's documents already (a spare opened with them). */
+  markShimmed(): void {
+    this.shimInstalled = true;
+  }
+
+  /** Answer the page's WebSockets matching `url` with `handler` instead of the server (see WebSocketRoute). */
+  async routeWebSocket(url: UrlMatcher, handler: (ws: WebSocketRoute) => unknown): Promise<void> {
+    this.wsRoutes.unshift({ url, handler });
+    await this.ensureWsShim();
+    const on = 'window.__ts && (window.__ts.wsRouting = true);';
+    await this.addInitSource(on);
+    if (this.pageId) await this.evaluate(`() => { ${on} }`).catch(() => {});
+  }
+
+  /** @internal Run one window.__ts WebSocket call in the page. */
+  async wsCall(fn: string, ...args: unknown[]): Promise<void> {
+    if (fn === 'wsDeliver') this.sockets.get(Number(args[0]))?.frame('framereceived', args[1] as WireFrame);
+    await this.evaluate(`(a) => window.__ts && window.__ts.${fn} && window.__ts.${fn}(...a)`, args);
+  }
+
+  private async onWsEvent(e: Record<string, unknown>): Promise<void> {
+    const id = Number(e['id']);
+    const d = e['d'] as WireFrame | undefined;
+    const code = e['code'] as number | undefined;
+    const reason = e['reason'] as string | undefined;
+    switch (e['t']) {
+      case 'ws': {
+        const ws = new WebSocket(String(e['url']));
+        this.sockets.set(id, ws);
+        this.events.emitPageEvent('websocket', ws);
+        break;
+      }
+      case 'wsSent':
+        this.sockets.get(id)?.frame('framesent', d);
+        break;
+      case 'wsRecv':
+        this.sockets.get(id)?.frame('framereceived', d);
+        break;
+      case 'wsClose':
+      case 'wsError':
+        this.sockets.get(id)?.ended(e['t'] === 'wsError');
+        break;
+      case 'wsRouted': {
+        const url = String(e['url']);
+        const route = new WebSocketRoute(this, id, url, false);
+        this.wsRouted.set(id, route);
+        const ws = new WebSocket(url);
+        this.sockets.set(id, ws);
+        this.events.emitPageEvent('websocket', ws);
+        const match = this.wsRoutes.find((r) => urlMatches(r.url, url, this.baseURL));
+        await this.wsCall('wsOpen', id);
+        if (match) await match.handler(route);
+        else route.connectToServer();
+        break;
+      }
+      case 'wsPageSend':
+        this.sockets.get(id)?.frame('framesent', d);
+        await this.wsRouted.get(id)?.fromPage(d);
+        break;
+      case 'wsPageClose':
+        await this.wsRouted.get(id)?.pageClosed(code, reason);
+        this.sockets.get(id)?.ended(false);
+        break;
+      case 'wsServerMsg':
+        await this.wsRouted.get(id)?.fromServer(d);
+        break;
+      case 'wsServerClose':
+        await this.wsRouted.get(id)?.serverClosed(code, reason);
+        break;
+    }
+  }
+
   /** isMobile: the viewport meta tag decides the layout width (see mobileZoom). */
   private mobile = false;
   /** View px per CSS px: 1, or below 1 for a mobile page laid out wider than the screen. */
@@ -910,6 +1009,7 @@ export class Page {
     this.pageId = id;
     await this.applyViewport();
     this.token = resp.token;
+    this.shimInstalled = true;
     for (const src of this.initScripts) {
       await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
     }
