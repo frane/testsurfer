@@ -23,6 +23,10 @@ export const PAGE_SHIM = String.raw`(function () {
   } catch (e) { window.__ts = ts; }
 
   function emit(e) { if (ts.ev.length < 2000) ts.ev.push(e); }
+  // Document lifecycle, for page.on('framenavigated' | 'domcontentloaded' | 'load').
+  emit({ t: 'nav', url: location.href });
+  document.addEventListener('DOMContentLoaded', function () { emit({ t: 'domcontentloaded' }); });
+  window.addEventListener('load', function () { emit({ t: 'load' }); });
   function fmt(a) {
     if (typeof a === 'string') return a;
     if (a instanceof Error) return a.stack || String(a);

@@ -51,6 +51,7 @@ import {
 } from './locator.ts';
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
+import { Download, parseDownloadList } from './download.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
@@ -241,6 +242,10 @@ export class Page {
       },
       extraHeaders: () => ({ ...(this.ctx?.extraHeaders ?? {}), ...this.extraHeaders }),
       isPopup: () => this.openerPage !== undefined,
+      page: () => this,
+      noteURL: (url: string) => {
+        this.lastHref = url;
+      },
       swControlled: () => this.swControlled,
       pageURL: () => this.lastHref,
     });
@@ -526,6 +531,7 @@ export class Page {
   on(event: 'request' | 'requestfinished' | 'requestfailed', listener: (request: Request) => void): this;
   on(event: 'response', listener: (response: Response) => void): this;
   on(event: string, listener: (arg: never) => void): this {
+    if (event === 'download') this.watchDownloads();
     this.events.on(event, listener);
     void this.events.sync().catch(() => {});
     return this;
@@ -555,6 +561,7 @@ export class Page {
     optionsOrPredicate?: ((arg: T) => boolean | Promise<boolean>) | { predicate?: (arg: T) => boolean | Promise<boolean>; timeout?: number },
   ): Promise<T> {
     const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
+    if (event === 'download') this.watchDownloads();
     return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
   }
 
@@ -793,6 +800,40 @@ export class Page {
       await this.clickAt(x, y);
     },
   };
+
+  private downloadTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly seenDownloads = new Set<number>();
+
+  /** Report each file the page saves as a `download` event (vibesurfer's capture list, polled). */
+  private watchDownloads(): void {
+    if (this.downloadTimer) return;
+    const poll = async () => {
+      if (!this.pageId) return;
+      try {
+        const r = await this.client.call('vs_download', [this.pageId], { session: this.sessionId, list: true });
+        for (const e of parseDownloadList(r.body)) {
+          if (this.seenDownloads.has(e.id)) continue;
+          this.seenDownloads.add(e.id);
+          this.events.emitPageEvent(
+            'download',
+            new Download(this, e, async (id, dest) => {
+              const got = await this.client.call('vs_download', [this.id], { session: this.sessionId, id: String(id), dest });
+              const line = got.body.find((l) => l.startsWith('path\t'));
+              return line ? line.slice(5) : dest;
+            }),
+          );
+        }
+      } catch (e) {
+        void e;
+      }
+    };
+    // Every captured download is reported once, from the first time
+    // anyone watches: one that came just before the watcher started
+    // (an action raced with waitForEvent) still counts.
+    this.downloadTimer = setInterval(() => void poll(), 100);
+    this.downloadTimer.unref();
+    void poll();
+  }
 
   /** @internal The page's wire id, opening its web view first if it has none yet. */
   async openedId(): Promise<string> {
@@ -1990,6 +2031,7 @@ export class Page {
 
   async close(): Promise<void> {
     if (this.closedFlag) return;
+    if (this.downloadTimer) clearInterval(this.downloadTimer);
     const id = this.pageId;
     this.pageId = null;
     this.markClosed();

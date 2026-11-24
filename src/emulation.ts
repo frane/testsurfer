@@ -184,11 +184,13 @@ export function geolocationScript(geo: Geolocation | null, granted: string[]): s
   })();`;
 }
 
-/** Touch support: ontouchstart, maxTouchPoints and the coarse pointer media features. */
+/**
+ * Touch support as Playwright's WebKit has it: touch event handlers on
+ * window (`ontouchstart`) and the coarse pointer media features;
+ * navigator.maxTouchPoints stays 0, as there.
+ */
 export function touchScript(): string {
   return `(() => {
-    const nav = Object.getPrototypeOf(navigator);
-    Object.defineProperty(nav, 'maxTouchPoints', { get: () => 5, configurable: true });
     if (!('ontouchstart' in window)) window.ontouchstart = null;
     const mm = window.matchMedia.bind(window);
     window.matchMedia = (q) => mm(String(q).replace(/\\(\\s*(any-)?pointer\\s*:\\s*coarse\\s*\\)/g, '(min-width: 0px)').replace(/\\(\\s*(any-)?pointer\\s*:\\s*fine\\s*\\)/g, '(max-width: -1px)').replace(/\\(\\s*(any-)?hover\\s*:\\s*none\\s*\\)/g, '(min-width: 0px)').replace(/\\(\\s*(any-)?hover\\s*:\\s*hover\\s*\\)/g, '(max-width: -1px)'));

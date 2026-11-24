@@ -629,6 +629,10 @@ export interface EventsHost {
   pageURL?: () => string;
   /** The page is a popup another page opened. */
   isPopup?: () => boolean;
+  /** The Page itself, the argument of its load and domcontentloaded events. */
+  page?: () => unknown;
+  /** The main document is now at `url` (a navigation the page made). */
+  noteURL?: (url: string) => void;
 }
 
 /** Per-page routing and event state. The Page owns one. */
@@ -1022,6 +1026,14 @@ export class PageEvents {
         break;
       case 'console':
         this.emit('console', new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[]));
+        break;
+      case 'nav':
+        if (e.url) this.host.noteURL?.(e.url);
+        this.emitPageEvent('framenavigated', this.host.mainFrame?.() ?? null);
+        break;
+      case 'domcontentloaded':
+      case 'load':
+        this.emitPageEvent(e.t, this.host.page?.() ?? null);
         break;
       case 'pageerror': {
         const err = new Error(e.message ?? '');

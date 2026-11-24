@@ -1,0 +1,5 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Download</title>
+<a id="file" href="/download-file">Download the report</a>
+<button id="blob" onclick="const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob(['made here'], { type: 'text/plain' })); a.download = 'made.txt'; a.click();">Save a blob</button>

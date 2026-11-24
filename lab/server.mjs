@@ -27,6 +27,10 @@ const routes = {
     res.end('ok');
   },
   '/cookies': (req, res) => json(res, { cookie: req.headers.cookie ?? '' }),
+  '/download-file': (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="report.txt"' });
+    res.end('lab report');
+  },
   '/basic-auth': (req, res) => {
     if (req.headers.authorization !== 'Basic ' + Buffer.from('lab:secret').toString('base64')) {
       res.writeHead(401, { 'www-authenticate': 'Basic realm="lab"', 'content-type': 'text/plain' });

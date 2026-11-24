@@ -44,6 +44,9 @@ export {
 export type { TestInfo } from './testinfo.ts';
 export { APIRequestContext, type RequestOptions } from './request.ts';
 export { Frame } from './frame.ts';
+export { Download } from './download.ts';
+export type { Cookie, StorageState } from './cookies.ts';
+export type { ContextOptions } from './browser.ts';
 
 /**
  * Playwright's device descriptors, reduced to what testsurfer applies

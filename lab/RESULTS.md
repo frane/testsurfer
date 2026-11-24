@@ -1,12 +1,12 @@
 # testsurfer lab
 
-92 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`; `testsurfer.config.ts` adds the proxy network mode). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
+102 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
 
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
-| cases passed | 92 of 92 | 92 of 92 |
-| wall time, whole lab | 10.8 s | 11.7 s |
-| install | 10.6 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
+| cases passed | 102 of 102 | 102 of 102 |
+| wall time, whole lab | 14.0 s | 12.3 s |
+| install | 10.7 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
 
@@ -44,6 +44,16 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | dynamic pages | client-side routing | pass | pass |
 | dynamic pages | content from fetch | pass | pass |
 | dynamic pages | waitFor detached | pass | pass |
+| context options | colorScheme, locale, timezoneId and userAgent from test.use | pass | pass |
+| context methods | geolocation with a granted permission | pass | pass |
+| context methods | setOffline fails requests and flips navigator.onLine | pass | pass |
+| context methods | httpCredentials answer a basic auth challenge | pass | pass |
+| context methods | javaScriptEnabled false runs no page script | pass | pass |
+| context methods | exposeFunction on the context reaches its pages | pass | pass |
+| context methods | extraHTTPHeaders and hasTouch from newContext | pass | pass |
+| context methods | browser version and connection | pass | pass |
+| page events | download from a link and from a blob | pass | pass |
+| page events | load, domcontentloaded and framenavigated | pass | pass |
 | frames | frameLocator into a same-origin iframe | pass | pass |
 | frames | nested iframes | pass | pass |
 | frames | srcdoc iframe | pass | pass |

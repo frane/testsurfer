@@ -73,7 +73,7 @@ test.describe('context methods', () => {
     await page.goto('http://127.0.0.1:' + (process.env.LAB_PORT ?? 4173) + '/network/headers.html');
     const sent = await page.evaluate(async () => (await fetch('/api/echo-headers')).json());
     expect(sent['x-lab']).toBe('ctx');
-    expect(await page.evaluate(() => navigator.maxTouchPoints)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => 'ontouchstart' in window)).toBe(true);
     await context.close();
   });
 
