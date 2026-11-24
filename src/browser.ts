@@ -173,6 +173,8 @@ export class Browser {
         nativeWheel: options.protocol?.nativeWheel ?? caps.flags.has('wheel'),
         cookies: options.protocol?.cookies ?? caps.flags.has('cookies'),
         clickOptions: options.protocol?.clickOptions ?? caps.flags.has('clickOptions'),
+        webm: options.protocol?.webm ?? caps.flags.has('webm'),
+        drop: options.protocol?.drop ?? caps.flags.has('drop'),
       },
       options.baseURL,
     );

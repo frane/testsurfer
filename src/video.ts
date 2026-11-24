@@ -1,7 +1,8 @@
 /**
  * Page videos (Playwright's recordVideo / page.video()). vibesurfer
- * records a page to an H.264 MP4 (`vs_record`); the file lands in the
- * context's video directory when the page closes.
+ * records a page to WebM (`vs_record --format webm`, MP4 on daemons
+ * before 0.2.19); the file lands in the context's video directory when
+ * the page closes.
  */
 
 import * as crypto from 'node:crypto';
@@ -38,7 +39,7 @@ export class Video {
   /** @internal The recording stopped at `recorded`: move it into the video directory. */
   async finish(recorded: string): Promise<void> {
     await fs.promises.mkdir(this.dir, { recursive: true });
-    const to = path.join(this.dir, `${crypto.randomUUID()}.mp4`);
+    const to = path.join(this.dir, `${crypto.randomUUID()}${path.extname(recorded) || '.webm'}`);
     try {
       await fs.promises.rename(recorded, to);
     } catch {

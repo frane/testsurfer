@@ -146,6 +146,10 @@ export interface ProtocolOptions {
   cookies?: boolean;
   /** vibesurfer 0.2.19+: click-at takes a button, a click count and modifiers. Negotiated from the clickOptions flag. */
   clickOptions?: boolean;
+  /** vibesurfer 0.2.19+: recordings in WebM (VP8), Playwright's video format. Negotiated from the webm flag. */
+  webm?: boolean;
+  /** vibesurfer 0.2.19+: `vs_drop`, a drop from another application as native OS input. Negotiated from the drop flag. */
+  drop?: boolean;
 }
 
 export interface LayoutRect {
@@ -195,6 +199,8 @@ export class Page {
   private readonly nativeWheel: boolean;
   /** @internal click-at takes button, count and modifiers (vibesurfer 0.2.19+). */
   readonly nativeClickOptions: boolean;
+  private readonly webm: boolean;
+  private readonly dropNative: boolean;
   readonly baseURL: string | undefined;
   /** HTTP requests from the test process (not the browser). */
   private readonly ownRequest: APIRequestContext;
@@ -239,6 +245,8 @@ export class Page {
     this.navInPlace = protocol.navInPlace ?? false;
     this.nativeWheel = protocol.nativeWheel ?? false;
     this.nativeClickOptions = protocol.clickOptions ?? false;
+    this.webm = protocol.webm ?? false;
+    this.dropNative = protocol.drop ?? false;
     this.events = new PageEvents({
       openPoller: () => this.client.sibling(),
       target: () => ({ pageId: this.pageId, sessionId: this.sessionId }),
@@ -284,6 +292,24 @@ export class Page {
     this.events.documentChanged();
     this.events.attachHub();
     return this.events;
+  }
+
+  /**
+   * @internal Drop files and strings at (x, y) as native input from
+   * another application. Resolves whether the page accepted it, or null
+   * where the daemon can't (before 0.2.19, or a pure Wayland session).
+   */
+  async nativeDrop(x: number, y: number, files: string[], data: Record<string, string>): Promise<boolean | null> {
+    if (!this.dropNative) return null;
+    await this.ensureOpen();
+    const payload = Buffer.from(JSON.stringify({ files, data: Object.entries(data) })).toString('base64');
+    try {
+      const r = await this.client.call('vs_drop', [this.id, String(x), String(y), payload], { session: this.sessionId });
+      return r.body[0] === 'accepted';
+    } catch (e) {
+      if (/unsupported/i.test(String(e))) return null;
+      throw e;
+    }
   }
 
   /** @internal The vibesurfer page id, once the page has one. */
@@ -562,6 +588,7 @@ export class Page {
     recordTo: async (width) => {
       await this.ensureOpen();
       const flags: Record<string, string> = { session: this.sessionId, fps: '25' };
+      if (this.webm) flags['format'] = 'webm';
       if (width) flags['width'] = String(width);
       await this.client.call('vs_record', ['start', this.id], flags);
       return async () => {
@@ -587,6 +614,7 @@ export class Page {
     this.videoSize = size ? { width: size.width } : null;
     await this.ensureOpen();
     const flags: Record<string, string> = { session: this.sessionId, fps: '25' };
+    if (this.webm) flags['format'] = 'webm';
     if (this.videoSize) flags['width'] = String(this.videoSize.width);
     await this.client.call('vs_record', ['start', this.id], flags);
   }

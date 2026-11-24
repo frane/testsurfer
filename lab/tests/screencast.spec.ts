@@ -15,4 +15,5 @@ test('screencast frames, a video and annotations', async ({ page }) => {
   await cast.dispose();
   expect(frames).toBeGreaterThan(0);
   expect(fs.statSync(file).size).toBeGreaterThan(1000);
+  expect([...fs.readFileSync(file).subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
 });

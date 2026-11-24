@@ -813,22 +813,37 @@ export class Locator {
     return this;
   }
 
-  /** Drop external data (files, or mime type to string) onto the element: dragenter, dragover and drop at its center. */
+  /**
+   * Drop external data (files, or mime type to string) onto the element's
+   * center, as a drag from another application: native, trusted
+   * dragenter, dragover and drop.
+   */
   async drop(
-    payload: { files?: string | string[] | { name: string; mimeType: string; buffer: Buffer } | { name: string; mimeType: string; buffer: Buffer }[]; data?: Record<string, string> },
+    payload: { files?: string | string[] | DropFile | DropFile[]; data?: Record<string, string> },
     options: { timeout?: number } = {},
   ): Promise<void> {
+    const list = payload.files === undefined ? [] : Array.isArray(payload.files) ? payload.files : [payload.files];
+    const box = await this.boundingBox(options);
+    if (!box) throw new TimeoutError(`locator.drop: ${this.toString()} is not rendered`);
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    const { paths, cleanup } = await filesOnDisk(list);
+    try {
+      const native = await this.owner.nativeDrop(x, y, paths, payload.data ?? {});
+      if (native !== null) return;
+      await this.scriptDrop(paths, payload.data ?? {});
+    } finally {
+      await cleanup();
+    }
+  }
+
+  /** The drop as script events, where the daemon has no native drop. */
+  private async scriptDrop(paths: string[], data: Record<string, string>): Promise<void> {
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
-    const list = payload.files === undefined ? [] : Array.isArray(payload.files) ? payload.files : [payload.files];
     const files = await Promise.all(
-      list.map(async (f) =>
-        typeof f === 'string'
-          ? { name: path.basename(f), mimeType: '', b64: (await fs.readFile(f)).toString('base64') }
-          : { name: f.name, mimeType: f.mimeType, b64: f.buffer.toString('base64') },
-      ),
+      paths.map(async (p) => ({ name: path.basename(p), mimeType: '', b64: (await fs.readFile(p)).toString('base64') })),
     );
-    await this.waitFor({ state: 'visible', ...(options.timeout === undefined ? {} : { timeout: options.timeout }) });
     await this.evaluate(
       `(el, p) => {
         const dt = new DataTransfer();
@@ -838,7 +853,7 @@ export class Locator {
         const x = r.left + r.width / 2, y = r.top + r.height / 2;
         for (const t of ['dragenter', 'dragover', 'drop']) el.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: dt }));
       }`,
-      { files, data: payload.data ?? {} },
+      { files, data },
     );
   }
 
@@ -1238,4 +1253,32 @@ export class ElementHandle extends Locator {
   override toString(): string {
     return 'ElementHandle';
   }
+}
+
+/** A file given as bytes rather than a path. */
+export interface DropFile {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+}
+
+/** Paths for the files to drop: in-memory ones written to a temp folder under their names. */
+async function filesOnDisk(list: (string | DropFile)[]): Promise<{ paths: string[]; cleanup: () => Promise<void> }> {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  let dir: string | null = null;
+  const paths: string[] = [];
+  for (const f of list) {
+    if (typeof f === 'string') {
+      paths.push(path.resolve(f));
+      continue;
+    }
+    dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'testsurfer-drop-'));
+    const sub = await fs.mkdtemp(path.join(dir, 'f'));
+    const p = path.join(sub, path.basename(f.name));
+    await fs.writeFile(p, f.buffer);
+    paths.push(p);
+  }
+  return { paths, cleanup: async () => { if (dir) await fs.rm(dir, { recursive: true, force: true }); } };
 }

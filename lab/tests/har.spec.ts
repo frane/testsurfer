@@ -39,5 +39,7 @@ test('recordVideo writes a video when the page closes', async ({ browser }) => {
   const file = await page.video()!.path();
   expect(fs.statSync(file).size).toBeGreaterThan(1000);
   expect(path.dirname(file)).toBe(dir);
+  expect(path.extname(file)).toBe('.webm');
+  expect([...fs.readFileSync(file).subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
   await ctx.close();
 });
