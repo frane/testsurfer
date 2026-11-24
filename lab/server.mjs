@@ -27,6 +27,15 @@ const routes = {
     res.end('ok');
   },
   '/cookies': (req, res) => json(res, { cookie: req.headers.cookie ?? '' }),
+  '/basic-auth': (req, res) => {
+    if (req.headers.authorization !== 'Basic ' + Buffer.from('lab:secret').toString('base64')) {
+      res.writeHead(401, { 'www-authenticate': 'Basic realm="lab"', 'content-type': 'text/plain' });
+      res.end('no');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>auth</title><p id="who">signed in</p>');
+  },
 };
 
 function json(res, v) {

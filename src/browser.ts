@@ -6,8 +6,8 @@
 import { WireClient, type ClientOptions } from './client.ts';
 
 /** Parse the vs_status daemon line into negotiated capabilities. */
-async function negotiate(client: WireClient): Promise<{ proto: number; flags: Set<string> }> {
-  const caps = { proto: 0, flags: new Set<string>() };
+async function negotiate(client: WireClient): Promise<{ proto: number; flags: Set<string>; version: string }> {
+  const caps = { proto: 0, flags: new Set<string>(), version: '' };
   try {
     const status = await client.call('vs_status');
     const line = status.body.find((l) => l.startsWith('daemon'));
@@ -18,6 +18,7 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
       const key = field.slice(0, eq);
       const value = field.slice(eq + 1);
       if (key === 'proto') caps.proto = Number(value) || 0;
+      if (key === 'version') caps.version = value;
       if (key === 'flags') for (const f of value.split(',')) caps.flags.add(f.trim());
     }
   } catch {
@@ -28,6 +29,40 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
 import { fromWire, matches, toWire, type Cookie, type CookieInput, type StorageState, type WireCookie } from './cookies.ts';
 import { Dialog, type RouteHandler, type UrlMatcher } from './events.ts';
 import { APIRequestContext } from './request.ts';
+import { geolocationScript, localeScript, onlineScript, timezoneScript, touchScript, userAgentScript, type Geolocation } from './emulation.ts';
+import type { MediaOptions } from './media.ts';
+
+/** Playwright's browser.newContext() / `use` options that testsurfer applies per context. */
+export interface ContextOptions {
+  colorScheme?: MediaOptions['colorScheme'];
+  reducedMotion?: MediaOptions['reducedMotion'];
+  forcedColors?: MediaOptions['forcedColors'];
+  contrast?: MediaOptions['contrast'];
+  extraHTTPHeaders?: Record<string, string>;
+  userAgent?: string;
+  locale?: string;
+  timezoneId?: string;
+  geolocation?: Geolocation;
+  permissions?: string[];
+  offline?: boolean;
+  httpCredentials?: { username: string; password: string; origin?: string; send?: 'always' | 'unauthorized' };
+  javaScriptEnabled?: boolean;
+  hasTouch?: boolean;
+  isMobile?: boolean;
+  bypassCSP?: boolean;
+  serviceWorkers?: 'allow' | 'block';
+  ignoreHTTPSErrors?: boolean;
+  acceptDownloads?: boolean;
+  baseURL?: string;
+  storageState?: StorageState | string;
+}
+
+/** The keys of ContextOptions, for picking them out of `use` and test.use(). */
+export const CONTEXT_OPTION_KEYS = [
+  'colorScheme', 'reducedMotion', 'forcedColors', 'contrast', 'extraHTTPHeaders', 'userAgent', 'locale', 'timezoneId',
+  'geolocation', 'permissions', 'offline', 'httpCredentials', 'javaScriptEnabled', 'hasTouch', 'isMobile', 'bypassCSP',
+  'serviceWorkers', 'ignoreHTTPSErrors', 'acceptDownloads', 'storageState',
+] as const;
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import {
   Page,
@@ -133,6 +168,7 @@ export class Browser {
       },
       options.baseURL,
     );
+    browser.daemonVersion = caps.version;
     if (options.testIdAttribute) browser.testIdAttribute = options.testIdAttribute;
     if (options.viewport !== undefined) browser.viewport = options.viewport;
     if (options.deviceScaleFactor !== undefined) browser.deviceScaleFactor = options.deviceScaleFactor;
@@ -157,15 +193,36 @@ export class Browser {
    * through vibesurfer's intercepting proxy unless `{ intercept: false }`
    * (an isolated context only; the shared jar cannot be proxied).
    */
-  async newContext(options: { isolated?: boolean; intercept?: boolean; storageState?: StorageState | string } = {}): Promise<BrowserContext> {
-    const ctx = await this.openContext(options);
+  async newContext(options: { isolated?: boolean; intercept?: boolean } & ContextOptions = {}): Promise<BrowserContext> {
+    const ctx = await this.openContext({ ...options, ...(options.ignoreHTTPSErrors ? { ignoreHTTPSErrors: true } : {}) });
+    await ctx.configure(options);
     if (options.storageState) await ctx.applyStorageState(options.storageState);
     return ctx;
   }
 
-  private async openContext(opts: { isolated?: boolean; intercept?: boolean }): Promise<BrowserContext> {
+  /** The vibesurfer daemon's version. */
+  version(): string {
+    return this.daemonVersion;
+  }
+
+  /** @internal Set by launch from the daemon's status line. */
+  daemonVersion = '';
+
+  isConnected(): boolean {
+    return !this.closed;
+  }
+
+  private closed = false;
+
+  /** The browser type: WebKit, the engine vibesurfer drives. */
+  browserType(): { name(): string } {
+    return { name: () => 'webkit' };
+  }
+
+  private async openContext(opts: { isolated?: boolean; intercept?: boolean; ignoreHTTPSErrors?: boolean }): Promise<BrowserContext> {
     const options = { ...opts, intercept: opts.intercept ?? opts.isolated !== false };
     const flags: Record<string, true> = options.isolated === false ? {} : { isolated: true };
+    if (opts.ignoreHTTPSErrors && options.intercept) flags['ignore-https-errors'] = true;
     // Every http request goes through vibesurfer's proxy (0.2.16+); see
     // src/net.ts. Popups then open as their own pages, reported on the
     // same event stream.
@@ -307,6 +364,7 @@ export class Browser {
 
   /** Close the session and drop the connection. */
   async close(): Promise<void> {
+    this.closed = true;
     for (const ctx of [...this.openContexts]) await ctx.close().catch(() => {});
     // The default context shares the browser's session; closing it closes its pages and their pollers.
     if (this.defaultCtx) await this.defaultCtx.close().catch(() => {});
@@ -349,6 +407,164 @@ export class BrowserContext {
 
   /** HTTP calls from the test process that share this context's cookies (Playwright's context.request). */
   readonly request: APIRequestContext;
+
+  private media: MediaOptions = {};
+  private geo: Geolocation | null = null;
+  private granted = new Set<string>();
+  private offlineNow = false;
+  private credentials: ContextOptions['httpCredentials'] | null = null;
+  private jsDisabled = false;
+  private cspBypass = false;
+  private internalRoute = false;
+  private closedFlag = false;
+  private readonly timeoutDefaults: { action?: number; navigation?: number } = {};
+
+  /** @internal Apply newContext() options. */
+  async configure(o: ContextOptions): Promise<void> {
+    const headers: Record<string, string> = { ...(o.extraHTTPHeaders ?? {}) };
+    if (o.userAgent) {
+      headers['user-agent'] = o.userAgent;
+      await this.addInitScript(userAgentScript(o.userAgent));
+    }
+    if (o.locale) {
+      headers['accept-language'] = o.locale;
+      await this.addInitScript(localeScript(o.locale));
+    }
+    if (o.timezoneId) await this.addInitScript(timezoneScript(o.timezoneId));
+    if (o.hasTouch || o.isMobile) await this.addInitScript(touchScript());
+    if (o.serviceWorkers === 'block') {
+      await this.addInitScript(`(() => { if (navigator.serviceWorker) navigator.serviceWorker.register = () => Promise.reject(new DOMException('Service workers are blocked', 'SecurityError')); })();`);
+    }
+    if (Object.keys(headers).length) await this.setExtraHTTPHeaders({ ...this.extraHeaders, ...headers });
+    for (const k of ['colorScheme', 'reducedMotion', 'forcedColors', 'contrast'] as const) {
+      if (o[k] !== undefined) (this.media as Record<string, unknown>)[k] = o[k];
+    }
+    if (o.geolocation || o.permissions) {
+      this.geo = o.geolocation ?? null;
+      for (const p of o.permissions ?? []) this.granted.add(p);
+      await this.addInitScript(geolocationScript(this.geo, [...this.granted]));
+    }
+    if (o.offline) await this.setOffline(true);
+    if (o.httpCredentials) await this.setHTTPCredentials(o.httpCredentials);
+    if (o.javaScriptEnabled === false) {
+      this.jsDisabled = true;
+      await this.ensureInternalRoute();
+    }
+    if (o.bypassCSP) {
+      this.cspBypass = true;
+      await this.ensureInternalRoute();
+    }
+  }
+
+  /** @internal Per-page settings a new page (or popup) gets. */
+  private async preparePage(page: Page): Promise<void> {
+    if (Object.keys(this.media).length) await page.emulateMedia(this.media);
+    if (this.timeoutDefaults.action !== undefined) page.setDefaultTimeout(this.timeoutDefaults.action);
+    if (this.timeoutDefaults.navigation !== undefined) page.setDefaultNavigationTimeout(this.timeoutDefaults.navigation);
+  }
+
+  /**
+   * One context route, added the first time something needs it: it
+   * fails every request while offline, adds HTTP credentials, and
+   * turns scripts off (CSP) or the page's CSP off on documents.
+   */
+  private async ensureInternalRoute(): Promise<void> {
+    if (this.internalRoute) return;
+    this.internalRoute = true;
+    await this.route('**/*', async (route) => {
+      const req = route.request();
+      if (this.offlineNow) return route.abort('internetdisconnected');
+      const add: Record<string, string> = {};
+      const c = this.credentials;
+      if (c && (!c.origin || new URL(req.url()).origin === new URL(c.origin).origin)) {
+        add['authorization'] = `Basic ${Buffer.from(`${c.username}:${c.password}`).toString('base64')}`;
+      }
+      const doc = req.resourceType() === 'document';
+      if (doc && (this.jsDisabled || this.cspBypass)) {
+        const res = await route.fetch(Object.keys(add).length ? { headers: { ...req.headers(), ...add } } : {});
+        const h = { ...res.headers() };
+        if (this.cspBypass) for (const k of Object.keys(h)) if (k.toLowerCase().startsWith('content-security-policy')) delete h[k];
+        if (this.jsDisabled) h['content-security-policy'] = "script-src 'none'";
+        return route.fulfill({ response: res, headers: h });
+      }
+      if (Object.keys(add).length) return route.fallback({ headers: { ...req.headers(), ...add } });
+      return route.fallback();
+    });
+  }
+
+  /** An init script for later documents that also runs in the documents open now. */
+  private async addLiveScript(script: string): Promise<void> {
+    await this.addInitScript(script);
+    for (const p of this.open) await p.evaluate(`() => { ${script} }`).catch(() => {});
+  }
+
+  /** Fail every request (and report navigator.onLine false) while `offline`. */
+  async setOffline(offline: boolean): Promise<void> {
+    this.offlineNow = offline;
+    if (offline) await this.ensureInternalRoute();
+    await this.addLiveScript(onlineScript(offline));
+  }
+
+  /** The position navigator.geolocation reports; null makes it unavailable. */
+  async setGeolocation(geolocation: Geolocation | null): Promise<void> {
+    this.geo = geolocation;
+    await this.addLiveScript(geolocationScript(this.geo, [...this.granted]));
+  }
+
+  /** Grant permissions (`geolocation`, `notifications`, ...) as navigator.permissions reports them. */
+  async grantPermissions(permissions: string[], _options: { origin?: string } = {}): Promise<void> {
+    for (const p of permissions) this.granted.add(p);
+    await this.addLiveScript(geolocationScript(this.geo, [...this.granted]));
+  }
+
+  async clearPermissions(): Promise<void> {
+    this.granted.clear();
+    await this.addLiveScript(geolocationScript(this.geo, []));
+  }
+
+  /** Credentials for HTTP authentication, sent to `origin` (every origin when unset); null stops sending them. */
+  async setHTTPCredentials(credentials: ContextOptions['httpCredentials'] | null): Promise<void> {
+    this.credentials = credentials ?? null;
+    if (credentials) await this.ensureInternalRoute();
+  }
+
+  /** exposeFunction() on every page of the context, current and future. */
+  async exposeFunction(name: string, fn: (...args: any[]) => unknown): Promise<void> {
+    await this.exposeBinding(name, (_source: unknown, ...args: unknown[]) => fn(...args));
+  }
+
+  /** exposeBinding() on every page of the context, current and future. */
+  async exposeBinding(name: string, fn: (source: { page: Page; context: BrowserContext; frame: unknown }, ...args: any[]) => unknown): Promise<void> {
+    this.bindings.push({ name, fn });
+    for (const p of this.open) await p.exposeBinding(name, fn as Parameters<Page['exposeBinding']>[1]);
+  }
+
+  private readonly bindings: { name: string; fn: (source: { page: Page; context: BrowserContext; frame: unknown }, ...args: any[]) => unknown }[] = [];
+
+  setDefaultTimeout(ms: number): void {
+    this.timeoutDefaults.action = ms;
+    for (const p of this.open) p.setDefaultTimeout(ms);
+  }
+
+  setDefaultNavigationTimeout(ms: number): void {
+    this.timeoutDefaults.navigation = ms;
+    for (const p of this.open) p.setDefaultNavigationTimeout(ms);
+  }
+
+  isClosed(): boolean {
+    return this.closedFlag;
+  }
+
+  /** Service workers running for the context's pages (not tracked separately; always empty). */
+  serviceWorkers(): never[] {
+    return [];
+  }
+
+  /** Replace the context's cookies and localStorage with `state`. */
+  async setStorageState(state: StorageState | string): Promise<void> {
+    if (this.owner.hostCookies) await this.clearCookies();
+    await this.applyStorageState(state);
+  }
 
   /** A page whose data store holds the context's jar: an open page, or a blank one kept for this. */
   private async jarPage(): Promise<string> {
@@ -518,6 +734,7 @@ export class BrowserContext {
     // The context's routes and init scripts apply to the popup too; its
     // document is already on the way, so they reach it from the next one.
     for (const r of this.routes) void popup.route(r.url, r.handler, r.times === undefined ? {} : { times: r.times });
+    void this.preparePage(popup).catch(() => {});
     this.emit('page', popup);
     opener?.emitPopup(popup);
     return events;
@@ -642,6 +859,8 @@ export class BrowserContext {
     for (const name of this.pendingCookies.splice(0)) await page.loadCookieBlob(name);
     for (const s of this.scripts) await page.addInitScript(s.script, s.arg);
     for (const r of this.routes) await page.route(r.url, r.handler, r.times === undefined ? {} : { times: r.times });
+    for (const b of this.bindings) await page.exposeBinding(b.name, b.fn as Parameters<Page['exposeBinding']>[1]);
+    await this.preparePage(page);
     return page;
   }
 
@@ -653,6 +872,15 @@ export class BrowserContext {
   async route(url: UrlMatcher, handler: RouteHandler, options: { times?: number } = {}): Promise<void> {
     this.routes.push({ url, handler, ...(options.times === undefined ? {} : { times: options.times }) });
     for (const p of this.open) await p.route(url, handler, options);
+  }
+
+  /** Remove routes for `url`: all of them, or the one with `handler`. */
+  async unroute(url: UrlMatcher, handler?: RouteHandler): Promise<void> {
+    for (let i = this.routes.length - 1; i >= 0; i--) {
+      const r = this.routes[i]!;
+      if (String(r.url) === String(url) && (!handler || r.handler === handler)) this.routes.splice(i, 1);
+    }
+    for (const p of this.open) await p.unroute(url, handler);
   }
 
   async unrouteAll(): Promise<void> {
@@ -668,6 +896,7 @@ export class BrowserContext {
 
   /** Close every page, and the session when the context opened one. */
   async close(): Promise<void> {
+    this.closedFlag = true;
     for (const p of this.open.splice(0)) await p.close().catch(() => {});
     if (this.blankJarPage && !this.ownsSession) {
       await this.owner.rawCall('vs_close', [this.blankJarPage], { session: this.sessionId }).catch(() => {});

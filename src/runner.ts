@@ -14,7 +14,7 @@ import { test as nodeTest, describe as nodeDescribe, after, before } from 'node:
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Browser, type BrowserContext, type LaunchOptions } from './browser.ts';
+import { Browser, CONTEXT_OPTION_KEYS, type BrowserContext, type ContextOptions, type LaunchOptions } from './browser.ts';
 import type { StorageState } from './cookies.ts';
 import { currentTestInfo, testInfoStore, updateSnapshotsFromEnv, type TestInfo, type UpdateSnapshots } from './testinfo.ts';
 import type { Page } from './page.ts';
@@ -64,6 +64,8 @@ export interface RunnerOptions extends LaunchOptions {
   network?: 'shim' | 'proxy';
   /** Cookies and localStorage every test's context starts with (Playwright's `use.storageState`): a state object or a JSON file. */
   storageState?: StorageState | string;
+  /** newContext() options for every test (Playwright's `use`: colorScheme, locale, timezoneId, userAgent, ...). */
+  contextOptions?: ContextOptions;
   /** Where toMatchSnapshot(name) keeps baselines; Playwright's tokens. */
   snapshotPathTemplate?: string;
 }
@@ -373,18 +375,19 @@ async function runTest(
   const afters = chain.flatMap((s) => s.afterEach).reverse();
   const browser = await sharedBrowser();
   // Each test gets a fresh, isolated context unless the suite opts out.
-  const stateDef = defs['storageState'];
-  const storageState = (typeof stateDef === 'string' || (stateDef && typeof stateDef === 'object' && !Array.isArray(stateDef)) ? stateDef : options.storageState) as
-    | StorageState
-    | string
-    | undefined;
+  // Context options: the config's `use`, then test.use() values.
+  const ctxOpts: ContextOptions = { ...(options.contextOptions ?? {}) };
+  for (const k of CONTEXT_OPTION_KEYS) {
+    const d = defs[k];
+    const v = Array.isArray(d) && d.length === 2 && typeof d[1] === 'object' ? d[0] : d;
+    if (v !== undefined && typeof v !== 'function') (ctxOpts as Record<string, unknown>)[k] = v;
+  }
+  if (ctxOpts.storageState === undefined && options.storageState !== undefined) ctxOpts.storageState = options.storageState;
+  if (typeof ctxOpts.storageState === 'string') ctxOpts.storageState = path.resolve(ctxOpts.storageState);
   const context =
     options.isolate === false
       ? browser.sharedContext()
-      : await browser.newContext({
-          intercept: options.network !== 'shim',
-          ...(storageState ? { storageState } : {}),
-        });
+      : await browser.newContext({ intercept: options.network !== 'shim', ...ctxOpts });
   const page = await context.newPage();
   try {
     if (options.auth) {

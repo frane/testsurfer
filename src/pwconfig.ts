@@ -83,6 +83,12 @@ export function runnerOptionsFrom(cfg: PlaywrightConfig, configDir: string): Rec
   if (use.viewport) out['viewport'] = use.viewport;
   if (use.deviceScaleFactor) out['deviceScaleFactor'] = use.deviceScaleFactor;
   if (use.storageState) out['storageState'] = typeof use.storageState === 'string' ? path.resolve(configDir, use.storageState) : use.storageState;
+  const ctx: Record<string, unknown> = {};
+  for (const k of ['colorScheme', 'reducedMotion', 'forcedColors', 'contrast', 'extraHTTPHeaders', 'userAgent', 'locale', 'timezoneId', 'geolocation', 'permissions', 'offline', 'httpCredentials', 'javaScriptEnabled', 'hasTouch', 'isMobile', 'bypassCSP', 'serviceWorkers', 'ignoreHTTPSErrors', 'acceptDownloads'] as const) {
+    const v = (use as Record<string, unknown>)[k];
+    if (v !== undefined) ctx[k] = v;
+  }
+  if (Object.keys(ctx).length) out['contextOptions'] = ctx;
   const timeouts: Record<string, number> = {};
   // 0 means "no limit" in Playwright; the test's own timeout then bounds it.
   const limit = (v: number | undefined) => (v === 0 ? (cfg.timeout ?? 30_000) : v);
