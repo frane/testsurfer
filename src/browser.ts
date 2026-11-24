@@ -751,6 +751,9 @@ export class BrowserContext {
       netPageClosed: (pageId) => {
         this.open.find((p) => p.wireId() === pageId)?.closedByPage();
       },
+      netPageCrashed: (pageId) => {
+        this.open.find((p) => p.wireId() === pageId)?.crashed();
+      },
       netDialog: (pageId, kind, message, defaultText, answer) => {
         const page = this.open.find((p) => p.wireId() === pageId) ?? null;
         const d = new Dialog(kind, message, defaultText, page, answer);

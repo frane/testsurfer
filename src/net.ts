@@ -47,6 +47,8 @@ export interface NetContext {
   netPopup(openerId: string, pageId: string, url: string): NetPage | null;
   /** A page closed itself (`window.close()`). */
   netPageClosed(pageId: string): void;
+  /** A page's web content process died. */
+  netPageCrashed?(pageId: string): void;
   /** A page opened a dialog; `answer` closes it. */
   netDialog(
     pageId: string,
@@ -315,6 +317,9 @@ export class NetHub {
         }
         case 'close':
           this.ctx?.netPageClosed(parts[1] ?? '');
+          break;
+        case 'crash':
+          this.ctx?.netPageCrashed?.(parts[1] ?? '');
           break;
         case 'sw':
           this.serviceWorkerResponse(parts[1] ?? '');

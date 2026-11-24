@@ -874,6 +874,11 @@ export class Page {
     await this.evaluate(`(a) => window.__ts && window.__ts.${fn} && window.__ts.${fn}(...a)`, args);
   }
 
+  /** @internal The web content process died: Playwright's `crash` event. */
+  crashed(): void {
+    this.events.emitPageEvent('crash', this);
+  }
+
   /** Up to 200 recent console messages; `since-navigation` keeps the current document's. */
   async consoleMessages(options: { filter?: 'all' | 'since-navigation' } = {}): Promise<ConsoleMessage[]> {
     await this.events.flush().catch(() => {});
