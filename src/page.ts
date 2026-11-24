@@ -133,6 +133,8 @@ export interface ProtocolOptions {
   nativeWheel?: boolean;
   /** vibesurfer 0.2.19+: `vs_cookies`, the jar read and written host-side. Negotiated from the cookies flag. */
   cookies?: boolean;
+  /** vibesurfer 0.2.19+: click-at takes a button, a click count and modifiers. Negotiated from the clickOptions flag. */
+  clickOptions?: boolean;
 }
 
 export interface LayoutRect {
@@ -180,6 +182,8 @@ export class Page {
   readonly actDeltas: boolean;
   readonly navInPlace: boolean;
   private readonly nativeWheel: boolean;
+  /** @internal click-at takes button, count and modifiers (vibesurfer 0.2.19+). */
+  readonly nativeClickOptions: boolean;
   readonly baseURL: string | undefined;
   /** HTTP requests from the test process (not the browser). */
   private readonly ownRequest: APIRequestContext;
@@ -215,12 +219,13 @@ export class Page {
     this.ownRequest = new APIRequestContext(baseURL);
     this.client = client;
     this.sessionId = sessionId;
-    this.timeouts = timeouts;
+    this.timeouts = { ...timeouts };
     this.inputMode = inputMode;
     this.clickVia = clickVia;
     this.actDeltas = protocol.actDeltas ?? false;
     this.navInPlace = protocol.navInPlace ?? false;
     this.nativeWheel = protocol.nativeWheel ?? false;
+    this.nativeClickOptions = protocol.clickOptions ?? false;
     this.events = new PageEvents({
       openPoller: () => this.client.sibling(),
       target: () => ({ pageId: this.pageId, sessionId: this.sessionId }),
@@ -748,6 +753,47 @@ export class Page {
    * A new page starts at about:blank, as in Playwright: the first call
    * that needs a document opens one (with the init scripts installed).
    */
+  private navTimeoutSet = false;
+
+  /** Timeout for actions and, unless setDefaultNavigationTimeout() set one, navigations. */
+  setDefaultTimeout(ms: number): void {
+    this.timeouts.action = ms;
+    if (!this.navTimeoutSet) this.timeouts.navigation = ms;
+  }
+
+  /** Timeout for goto, reload, waitForURL and the other navigations. */
+  setDefaultNavigationTimeout(ms: number): void {
+    this.navTimeoutSet = true;
+    this.timeouts.navigation = ms;
+  }
+
+  /** Drag the element at `source` onto the one at `target`. */
+  async dragAndDrop(source: string, target: string, options: { timeout?: number } = {}): Promise<void> {
+    await this.locator(source).dragTo(this.locator(target), options);
+  }
+
+  /**
+   * Touch input (Playwright's touchscreen). `tap` sends touchstart and
+   * touchend at the point and then a trusted click there, the click a
+   * browser makes of a tap.
+   */
+  readonly touchscreen = {
+    tap: async (x: number, y: number): Promise<void> => {
+      await this.evaluate(
+        `([x, y]) => {
+          const t = document.elementFromPoint(x, y) || document.body;
+          if (typeof Touch === 'undefined' || typeof TouchEvent === 'undefined') return;
+          const touch = new Touch({ identifier: Date.now(), target: t, clientX: x, clientY: y, pageX: x + scrollX, pageY: y + scrollY });
+          const init = { bubbles: true, cancelable: true, composed: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] };
+          t.dispatchEvent(new TouchEvent('touchstart', init));
+          t.dispatchEvent(new TouchEvent('touchend', { ...init, touches: [], targetTouches: [] }));
+        }`,
+        [x, y],
+      ).catch(() => {});
+      await this.clickAt(x, y);
+    },
+  };
+
   /** @internal The page's wire id, opening its web view first if it has none yet. */
   async openedId(): Promise<string> {
     await this.ensureOpen();
@@ -1025,13 +1071,23 @@ export class Page {
    * untouched, so `synced` survives (the next delta view picks up the
    * click's effects) but `fresh` does not.
    */
-  async clickAt(x: number, y: number, mode?: InputMode): Promise<void> {
+  async clickAt(
+    x: number,
+    y: number,
+    mode?: InputMode,
+    opts: { count?: number | undefined; button?: 'left' | 'right' | 'middle' | undefined; modifiers?: string[] | undefined } = {},
+  ): Promise<void> {
     await this.ensureOpen();
+    const flags: Record<string, string> = { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode };
+    if (opts.button && opts.button !== 'left') flags['button'] = opts.button;
+    if (opts.count && opts.count > 1) flags['count'] = String(Math.min(3, opts.count));
+    const mods = (opts.modifiers ?? []).map((m) => (m === 'ControlOrMeta' ? (process.platform === 'darwin' ? 'meta' : 'ctrl') : m === 'Control' ? 'ctrl' : m.toLowerCase()));
+    if (mods.length) flags['modifiers'] = mods.join(',');
     try {
       const resp = await this.client.call(
         'vs_click_at',
         [this.id, String(Math.round(x * 100) / 100), String(Math.round(y * 100) / 100)],
-        { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode },
+        flags,
       );
       this.token = resp.token;
       if (this.actDeltas) {
@@ -1793,9 +1849,13 @@ export class Page {
       if (this.pressedAt) return;
       await this.cursorOp('vs_move_to', [x, y], options?.mode, false);
     },
-    click: async (x: number, y: number, options?: { mode?: InputMode }): Promise<void> => {
+    click: async (x: number, y: number, options?: { mode?: InputMode; clickCount?: number; button?: 'left' | 'right' | 'middle'; delay?: number }): Promise<void> => {
       this.pointer = { x, y };
-      await this.clickAt(x, y, options?.mode);
+      await this.clickAt(x, y, options?.mode, { count: options?.clickCount, button: options?.button });
+    },
+    dblclick: async (x: number, y: number, options?: { mode?: InputMode; button?: 'left' | 'right' | 'middle' }): Promise<void> => {
+      this.pointer = { x, y };
+      await this.clickAt(x, y, options?.mode, { count: 2, button: options?.button });
     },
     down: async (): Promise<void> => {
       this.pressedAt = { ...this.pointer };

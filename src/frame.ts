@@ -222,4 +222,143 @@ export class Frame {
   isVisible(selector: string): Promise<boolean> {
     return this.locator(selector).isVisible();
   }
+  isHidden(selector: string): Promise<boolean> {
+    return this.locator(selector).isHidden();
+  }
+  isChecked(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isChecked(options);
+  }
+  isDisabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isDisabled(options);
+  }
+  isEditable(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isEditable(options);
+  }
+  isEnabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
+    return this.locator(selector).isEnabled(options);
+  }
+  inputValue(selector: string, options?: { timeout?: number }): Promise<string> {
+    return this.locator(selector).inputValue(options);
+  }
+  check(selector: string, options?: Parameters<Locator['check']>[0]): Promise<void> {
+    return this.locator(selector).check(options);
+  }
+  uncheck(selector: string, options?: Parameters<Locator['uncheck']>[0]): Promise<void> {
+    return this.locator(selector).uncheck(options);
+  }
+  setChecked(selector: string, checked: boolean, options?: Parameters<Locator['setChecked']>[1]): Promise<void> {
+    return this.locator(selector).setChecked(checked, options);
+  }
+  dblclick(selector: string, options?: Parameters<Locator['dblclick']>[0]): Promise<void> {
+    return this.locator(selector).dblclick(options);
+  }
+  tap(selector: string, options?: Parameters<Locator['tap']>[0]): Promise<void> {
+    return this.locator(selector).tap(options);
+  }
+  hover(selector: string, options?: Parameters<Locator['hover']>[0]): Promise<void> {
+    return this.locator(selector).hover(options);
+  }
+  focus(selector: string, options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).focus(options);
+  }
+  press(selector: string, key: string, options?: Parameters<Locator['press']>[1]): Promise<void> {
+    return this.locator(selector).press(key, options);
+  }
+  type(selector: string, text: string, options?: Parameters<Locator['pressSequentially']>[1]): Promise<void> {
+    return this.locator(selector).pressSequentially(text, options);
+  }
+  selectOption(selector: string, values: Parameters<Locator['selectOption']>[0], options?: Parameters<Locator['selectOption']>[1]): Promise<string[]> {
+    return this.locator(selector).selectOption(values, options);
+  }
+  setInputFiles(selector: string, files: Parameters<Locator['setInputFiles']>[0], options?: Parameters<Locator['setInputFiles']>[1]): Promise<void> {
+    return this.locator(selector).setInputFiles(files, options);
+  }
+  dispatchEvent(selector: string, type: string, eventInit?: Record<string, unknown>, options?: { timeout?: number }): Promise<void> {
+    return this.locator(selector).dispatchEvent(type, eventInit, options);
+  }
+  dragAndDrop(source: string, target: string, options?: { timeout?: number }): Promise<void> {
+    return this.locator(source).dragTo(this.locator(target), options);
+  }
+  waitForTimeout(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /** Add a <script> to this frame and wait for it to load; returns its element. */
+  async addScriptTag(options: { url?: string; path?: string; content?: string; type?: string }): Promise<ElementHandle> {
+    if (!this.element) return this.owner.addScriptTag(options);
+    let content = options.content;
+    if (options.path !== undefined) content = (await (await import('node:fs/promises')).readFile(options.path, 'utf8')) + `\n//# sourceURL=${options.path}`;
+    return (await this.evaluateHandle(
+      `(o) => new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        if (o.type) s.type = o.type;
+        if (o.url !== undefined) { s.src = o.url; s.onload = () => resolve(s); s.onerror = () => reject(new Error('Failed to load script at ' + o.url)); document.head.appendChild(s); }
+        else { s.textContent = o.content || ''; document.head.appendChild(s); resolve(s); }
+      })`,
+      { url: options.url, content, type: options.type },
+    )) as unknown as ElementHandle;
+  }
+
+  /** Add a <style> or stylesheet <link> to this frame and wait for it to load; returns its element. */
+  async addStyleTag(options: { url?: string; path?: string; content?: string }): Promise<ElementHandle> {
+    if (!this.element) return this.owner.addStyleTag(options);
+    let content = options.content;
+    if (options.path !== undefined) content = await (await import('node:fs/promises')).readFile(options.path, 'utf8');
+    return (await this.evaluateHandle(
+      `(o) => new Promise((resolve, reject) => {
+        if (o.url !== undefined) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = o.url; l.onload = () => resolve(l); l.onerror = () => reject(new Error('Failed to load stylesheet at ' + o.url)); document.head.appendChild(l); }
+        else { const s = document.createElement('style'); s.textContent = o.content || ''; document.head.appendChild(s); resolve(s); }
+      })`,
+      { url: options.url, content },
+    )) as unknown as ElementHandle;
+  }
+
+  /** Wait until this frame's URL matches. */
+  async waitForURL(url: string | RegExp | ((u: URL) => boolean), options: { timeout?: number } = {}): Promise<void> {
+    if (!this.element) return this.owner.waitForURL(url, options);
+    const test = (u: string) =>
+      typeof url === 'string' ? u === url || globMatch(url, u) : url instanceof RegExp ? url.test(u) : url(new URL(u));
+    const deadline = Date.now() + (options.timeout ?? 30_000);
+    for (;;) {
+      const u = await this.evaluate<string>('() => location.href').catch(() => '');
+      if (u && test(u)) return;
+      if (Date.now() > deadline) throw new Error(`frame.waitForURL: Timeout ${options.timeout ?? 30_000}ms exceeded.`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  /** Wait for this frame's next navigation (and run `action` meanwhile). */
+  async waitForNavigation(options: { url?: string | RegExp | ((u: URL) => boolean); timeout?: number } = {}): Promise<null> {
+    if (!this.element) {
+      await this.owner.waitForNavigation(options);
+      return null;
+    }
+    const before = await this.evaluate<string>('() => location.href + "#" + performance.timeOrigin').catch(() => '');
+    const deadline = Date.now() + (options.timeout ?? 30_000);
+    for (;;) {
+      const now = await this.evaluate<string>('() => location.href + "#" + performance.timeOrigin').catch(() => '');
+      if (now && now !== before) {
+        if (options.url) await this.waitForURL(options.url, { timeout: Math.max(0, deadline - Date.now()) });
+        return null;
+      }
+      if (Date.now() > deadline) throw new Error(`frame.waitForNavigation: Timeout ${options.timeout ?? 30_000}ms exceeded.`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+}
+
+/** Playwright's URL glob: `**` any characters, `*` any but `/`, `?` one. */
+function globMatch(glob: string, url: string): boolean {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        re += '.*';
+        i++;
+      } else re += '[^/]*';
+    } else if (c === '?') re += '.';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`).test(url);
 }

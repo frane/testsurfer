@@ -586,7 +586,15 @@ export class Locator {
       (options.button && options.button !== 'left') ||
       (options.modifiers && options.modifiers.length > 0) ||
       (options.clickCount ?? 1) > 1;
-    if (synthetic) {
+    if (synthetic && this.owner.nativeClickOptions) {
+      // Native button, count and modifiers (vibesurfer 0.2.19+): trusted, like any other click.
+      await this.owner.clickAt(pt.x, pt.y, undefined, {
+        count: options.clickCount,
+        button: options.button,
+        modifiers: options.modifiers,
+      });
+      await this.run('settleFocus', {}, { first: true }).catch(() => {});
+    } else if (synthetic) {
       await this.waitOne('locator.click', 'synthClick', options, options.timeout);
     } else {
       let at = pt;

@@ -129,6 +129,7 @@ export class Browser {
         navInPlace: options.protocol?.navInPlace ?? caps.proto >= 1,
         nativeWheel: options.protocol?.nativeWheel ?? caps.flags.has('wheel'),
         cookies: options.protocol?.cookies ?? caps.flags.has('cookies'),
+        clickOptions: options.protocol?.clickOptions ?? caps.flags.has('clickOptions'),
       },
       options.baseURL,
     );
