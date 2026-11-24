@@ -23,6 +23,11 @@ export const WORKER_SHIM = String.raw`(function () {
     ts.workers[id] = rec;
     w.addEventListener('message', function (e) {
       var d = e.data;
+      if (d && typeof d === 'object' && d.__tsConsole) {
+        e.stopImmediatePropagation();
+        emit({ t: 'console', type: d.__tsConsole.type, text: d.__tsConsole.text, args: [], worker: id });
+        return;
+      }
       if (!d || typeof d !== 'object' || d.__tsEvalResult === undefined) return;
       e.stopImmediatePropagation();
       var p = rec.pending[d.__tsEvalResult];

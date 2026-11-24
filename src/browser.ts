@@ -591,7 +591,7 @@ export class BrowserContext {
     return this.closedFlag;
   }
 
-  /** Service workers running for the context's pages (not tracked separately; always empty). */
+  /** Service worker objects: Playwright has them on Chromium only; on WebKit the list is empty, as here. */
   serviceWorkers(): never[] {
     return [];
   }

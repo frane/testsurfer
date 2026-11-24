@@ -258,6 +258,7 @@ export class Page {
         this.lastHref = url;
       },
       wsEvent: (e) => void this.onWsEvent(e).catch(() => {}),
+      workerFor: (id) => this.workerList.get(id) ?? null,
       swControlled: () => this.swControlled,
       pageURL: () => this.lastHref,
     });
@@ -922,6 +923,19 @@ export class Page {
       removeItem: (name: string) => run<void>('s.removeItem(a);', name),
       items: () => run<{ name: string; value: string }[]>('const out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push({ name: k, value: s.getItem(k) }); } return out;'),
     };
+  }
+
+  /**
+   * Run the page's garbage collector: allocation pressure, which makes
+   * JavaScriptCore (and V8) collect, twice, with a task turn between so
+   * WeakRefs and FinalizationRegistry callbacks settle.
+   */
+  async requestGC(): Promise<void> {
+    for (let k = 0; k < 2; k++) {
+      await this.evaluate(
+        '() => new Promise((r) => { let a = []; for (let i = 0; i < 40; i++) a.push(new Array(500000).fill(i)); a = null; setTimeout(r, 0); })',
+      );
+    }
   }
 
   /** Every page has its own window here; nothing is in front of another. */

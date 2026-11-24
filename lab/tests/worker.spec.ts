@@ -12,3 +12,11 @@ test('worker events and worker.evaluate', async ({ page }) => {
   const reply = await page.evaluate(() => new Promise((r) => { (window as any).w.onmessage = (e: MessageEvent) => r(e.data); (window as any).w.postMessage('hi'); }));
   expect(reply).toBe('worker got hi');
 });
+
+test('console messages from a worker', async ({ page }) => {
+  await page.goto('/page/nav-a.html');
+  const msg = page.waitForEvent('console', (m) => m.text() === 'from the worker');
+  await page.evaluate(() => { new Worker(URL.createObjectURL(new Blob(['console.log("never")']))); (window as any).w2 = new Worker('/page/worker-log.js'); });
+  const m = await msg;
+  expect(m.worker()).toBeTruthy();
+});

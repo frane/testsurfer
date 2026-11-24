@@ -429,19 +429,21 @@ export class ConsoleMessage {
   private readonly values: { v?: unknown; u?: number }[];
   private readonly owner: unknown;
   private readonly at = Date.now();
-  constructor(kind: string, message: string, values: { v?: unknown; u?: number }[] = [], owner: unknown = null) {
+  private readonly from: unknown;
+  constructor(kind: string, message: string, values: { v?: unknown; u?: number }[] = [], owner: unknown = null, worker: unknown = null) {
     this.kind = kind;
     this.message = message;
     this.values = values;
     this.owner = owner;
+    this.from = worker;
   }
   /** When the message was logged, in ms since the epoch. */
   timestamp(): number {
     return this.at;
   }
-  /** The worker that logged it: page messages only here, so null. */
-  worker(): null {
-    return null;
+  /** The web worker that logged it, or null for the page. */
+  worker(): unknown {
+    return this.from;
   }
   /** The arguments passed to console.*, as handles whose jsonValue() is the value. */
   args(): ConsoleArg[] {
@@ -642,6 +644,8 @@ export interface EventsHost {
   page?: () => unknown;
   /** The main document is now at `url` (a navigation the page made). */
   noteURL?: (url: string) => void;
+  /** The page's Worker with the shim's id, for ConsoleMessage.worker(). */
+  workerFor?: (id: number) => unknown;
   /** A WebSocket event from the page (src/websocket.ts). */
   wsEvent?: (e: Record<string, unknown>) => void;
 }
@@ -1060,7 +1064,8 @@ export class PageEvents {
         this.pendingBindings.push(this.runBinding(e));
         break;
       case 'console': {
-        const m = new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[]);
+        const w = (e as { worker?: number }).worker;
+        const m = new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[], null, w === undefined ? null : (this.host.workerFor?.(w) ?? null));
         this.keep(this.consoleLog, m);
         this.emit('console', m);
         break;
