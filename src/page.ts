@@ -26,7 +26,8 @@ import { FILECHOOSER_SHIM } from './filechooser.ts';
 import { Screencast } from './screencast.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
-import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
+import type { MediaOptions } from './media.ts';
+import { MediaEmulation } from './page-media.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
 import { decodePng, downscale, encodePng } from './png.ts';
 import { renderSnapshot } from './aria.ts';
@@ -313,87 +314,21 @@ export class Page {
    * document and later ones.
    */
   async emulateMedia(options: MediaOptions = {}): Promise<void> {
-    for (const k of ['media', 'colorScheme', 'reducedMotion', 'forcedColors', 'contrast'] as const) {
-      if (k in options) (this.media as Record<string, string | null>)[k] = options[k] ?? null;
-    }
-    const src = mediaScript(this.media);
-    await this.addInitSource(src);
-    if (this.pageId) await this.rawEval(`(${src.replace(/;\s*$/, '')}, 0)`).catch(() => {});
-    // Cross-origin stylesheets: now, and whenever one loads later.
-    if (!this.adoptHooked) {
-      this.adoptHooked = true;
+    await this.mediaEmulation.emulate(options);
+  }
+
+  private readonly mediaEmulation = new MediaEmulation({
+    hasDocument: () => this.pageId !== null,
+    addInitSource: (src) => this.addInitSource(src),
+    rawEval: (expr) => this.rawEval(expr),
+    evaluate: (fn, arg) => this.evaluate(fn, arg),
+    request: () => this.request,
+    onStylesheet: (listener) => {
       this.on('response', (res: Response) => {
-        if (res.request().resourceType() === 'stylesheet') this.scheduleAdopt();
+        if (res.request().resourceType() === 'stylesheet') listener();
       });
-    }
-    if (this.pageId) await this.adoptSheets().catch(() => {});
-  }
-
-  private adoptHooked = false;
-  private adoptTimer: ReturnType<typeof setTimeout> | null = null;
-
-  private scheduleAdopt(): void {
-    if (this.adoptTimer) return;
-    this.adoptTimer = setTimeout(() => {
-      this.adoptTimer = null;
-      void this.adoptSheets().catch(() => {});
-    }, 30);
-  }
-
-  /**
-   * Stylesheets the page cannot read (cross-origin, so their @media
-   * rules cannot be rewritten in place): fetch each with the context's
-   * cookies, inline its @imports, make its url()s absolute, and put the
-   * copy in a <style> right after the original, which is disabled. The
-   * media script then rewrites the copy like any other sheet.
-   */
-  private async adoptSheets(): Promise<void> {
-    const hrefs = (await this.evaluate(`() => {
-      const out = [];
-      for (const s of document.styleSheets) {
-        try { void s.cssRules; } catch (e) {
-          if (s.href && s.ownerNode && !s.ownerNode.__tsAdopted) out.push(s.href);
-        }
-      }
-      return out;
-    }`)) as string[];
-    for (const href of [...new Set(hrefs)]) {
-      const css = await this.fetchSheet(href, 0).catch(() => null);
-      if (css === null) continue;
-      await this.evaluate(
-        `([href, css]) => {
-          for (const s of document.styleSheets) {
-            const n = s.ownerNode;
-            if (s.href !== href || !n || n.__tsAdopted) continue;
-            n.__tsAdopted = true;
-            const st = document.createElement('style');
-            st.setAttribute('data-testsurfer-sheet', href);
-            if (n.media && n.media.mediaText) st.media = n.media.mediaText;
-            st.textContent = css;
-            n.after(st);
-            s.disabled = true;
-          }
-          if (window.__tsMediaApply) window.__tsMediaApply();
-        }`,
-        [href, css],
-      );
-    }
-  }
-
-  private async fetchSheet(href: string, depth: number): Promise<string> {
-    const res = await this.request.get(href);
-    if (!res.ok()) throw new Error(`stylesheet ${href}: ${res.status()}`);
-    let css = absolutizeCss(await res.text(), href);
-    if (depth < 4) {
-      for (const imp of cssImports(css, href)) {
-        const inner = await this.fetchSheet(imp.url, depth + 1).catch(() => '');
-        css = css.replace(imp.rule, imp.media ? `@media ${imp.media} {\n${inner}\n}` : inner);
-      }
-    }
-    return css;
-  }
-
-  private media: MediaOptions = {};
+    },
+  });
 
   /**
    * Add a <script> (from `url`, a file at `path`, or `content`) and
