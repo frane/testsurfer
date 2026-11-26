@@ -37,11 +37,11 @@ import { renderSnapshot } from './aria.ts';
 import { PAGE_SHIM } from './shim.ts';
 import { ConsoleMessage } from './console.ts';
 import type { Dialog } from './dialog.ts';
-import { PageEvents } from './events.ts';
-import { PageHooks } from './page-hooks.ts';
-import { PageSession, type Button } from './page-session.ts';
-import { PageNavigation } from './page-navigation.ts';
-import { PageEngine } from './page-engine.ts';
+import { PageEvents, type EventsHost } from './events.ts';
+import { PageHooks, type HooksHost } from './page-hooks.ts';
+import { PageSession, type Button, type SessionHost } from './page-session.ts';
+import { PageNavigation, type NavigationHost } from './page-navigation.ts';
+import { PageEngine, type EngineHost } from './page-engine.ts';
 import { PageRecorder } from './page-recording.ts';
 import { SelectorShortcuts } from './page-selectors.ts';
 import { ADD_SCRIPT_TAG_JS, ADD_STYLE_TAG_JS, CONTENT_JS, coverageApi, GC_PRESSURE_JS, webStorage } from './page-scripts.ts';
@@ -183,20 +183,34 @@ export class Page {
     this.nativeClickOptions = protocol.clickOptions ?? false;
     this.webm = protocol.webm ?? false;
     this.dropNative = protocol.drop ?? false;
-    this.session = new PageSession({
-      client,
-      sessionId,
+    this.session = new PageSession(this.sessionHost());
+    this.events = new PageEvents(this.eventsHost());
+    this.hooks = new PageHooks(this.hooksHost());
+    this.engine = new PageEngine(this.engineHost());
+    this.recorder = new PageRecorder({ client, sessionId, session: this.session, webm: this.webm, ensureOpen: () => this.ensureOpen() });
+    this.navigation = new PageNavigation(this.navigationHost());
+  }
+
+  // The interfaces the parts above get from their page.
+
+  private sessionHost(): SessionHost {
+    return {
+      client: this.client,
+      sessionId: this.sessionId,
       actDeltas: this.actDeltas,
       inputMode: () => this.inputMode,
       navigationTimeout: () => this.timeouts.navigation,
       ensureOpen: () => this.ensureOpen(),
       zoom: () => this.mobileZoom.ready(),
       closedByItself: (e) => this.closedByItself(e),
-    });
-    this.events = new PageEvents({
+    };
+  }
+
+  private eventsHost(): EventsHost {
+    return {
       openPoller: () => this.client.sibling(),
       target: () => ({ pageId: this.session.pageId, sessionId: this.sessionId }),
-      baseURL,
+      baseURL: this.baseURL,
       ensureShim: () => this.ensureShim(),
       addInitScript: (src) => this.addInitSource(src),
       proxied: () => this.ctx?.intercept ?? false,
@@ -216,8 +230,11 @@ export class Page {
       workerFor: (id) => this.hooks.worker(id),
       swControlled: () => this.navigation.swControlled,
       pageURL: () => this.navigation.lastHref,
-    });
-    this.hooks = new PageHooks({
+    };
+  }
+
+  private hooksHost(): HooksHost {
+    return {
       page: this,
       events: this.events,
       baseURL: () => this.baseURL,
@@ -226,11 +243,14 @@ export class Page {
       addInitSource: (src) => this.addInitSource(src),
       evaluate: (fn, arg) => this.evaluate(fn, arg),
       evaluateHandle: (fn) => this.evaluateHandle(fn),
-    });
-    this.engine = new PageEngine({
+    };
+  }
+
+  private engineHost(): EngineHost {
+    return {
       page: this,
-      client,
-      sessionId,
+      client: this.client,
+      sessionId: this.sessionId,
       session: this.session,
       events: this.events,
       ensureOpen: () => this.ensureOpen(),
@@ -240,14 +260,16 @@ export class Page {
         if (sw !== undefined) this.navigation.swControlled = sw;
       },
       noteFrameCount: (count) => this.frameTree.noteCount(count),
-    });
-    this.recorder = new PageRecorder({ client, sessionId, session: this.session, webm: this.webm, ensureOpen: () => this.ensureOpen() });
-    this.navigation = new PageNavigation({
-      client,
-      sessionId,
+    };
+  }
+
+  private navigationHost(): NavigationHost {
+    return {
+      client: this.client,
+      sessionId: this.sessionId,
       session: this.session,
       events: this.events,
-      baseURL,
+      baseURL: this.baseURL,
       timeouts: this.timeouts,
       navInPlace: this.navInPlace,
       initScripts: () => this.initScripts,
@@ -258,7 +280,7 @@ export class Page {
       evaluate: (fn, arg) => this.evaluate(fn, arg),
       rawEval: (src) => this.rawEval(src),
       waitForFunction: (fn, arg, options) => this.waitForFunction(fn, arg, options),
-    });
+    };
   }
 
   /** The page that opened this one; undefined when not a popup. */
