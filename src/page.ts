@@ -38,6 +38,7 @@ import { ConsoleMessage } from './console.ts';
 import type { Dialog } from './dialog.ts';
 import { PageEvents } from './events.ts';
 import { PageHooks } from './page-hooks.ts';
+import { Keyboard, Mouse, Touchscreen, type InputHost } from './input.ts';
 import { Request, Response } from './http.ts';
 import type { RouteHandler } from './route.ts';
 import { urlMatches, type UrlMatcher } from './url.ts';
@@ -876,27 +877,8 @@ export class Page {
     await this.locator(source).dragTo(this.locator(target), options);
   }
 
-  /**
-   * Touch input (Playwright's touchscreen). `tap` sends touchstart and
-   * touchend at the point and then a trusted click there, the click a
-   * browser makes of a tap.
-   */
-  readonly touchscreen = {
-    tap: async (x: number, y: number): Promise<void> => {
-      await this.evaluate(
-        `([x, y]) => {
-          const t = document.elementFromPoint(x, y) || document.body;
-          if (typeof Touch === 'undefined' || typeof TouchEvent === 'undefined') return;
-          const touch = new Touch({ identifier: Date.now(), target: t, clientX: x, clientY: y, pageX: x + scrollX, pageY: y + scrollY });
-          const init = { bubbles: true, cancelable: true, composed: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] };
-          t.dispatchEvent(new TouchEvent('touchstart', init));
-          t.dispatchEvent(new TouchEvent('touchend', { ...init, touches: [], targetTouches: [] }));
-        }`,
-        [x, y],
-      ).catch(() => {});
-      await this.clickAt(x, y);
-    },
-  };
+  /** Touch input (Playwright's touchscreen). */
+  readonly touchscreen = new Touchscreen(this.inputHost());
 
   /** Reports each file the page saves as a `download` event. */
   private readonly downloads = new DownloadWatcher({
@@ -1741,29 +1723,8 @@ export class Page {
     return this.pick(selector, options).isEditable(options);
   }
 
-  /**
-   * Keyboard input to the focused element. press/down/up dispatch key
-   * events with the browser's default action (typing, Enter submits,
-   * Backspace deletes, Tab moves focus); type() sends trusted
-   * per-character input.
-   */
-  readonly keyboard = {
-    press: async (key: string, _options?: { delay?: number }): Promise<void> => {
-      await this.engineCall(`E.key(${JSON.stringify(key)})`);
-    },
-    down: async (key: string): Promise<void> => {
-      await this.engineCall(`E.key(${JSON.stringify(key)},'down')`);
-    },
-    up: async (key: string): Promise<void> => {
-      await this.engineCall(`E.key(${JSON.stringify(key)},'up')`);
-    },
-    type: async (text: string, _options?: { delay?: number }): Promise<void> => {
-      await this.typeTrusted(text);
-    },
-    insertText: async (text: string): Promise<void> => {
-      await this.engineCall(`E.insertText(${JSON.stringify(text)})`);
-    },
-  };
+  /** Keyboard input to the focused element. */
+  readonly keyboard = new Keyboard(this.inputHost());
 
   private viewport: { width: number; height: number } | null = null;
   private dpr = 1;
@@ -1956,88 +1917,20 @@ export class Page {
     await this.client.call('vs_auth', ['clear', name], { session: this.sessionId });
   }
 
-  /**
-   * Trusted native pointer input at viewport coordinates (CSS px).
-   * Every event reaches the page with isTrusted=true, so canvas apps,
-   * sliders and drag-and-drop work. Cadence follows the page's input
-   * mode unless a call overrides it.
-   */
-  readonly mouse = {
-    /**
-     * Move the pointer. While a button is down (mouse.down()), the move
-     * is only recorded: the press, the path and the release go out as
-     * one native drag at mouse.up(), so the page sees them in order.
-     */
-    move: async (x: number, y: number, options?: { mode?: InputMode; steps?: number }): Promise<void> => {
-      this.pointer = { x, y };
-      if (this.pressedAt) return;
-      await this.cursorOp('vs_move_to', [x, y], options?.mode, false);
-    },
-    click: async (x: number, y: number, options?: { mode?: InputMode; clickCount?: number; button?: 'left' | 'right' | 'middle'; delay?: number }): Promise<void> => {
-      this.pointer = { x, y };
-      await this.clickAt(x, y, options?.mode, { count: options?.clickCount, button: options?.button });
-    },
-    dblclick: async (x: number, y: number, options?: { mode?: InputMode; button?: 'left' | 'right' | 'middle' }): Promise<void> => {
-      this.pointer = { x, y };
-      await this.clickAt(x, y, options?.mode, { count: 2, button: options?.button });
-    },
-    down: async (): Promise<void> => {
-      this.pressedAt = { ...this.pointer };
-    },
-    up: async (options?: { mode?: InputMode }): Promise<void> => {
-      const from = this.pressedAt;
-      this.pressedAt = null;
-      if (!from) return;
-      const to = this.pointer;
-      if (from.x === to.x && from.y === to.y) await this.clickAt(to.x, to.y, options?.mode);
-      else await this.cursorOp('vs_drag', [from.x, from.y, to.x, to.y], options?.mode, true);
-    },
-    /**
-     * Scroll by (deltaX, deltaY) at the pointer: a trusted native wheel
-     * event goes to the element there and, unless the page cancels it,
-     * the nearest scrollable box scrolls. Returns once the page has
-     * handled it (two animation frames later).
-     */
-    wheel: async (deltaX: number, deltaY: number, options?: { mode?: InputMode }): Promise<void> => {
-      const { x, y } = this.pointer;
-      if (this.nativeWheel) {
-        await this.cursorOp('vs_wheel', [x, y, deltaX, deltaY], options?.mode, false);
-        await this.evaluate('() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(0))))').catch(() => {});
-        return;
-      }
-      // Daemons before 0.2.19 have no native wheel: dispatch one in the page.
-      await this.evaluate(
-        `([x, y, dx, dy]) => new Promise((done) => {
-          const t = document.elementFromPoint(x, y) || document.scrollingElement || document.body;
-          const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true, composed: true });
-          if (t.dispatchEvent(ev)) {
-            let s = t instanceof Element ? t : null;
-            const scrolls = (e) => {
-              const st = getComputedStyle(e);
-              return (/(auto|scroll|overlay)/.test(st.overflowY) && e.scrollHeight > e.clientHeight) || (/(auto|scroll|overlay)/.test(st.overflowX) && e.scrollWidth > e.clientWidth);
-            };
-            while (s && s !== document.documentElement && s !== document.body && !scrolls(s)) s = s.parentElement;
-            const box = s && s !== document.documentElement && s !== document.body ? s : (document.scrollingElement || document.documentElement);
-            box.scrollBy({ left: dx, top: dy, behavior: 'instant' });
-          }
-          requestAnimationFrame(() => requestAnimationFrame(() => done(0)));
-        })`,
-        [x, y, deltaX, deltaY],
-      );
-    },
-    /** Press at (x1, y1), move along a path, release at (x2, y2). Fires the HTML5 drag events too. */
-    drag: (
-      x1: number,
-      y1: number,
-      x2: number,
-      y2: number,
-      options?: { mode?: InputMode },
-    ): Promise<void> => this.cursorOp('vs_drag', [x1, y1, x2, y2], options?.mode, true),
-  };
+  /** Trusted native pointer input at viewport coordinates (CSS px). */
+  readonly mouse = new Mouse(this.inputHost());
 
-  /** Where mouse.move/click last put the pointer, and where mouse.down pressed. */
-  private pointer = { x: 0, y: 0 };
-  private pressedAt: { x: number; y: number } | null = null;
+  /** What page.mouse, page.keyboard and page.touchscreen drive. */
+  private inputHost(): InputHost {
+    return {
+      cursorOp: (op, coords, mode, mutates) => this.cursorOp(op, coords, mode, mutates),
+      clickAt: (x, y, mode, opts) => this.clickAt(x, y, mode, opts),
+      nativeWheel: () => this.nativeWheel,
+      evaluate: (fn, arg) => this.evaluate(fn, arg),
+      engineCall: (body) => this.engineCall(body),
+      typeTrusted: (text) => this.typeTrusted(text),
+    };
+  }
 
   private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
     await this.ensureOpen();
