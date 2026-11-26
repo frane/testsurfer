@@ -9,7 +9,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { Request, Response } from './http.ts';
-import type { Route } from './route.ts';
+import type { Route, RouteHandler } from './route.ts';
+import type { UrlMatcher } from './url.ts';
 
 interface HarHeader {
   name: string;
@@ -261,4 +262,41 @@ function globToRegExp(glob: string): RegExp {
     else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   }
   return new RegExp(`^${re}$`);
+}
+
+/** Options of page.routeFromHAR and context.routeFromHAR. */
+export interface RouteFromHarOptions {
+  url?: UrlMatcher;
+  notFound?: 'abort' | 'fallback';
+  update?: boolean;
+  updateContent?: 'embed' | 'attach';
+  updateMode?: 'full' | 'minimal';
+}
+
+/**
+ * The route routeFromHAR installs: requests matching `options.url` (all
+ * by default) are answered from the HAR file, or with `update` sent to
+ * the network and recorded into `recorder`, which the caller saves on
+ * close.
+ */
+export function harRoute(file: string, options: RouteFromHarOptions): { url: UrlMatcher; handler: RouteHandler; recorder: HarRecorder | null } {
+  const url = options.url ?? '**/*';
+  if (options.update) {
+    const recorder = new HarRecorder(file, { content: options.updateContent ?? (file.endsWith('.zip') ? 'attach' : 'embed') });
+    const handler: RouteHandler = async (route) => {
+      const res = await route.fetch();
+      const body = await res.body();
+      recorder.addExchange(route.request(), res.status(), res.statusText(), res.headers(), body);
+      await route.fulfill({ response: res, body });
+    };
+    return { url, handler, recorder };
+  }
+  const { har, files } = readHar(file);
+  const handler: RouteHandler = async (route) => {
+    const e = findEntry(har, route.request());
+    if (e) return fulfillFromEntry(route, e, files);
+    if (options.notFound === 'fallback') return route.fallback();
+    return route.abort();
+  };
+  return { url, handler, recorder: null };
 }

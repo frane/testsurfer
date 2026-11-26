@@ -8,7 +8,7 @@ import { Clock } from './clock.ts';
 import { fromWire, matches, toWire, type Cookie, type CookieInput, type StorageState, type WireCookie } from './cookies.ts';
 import { Dialog } from './dialog.ts';
 import { geolocationScript, localeScript, onlineScript, timezoneScript, touchScript, userAgentScript, type Geolocation } from './emulation.ts';
-import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
+import { harRoute, HarRecorder, type RouteFromHarOptions } from './har.ts';
 import type { MediaOptions } from './media.ts';
 import { NetHub, type NetContext, type NetPage } from './net.ts';
 import { Page } from './page.ts';
@@ -609,27 +609,11 @@ export class BrowserContext {
    */
   async routeFromHAR(
     file: string,
-    options: { url?: UrlMatcher; notFound?: 'abort' | 'fallback'; update?: boolean; updateContent?: 'embed' | 'attach'; updateMode?: 'full' | 'minimal' } = {},
+    options: RouteFromHarOptions = {},
   ): Promise<void> {
-    const match = options.url ?? '**/*';
-    if (options.update) {
-      const rec = new HarRecorder(file, { content: options.updateContent ?? (file.endsWith('.zip') ? 'attach' : 'embed') });
-      this.harWriters.push(rec);
-      await this.route(match, async (route) => {
-        const res = await route.fetch();
-        const body = await res.body();
-        rec.addExchange(route.request(), res.status(), res.statusText(), res.headers(), body);
-        await route.fulfill({ response: res, body });
-      });
-      return;
-    }
-    const { har, files } = readHar(file);
-    await this.route(match, async (route) => {
-      const e = findEntry(har, route.request());
-      if (e) return fulfillFromEntry(route, e, files);
-      if (options.notFound === 'fallback') return route.fallback();
-      return route.abort();
-    });
+    const { url, handler, recorder } = harRoute(file, options);
+    if (recorder) this.harWriters.push(recorder);
+    await this.route(url, handler);
   }
 
   /** @internal HARs being written (routeFromHAR update, recordHar), saved on close. */

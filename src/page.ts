@@ -13,7 +13,7 @@ import { FrameLocator } from './frame-locator.ts';
 import { JSHandle } from './handle.ts';
 import { ElementHandle } from './element-handle.ts';
 import { Locator } from './locator.ts';
-import type { BoundingBox, ClickOptions, InputFile, SelectOptionValue } from './locator-options.ts';
+import type { BoundingBox } from './locator-options.ts';
 import { byAttr, selectorSteps, type ByRoleOptions, type ByTextOptions, type LocatorOptions } from './query.ts';
 import { APIRequestContext } from './request.ts';
 import type { Download } from './download.ts';
@@ -22,7 +22,7 @@ import { MobileZoom } from './page-zoom.ts';
 import { Clock } from './clock.ts';
 import { WS_SHIM, type WebSocketRoute } from './websocket.ts';
 import { WORKER_SHIM, type Worker } from './worker.ts';
-import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
+import { harRoute, HarRecorder, type RouteFromHarOptions } from './har.ts';
 import { Video } from './video.ts';
 import { FILECHOOSER_SHIM } from './filechooser.ts';
 import { Screencast } from './screencast.ts';
@@ -31,7 +31,8 @@ import { Frame } from './frame.ts';
 import type { MediaOptions } from './media.ts';
 import { MediaEmulation } from './page-media.ts';
 import { serializeValue } from './serialize.ts';
-import { decodePng, downscale, encodePng } from './png.ts';
+import { atDeviceScale, cropToBox, writeOut } from './page-capture.ts';
+import { readFile } from 'node:fs/promises';
 import { renderSnapshot } from './aria.ts';
 import { PAGE_SHIM } from './shim.ts';
 import { ConsoleMessage } from './console.ts';
@@ -41,6 +42,8 @@ import { PageHooks } from './page-hooks.ts';
 import { PageSession, type Button } from './page-session.ts';
 import { PageNavigation } from './page-navigation.ts';
 import { PageEngine } from './page-engine.ts';
+import { SelectorShortcuts } from './page-selectors.ts';
+import { ADD_SCRIPT_TAG_JS, ADD_STYLE_TAG_JS, CONTENT_JS, coverageApi, GC_PRESSURE_JS, webStorage } from './page-scripts.ts';
 import { FrameTree, type FrameMatch } from './page-frames.ts';
 import { LocatorHandlers } from './locator-handlers.ts';
 import { Keyboard, Mouse, Touchscreen, type InputHost } from './input.ts';
@@ -60,6 +63,10 @@ const SELF_CLOSE_GRACE_MS = 1_000;
 
 /** What every page gets at document start: the event shim and the WebSocket hook. */
 export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}\n${FILECHOOSER_SHIM}`;
+
+// The selector shorthands (page.click(selector) and friends) live in
+// src/page-selectors.ts and are mixed in at the end of this file.
+export interface Page extends SelectorShortcuts {}
 
 export class Page {
 
@@ -435,7 +442,7 @@ export class Page {
     if (typeof script === 'function') source = `(${script.toString()})(${JSON.stringify(arg ?? null)});`;
     else if (typeof script === 'string') source = script;
     else if (script.content !== undefined) source = script.content;
-    else if (script.path) source = await (await import('node:fs/promises')).readFile(script.path, 'utf8');
+    else if (script.path) source = await readFile(script.path, 'utf8');
     else throw new Error('addInitScript: pass a function, a string, or { path } / { content }');
     await this.addInitSource(source);
   }
@@ -469,50 +476,17 @@ export class Page {
   async addScriptTag(options: { url?: string; path?: string; content?: string; type?: string }): Promise<ElementHandle> {
     let content = options.content;
     if (options.path !== undefined) {
-      content = `${await (await import('node:fs/promises')).readFile(options.path, 'utf8')}\n//# sourceURL=${options.path.replace(/\n/g, '')}`;
+      content = `${await readFile(options.path, 'utf8')}\n//# sourceURL=${options.path.replace(/\n/g, '')}`;
     }
-    const fn = `(o) => new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      if (o.type) s.type = o.type;
-      if (o.url !== undefined) {
-        s.src = o.url;
-        s.onload = () => resolve(s);
-        s.onerror = () => reject(new Error('Failed to load script at ' + o.url));
-        document.head.appendChild(s);
-        return;
-      }
-      let err = null;
-      const onErr = (e) => { err = e.error || new Error(e.message); };
-      window.addEventListener('error', onErr);
-      s.text = o.content;
-      document.head.appendChild(s);
-      window.removeEventListener('error', onErr);
-      if (err) reject(err); else resolve(s);
-    })`;
     const args = { url: options.url, content, type: options.type };
-    return (await this.evaluateHandle(fn, args)) as ElementHandle;
+    return (await this.evaluateHandle(ADD_SCRIPT_TAG_JS, args)) as ElementHandle;
   }
 
   /** Add a <link rel=stylesheet> (from `url`) or a <style> (from `path` or `content`) and wait for it. */
   async addStyleTag(options: { url?: string; path?: string; content?: string }): Promise<ElementHandle> {
     let content = options.content;
-    if (options.path !== undefined) content = await (await import('node:fs/promises')).readFile(options.path, 'utf8');
-    const fn = `(o) => new Promise((resolve, reject) => {
-      let el;
-      if (o.url !== undefined) {
-        el = document.createElement('link');
-        el.rel = 'stylesheet';
-        el.href = o.url;
-      } else {
-        el = document.createElement('style');
-        el.textContent = o.content;
-      }
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error('Error while loading style'));
-      document.head.appendChild(el);
-      if (o.url === undefined) resolve(el);
-    })`;
-    return (await this.evaluateHandle(fn, { url: options.url, content })) as ElementHandle;
+    if (options.path !== undefined) content = await readFile(options.path, 'utf8');
+    return (await this.evaluateHandle(ADD_STYLE_TAG_JS, { url: options.url, content })) as ElementHandle;
   }
 
   /**
@@ -532,27 +506,11 @@ export class Page {
    */
   async routeFromHAR(
     file: string,
-    options: { url?: UrlMatcher; notFound?: 'abort' | 'fallback'; update?: boolean; updateContent?: 'embed' | 'attach'; updateMode?: 'full' | 'minimal' } = {},
+    options: RouteFromHarOptions = {},
   ): Promise<void> {
-    const match = options.url ?? '**/*';
-    if (options.update) {
-      const rec = new HarRecorder(file, { content: options.updateContent ?? (file.endsWith('.zip') ? 'attach' : 'embed') });
-      this.harWriters.push(rec);
-      await this.route(match, async (route) => {
-        const res = await route.fetch();
-        const body = await res.body();
-        rec.addExchange(route.request(), res.status(), res.statusText(), res.headers(), body);
-        await route.fulfill({ response: res, body });
-      });
-      return;
-    }
-    const { har, files } = readHar(file);
-    await this.route(match, async (route) => {
-      const e = findEntry(har, route.request());
-      if (e) return fulfillFromEntry(route, e, files);
-      if (options.notFound === 'fallback') return route.fallback();
-      return route.abort();
-    });
+    const { url, handler, recorder } = harRoute(file, options);
+    if (recorder) this.harWriters.push(recorder);
+    await this.route(url, handler);
   }
 
   /** Frames, recordings and on-page annotations (Playwright's page.screencast). */
@@ -695,11 +653,7 @@ export class Page {
 
   /** The document's HTML, without the ref markers vibesurfer adds. */
   async content(): Promise<string> {
-    return this.evaluate<string>(
-      `(function(){var c=document.documentElement.cloneNode(true);c.removeAttribute('data-vs-ref');` +
-        `c.querySelectorAll('[data-vs-ref]').forEach(function(e){e.removeAttribute('data-vs-ref');});` +
-        `return '<!DOCTYPE html>'+c.outerHTML;})()`,
-    );
+    return this.evaluate<string>(CONTENT_JS);
   }
 
   /** setDefaultNavigationTimeout() was called, so setDefaultTimeout() leaves navigations alone. */
@@ -755,20 +709,9 @@ export class Page {
   }
 
   /** The page's localStorage, for the current origin. */
-  readonly localStorage = this.webStorage('localStorage');
+  readonly localStorage = webStorage('localStorage', (fn, arg) => this.evaluate(fn, arg));
   /** The page's sessionStorage, for the current origin. */
-  readonly sessionStorage = this.webStorage('sessionStorage');
-
-  private webStorage(kind: 'localStorage' | 'sessionStorage') {
-    const run = <T>(body: string, arg?: unknown) => this.evaluate<T>(`(a) => { const s = window.${kind}; ${body} }`, arg);
-    return {
-      clear: () => run<void>('s.clear();'),
-      getItem: (name: string) => run<string | null>('return s.getItem(a);', name),
-      setItem: (name: string, value: string) => run<void>('s.setItem(a[0], a[1]);', [name, value]),
-      removeItem: (name: string) => run<void>('s.removeItem(a);', name),
-      items: () => run<{ name: string; value: string }[]>('const out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push({ name: k, value: s.getItem(k) }); } return out;'),
-    };
-  }
+  readonly sessionStorage = webStorage('sessionStorage', (fn, arg) => this.evaluate(fn, arg));
 
   /**
    * Run the page's garbage collector: allocation pressure, which makes
@@ -777,9 +720,7 @@ export class Page {
    */
   async requestGC(): Promise<void> {
     for (let k = 0; k < 2; k++) {
-      await this.evaluate(
-        '() => new Promise((r) => { let a = []; for (let i = 0; i < 40; i++) a.push(new Array(500000).fill(i)); a = null; setTimeout(r, 0); })',
-      );
+      await this.evaluate(GC_PRESSURE_JS);
     }
   }
 
@@ -789,20 +730,7 @@ export class Page {
   }
 
   /** JS and CSS coverage: Chromium only, as in Playwright on WebKit. */
-  readonly coverage = {
-    startJSCoverage: async (): Promise<never> => {
-      throw new Error('coverage.startJSCoverage: Coverage is only supported in Chromium');
-    },
-    stopJSCoverage: async (): Promise<never> => {
-      throw new Error('coverage.stopJSCoverage: Coverage is only supported in Chromium');
-    },
-    startCSSCoverage: async (): Promise<never> => {
-      throw new Error('coverage.startCSSCoverage: Coverage is only supported in Chromium');
-    },
-    stopCSSCoverage: async (): Promise<never> => {
-      throw new Error('coverage.stopCSSCoverage: Coverage is only supported in Chromium');
-    },
-  };
+  readonly coverage = coverageApi();
 
   /** Every page has its own window here; nothing is in front of another. */
   async bringToFront(): Promise<void> {}
@@ -1096,88 +1024,6 @@ export class Page {
     return options.state === 'detached' || options.state === 'hidden' ? null : l.firstHandle();
   }
 
-  // Selector shorthands (Playwright's page.click(selector) family).
-  // Not strict unless asked (`strict: true`): the first match acts, as in Playwright.
-  private pick(selector: string, options?: object): Locator {
-    const l = this.locator(selector);
-    return (options as { strict?: boolean } | undefined)?.strict ? l : l.first();
-  }
-  click(selector: string, options?: ClickOptions): Promise<void> {
-    return this.pick(selector, options).click(options);
-  }
-  dblclick(selector: string, options?: ClickOptions): Promise<void> {
-    return this.pick(selector, options).dblclick(options);
-  }
-  tap(selector: string, options?: ClickOptions): Promise<void> {
-    return this.pick(selector, options).tap(options);
-  }
-  hover(selector: string, options?: { timeout?: number; force?: boolean }): Promise<void> {
-    return this.pick(selector, options).hover(options);
-  }
-  focus(selector: string, options?: { timeout?: number }): Promise<void> {
-    return this.pick(selector, options).focus(options);
-  }
-  fill(selector: string, value: string, options?: { timeout?: number; force?: boolean }): Promise<void> {
-    return this.pick(selector, options).fill(value, options);
-  }
-  type(selector: string, text: string, options?: { timeout?: number }): Promise<void> {
-    return this.pick(selector, options).type(text, options);
-  }
-  press(selector: string, key: string, options?: { timeout?: number }): Promise<void> {
-    return this.pick(selector, options).press(key, options);
-  }
-  check(selector: string, options?: ClickOptions): Promise<void> {
-    return this.pick(selector, options).check(options);
-  }
-  uncheck(selector: string, options?: ClickOptions): Promise<void> {
-    return this.pick(selector, options).uncheck(options);
-  }
-  setChecked(selector: string, checked: boolean, options?: ClickOptions): Promise<void> {
-    return this.pick(selector, options).setChecked(checked, options);
-  }
-  selectOption(selector: string, values: SelectOptionValue | SelectOptionValue[] | null, options?: { timeout?: number }): Promise<string[]> {
-    return this.pick(selector, options).selectOption(values, options);
-  }
-  setInputFiles(selector: string, files: InputFile | InputFile[], options?: { timeout?: number }): Promise<void> {
-    return this.pick(selector, options).setInputFiles(files, options);
-  }
-  dispatchEvent(selector: string, type: string, eventInit?: Record<string, unknown>, options?: { timeout?: number }): Promise<void> {
-    return this.pick(selector, options).dispatchEvent(type, eventInit, options);
-  }
-  textContent(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.pick(selector, options).textContent(options);
-  }
-  innerText(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.pick(selector, options).innerText(options);
-  }
-  innerHTML(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.pick(selector, options).innerHTML(options);
-  }
-  getAttribute(selector: string, name: string, options?: { timeout?: number }): Promise<string | null> {
-    return this.pick(selector, options).getAttribute(name, options);
-  }
-  inputValue(selector: string, options?: { timeout?: number }): Promise<string> {
-    return this.pick(selector, options).inputValue(options);
-  }
-  isVisible(selector: string): Promise<boolean> {
-    return this.pick(selector).isVisible();
-  }
-  isHidden(selector: string): Promise<boolean> {
-    return this.pick(selector).isHidden();
-  }
-  isChecked(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.pick(selector, options).isChecked(options);
-  }
-  isDisabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.pick(selector, options).isDisabled(options);
-  }
-  isEnabled(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.pick(selector, options).isEnabled(options);
-  }
-  isEditable(selector: string, options?: { timeout?: number }): Promise<boolean> {
-    return this.pick(selector, options).isEditable(options);
-  }
-
   /** Keyboard input to the focused element. */
   readonly keyboard = new Keyboard(this.inputHost());
 
@@ -1209,9 +1055,7 @@ export class Page {
       session: this.sessionId,
       dpr: String(this.dpr),
     });
-    this.session.snapshot = null;
-    this.session.synced = false;
-    this.session.fresh = false;
+    this.session.invalidate();
   }
 
   /** Resize the page (CSS px). */
@@ -1226,52 +1070,19 @@ export class Page {
 
   /** Viewport crop of the page around `box` (CSS px), as PNG bytes; written to `path` when given. */
   async screenshotClip(box: BoundingBox, path?: string): Promise<Buffer> {
-    const file = await this.capture(null);
-    const fs = await import('node:fs/promises');
-    const img = decodePng(await fs.readFile(file));
-    const cssWidth = await this.evaluate<number>('window.innerWidth');
-    const scale = img.width / (cssWidth || img.width);
-    const x0 = Math.max(0, Math.floor(box.x * scale));
-    const y0 = Math.max(0, Math.floor(box.y * scale));
-    const x1 = Math.min(img.width, Math.ceil((box.x + box.width) * scale));
-    const y1 = Math.min(img.height, Math.ceil((box.y + box.height) * scale));
-    const w = Math.max(1, x1 - x0);
-    const h = Math.max(1, y1 - y0);
-    const data = new Uint8Array(w * h * 4);
-    for (let y = 0; y < h; y++) {
-      const src = ((y0 + y) * img.width + x0) * 4;
-      data.set(img.data.subarray(src, src + w * 4), y * w * 4);
-    }
-    // The engine captures at the screen's scale; deliver the configured device scale factor.
-    const factor = Math.round(scale / this.dpr);
-    const out = encodePng(factor > 1 ? downscale({ width: w, height: h, data }, factor) : { width: w, height: h, data });
-    if (path) {
-      const nodePath = await import('node:path');
-      await fs.mkdir(nodePath.dirname(path), { recursive: true });
-      await fs.writeFile(path, out);
-    }
+    const capture = await readFile(await this.capture(null));
+    const out = cropToBox(capture, await this.evaluate<number>('window.innerWidth'), box, this.dpr);
+    if (path) await writeOut(path, out);
     return out;
   }
 
-  /**
-   * Save a PNG of the viewport (or the whole page with `fullPage`).
-   * Returns the file path; with `path`, the file is copied there.
-   */
+  /** PNG bytes of the viewport (or the whole page with `fullPage`); written to `path` when given. */
   async screenshot(options: { path?: string; fullPage?: boolean; clip?: BoundingBox } = {}): Promise<Buffer> {
     if (options.clip) return this.screenshotClip(options.clip, options.path);
-    const file = await this.capture(null, options.fullPage ? { fullPage: true } : {});
-    const fs = await import('node:fs/promises');
-    let buf: Buffer = await fs.readFile(file);
-    const img = decodePng(buf);
-    const cssWidth = await this.evaluate<number>('window.innerWidth');
-    const factor = Math.round(img.width / (cssWidth || img.width) / this.dpr);
-    if (factor > 1) buf = encodePng(downscale(img, factor));
-    if (options.path) {
-      const nodePath = await import('node:path');
-      await fs.mkdir(nodePath.dirname(options.path), { recursive: true });
-      await fs.writeFile(options.path, buf);
-    }
-    return buf;
+    const capture = await readFile(await this.capture(null, options.fullPage ? { fullPage: true } : {}));
+    const out = atDeviceScale(capture, await this.evaluate<number>('window.innerWidth'), this.dpr);
+    if (options.path) await writeOut(options.path, out);
+    return out;
   }
 
   /** PNG of the page, or of one element when `ref` is given. Returns the file path. */
@@ -1284,18 +1095,10 @@ export class Page {
     const saved = (resp.body[0] ?? '').trim();
     if (!saved) throw new Error('vs_capture returned no path');
     if (!options.path) return saved;
-    const fs = await import('node:fs/promises');
-    const nodePath = await import('node:path');
-    await fs.mkdir(nodePath.dirname(options.path), { recursive: true });
-    await fs.copyFile(saved, options.path);
+    await writeOut(options.path, await readFile(saved));
     return options.path;
   }
 
-  /**
-   * Save this page's login state (cookies, local and session storage,
-   * IndexedDB) under `name`, encrypted at rest by the daemon. Load it
-   * in a later run with loadAuth(name) to skip the login flow.
-   */
   /** @internal Load an imported cookie blob into this page's jar (the session's). */
   async loadCookieBlob(name: string): Promise<void> {
     await this.ensureOpen();
@@ -1303,6 +1106,11 @@ export class Page {
     await this.client.call('vs_auth', ['clear', name], { session: this.sessionId }).catch(() => {});
   }
 
+  /**
+   * Save this page's login state (cookies, local and session storage,
+   * IndexedDB) under `name`, encrypted at rest by the daemon. Load it
+   * in a later run with loadAuth(name) to skip the login flow.
+   */
   async saveAuth(name: string): Promise<void> {
     await this.client.call('vs_auth', ['save', this.session.id, name], { session: this.sessionId });
   }
@@ -1408,8 +1216,10 @@ export class Page {
     this.markClosed();
     if (id) await this.client.call('vs_close', [id], { session: this.sessionId }).catch(() => {});
     this.session.token = null;
-    this.session.snapshot = null;
-    this.session.synced = false;
-    this.session.fresh = false;
+    this.session.invalidate();
   }
+}
+
+for (const name of Object.getOwnPropertyNames(SelectorShortcuts.prototype)) {
+  if (name !== 'constructor') Object.defineProperty(Page.prototype, name, Object.getOwnPropertyDescriptor(SelectorShortcuts.prototype, name)!);
 }
