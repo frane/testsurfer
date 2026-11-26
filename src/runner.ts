@@ -259,6 +259,68 @@ type NodeTestContext = { filePath?: string | undefined; skip?: (message?: string
 /** Thrown by a conditional test.skip() inside a test to stop it. */
 class SkipSignal extends Error {}
 
+/** Playwright's default per-test timeout. */
+const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+
+/**
+ * skip(), fixme() and friends take (condition?, reason?): no condition,
+ * or a string reason alone, means unconditionally.
+ */
+const when = (c: boolean | string | undefined, r: string | undefined): [boolean, string | undefined] =>
+  typeof c === 'string' ? [true, c] : [c ?? true, r];
+
+/** The TestInfo for one run of test `name`. */
+function makeTestInfo(name: string, chain: Scope[], t: NodeTestContext, outputDir: string): TestInfo {
+  const info: TestInfo = {
+    title: name,
+    titlePath: [...chain.map((s) => s.title).filter((x): x is string => !!x), name],
+    file: t.filePath ?? process.argv[1] ?? 'test',
+    snapshotIndex: 0,
+    outputDir,
+    updateSnapshots: updateSnapshotsFromEnv() ?? options.updateSnapshots ?? 'missing',
+    snapshotPathTemplate: options.snapshotPathTemplate,
+    annotations: [],
+    attachments: [],
+    softErrors: [],
+    retry: 0,
+    workerIndex: 0,
+    parallelIndex: 0,
+    project: { name: process.env['TESTSURFER_PROJECT'] ?? 'webkit', use: {} },
+    timeout: options.testTimeout ?? DEFAULT_TEST_TIMEOUT_MS,
+    expectedStatus: 'passed',
+    skip: (c, r) => {
+      const [on, reason] = when(c, r);
+      if (!on) return;
+      info.annotations.push({ type: 'skip', description: reason });
+      t.skip?.(reason);
+      throw new SkipSignal(reason ?? 'skipped');
+    },
+    fixme: (c, r) => info.skip(c, r),
+    fail: (c, r) => {
+      const [on, reason] = when(c, r);
+      if (!on) return;
+      info.annotations.push({ type: 'fail', description: reason });
+      info.expectedStatus = 'failed';
+    },
+    slow: (c, r) => {
+      const [on, reason] = when(c, r);
+      if (!on) return;
+      info.annotations.push({ type: 'slow', description: reason });
+      // Like Playwright: a slow test gets three times the timeout.
+      info.timeout *= 3;
+    },
+    setTimeout: (ms) => {
+      info.timeout = ms;
+    },
+    outputPath: (...parts) => path.resolve(outputDir, safeName(name), ...parts),
+    attach: async (n, o = {}) => {
+      const body = typeof o.body === 'string' ? Buffer.from(o.body) : o.body;
+      info.attachments.push({ name: n, contentType: o.contentType ?? 'application/octet-stream', path: o.path, body });
+    },
+  };
+  return info;
+}
+
 function runWith(
   name: string,
   fn: TestBody<Fixtures>,
@@ -269,75 +331,27 @@ function runWith(
     // Launching merges the config file into `options`; do it before
     // reading outputDir and updateSnapshots.
     await sharedBrowser();
-    const outputDir = options.outputDir ?? 'test-results';
-    // skip(), fixme() and friends take (condition?, reason?): no
-    // condition, or a string reason alone, means unconditionally.
-    const when = (c: boolean | string | undefined, r: string | undefined): [boolean, string | undefined] =>
-      typeof c === 'string' ? [true, c] : [c ?? true, r];
-    const info: TestInfo = {
-      title: name,
-      titlePath: [...chain.map((s) => s.title).filter((x): x is string => !!x), name],
-      file: t.filePath ?? process.argv[1] ?? 'test',
-      snapshotIndex: 0,
-      outputDir,
-      updateSnapshots: updateSnapshotsFromEnv() ?? options.updateSnapshots ?? 'missing',
-      snapshotPathTemplate: options.snapshotPathTemplate,
-      annotations: [],
-      attachments: [],
-      softErrors: [],
-      retry: 0,
-      workerIndex: 0,
-      parallelIndex: 0,
-      project: { name: process.env['TESTSURFER_PROJECT'] ?? 'webkit', use: {} },
-      timeout: options.testTimeout ?? 30_000,
-      expectedStatus: 'passed',
-      skip: (c, r) => {
-        const [on, reason] = when(c, r);
-        if (!on) return;
-        info.annotations.push({ type: 'skip', description: reason });
-        t.skip?.(reason);
-        throw new SkipSignal(reason ?? 'skipped');
-      },
-      fixme: (c, r) => info.skip(c, r),
-      fail: (c, r) => {
-        const [on, reason] = when(c, r);
-        if (!on) return;
-        info.annotations.push({ type: 'fail', description: reason });
-        info.expectedStatus = 'failed';
-      },
-      slow: (c, r) => {
-        const [on, reason] = when(c, r);
-        if (!on) return;
-        info.annotations.push({ type: 'slow', description: reason });
-        // Like Playwright: a slow test gets three times the timeout.
-        info.timeout *= 3;
-      },
-      setTimeout: (ms) => {
-        info.timeout = ms;
-      },
-      outputPath: (...parts) => path.resolve(outputDir, safeName(name), ...parts),
-      attach: async (n, o = {}) => {
-        const body = typeof o.body === 'string' ? Buffer.from(o.body) : o.body;
-        info.attachments.push({ name: n, contentType: o.contentType ?? 'application/octet-stream', path: o.path, body });
-      },
-    };
+    const info = makeTestInfo(name, chain, t, options.outputDir ?? 'test-results');
     try {
-      await testInfoStore.run(info, async () => {
-        let threw = false;
-        try {
-          await withTestTimeout(info, runTest(name, fn, chain, defs, info));
-        } catch (e) {
-          if (e instanceof SkipSignal || info.expectedStatus !== 'failed') throw e;
-          threw = true;
-        }
-        if (info.expectedStatus === 'failed' && !threw) {
-          throw new Error('expected to fail, but passed (test.fail)');
-        }
-      });
+      await testInfoStore.run(info, () => runExpectingStatus(info, runTest(name, fn, chain, defs, info)));
     } catch (e) {
       if (!(e instanceof SkipSignal)) throw e;
     }
   };
+}
+
+/** Run the test under its timeout; with test.fail(), a pass is the failure. */
+async function runExpectingStatus(info: TestInfo, run: Promise<void>): Promise<void> {
+  let threw = false;
+  try {
+    await withTestTimeout(info, run);
+  } catch (e) {
+    if (e instanceof SkipSignal || info.expectedStatus !== 'failed') throw e;
+    threw = true;
+  }
+  if (info.expectedStatus === 'failed' && !threw) {
+    throw new Error('expected to fail, but passed (test.fail)');
+  }
 }
 
 /** Contexts of running tests, closed when a test runs out of time. */
@@ -523,6 +537,36 @@ export type FixtureDefFor<All, V> =
   | [V | ((fixtures: All, use: (value: V) => Promise<void>) => Promise<void>), { option?: boolean; scope?: 'test' | 'worker'; auto?: boolean; timeout?: number; box?: boolean }]
   | ((fixtures: All, use: (value: V) => Promise<void>) => Promise<void>);
 
+/**
+ * skip/fixme/fail/slow called outside a test, in a describe body or at
+ * file level: the condition (a boolean, or a function of the fixtures)
+ * applies to every test in that scope. Returns false inside a test.
+ */
+function grouped(kind: 'skip' | 'fixme' | 'fail' | 'slow', a: unknown, reason: string | undefined): boolean {
+  if (currentTestInfo()) return false;
+  const when = typeof a === 'function' ? (a as (f: Fixtures) => unknown) : () => a ?? true;
+  const scope = current();
+  (scope.conditions ??= []).push({ kind, when, reason });
+  return true;
+}
+
+/** The running test's TestInfo; `test.<what>()` outside a test is an error. */
+function running(what: string): TestInfo {
+  const info = currentTestInfo();
+  if (!info) throw new Error(`test.${what}() must be called inside a test`);
+  return info;
+}
+
+/** test.step(): run `body`, prefixing a failure with the step's name. */
+async function step<T>(name: string, body: () => Promise<T> | T): Promise<T> {
+  try {
+    return await body();
+  } catch (e) {
+    if (e instanceof Error && !(e instanceof SkipSignal)) e.message = `step "${name}": ${e.message}`;
+    throw e;
+  }
+}
+
 function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F> {
   const reg = (name: string, fn: TestBody<F>, opts: TestOpts) =>
     add({
@@ -533,23 +577,6 @@ function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F
       chain: [...stack],
       defs: Object.assign({}, defs, ...stack.map((s) => s.uses ?? {})),
     });
-  /**
-   * skip/fixme/fail/slow called outside a test, in a describe body or
-   * at file level: the condition (a boolean, or a function of the
-   * fixtures) applies to every test in that scope.
-   */
-  const grouped = (kind: 'skip' | 'fixme' | 'fail' | 'slow', a: unknown, reason: string | undefined): boolean => {
-    if (currentTestInfo()) return false;
-    const when = typeof a === 'function' ? (a as (f: Fixtures) => unknown) : () => a ?? true;
-    const scope = current();
-    (scope.conditions ??= []).push({ kind, when, reason });
-    return true;
-  };
-  const running = (what: string): TestInfo => {
-    const info = currentTestInfo();
-    if (!info) throw new Error(`test.${what}() must be called inside a test`);
-    return info;
-  };
 
   // test(title, body) or test(title, details, body); details are ignored.
   const body = (a: unknown[]) => a.find((x) => typeof x === 'function') as TestBody<F>;
@@ -592,14 +619,7 @@ function makeTest<F extends object>(defs: Record<string, FixtureDef>): TestApi<F
   t.afterEach = (fn) => current().afterEach.push(fn as TestBody<Fixtures>);
   t.beforeAll = (fn) => add({ kind: 'beforeAll', fn });
   t.afterAll = (fn) => add({ kind: 'afterAll', fn });
-  t.step = async <T>(name: string, body: () => Promise<T> | T): Promise<T> => {
-    try {
-      return await body();
-    } catch (e) {
-      if (e instanceof Error && !(e instanceof SkipSignal)) e.message = `step "${name}": ${e.message}`;
-      throw e;
-    }
-  };
+  t.step = step;
   t.extend = <E extends object>(more: Record<string, unknown>) => makeTest<F & E>({ ...defs, ...more });
   return t;
 }
