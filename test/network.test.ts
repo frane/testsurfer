@@ -77,7 +77,10 @@ before(async () => {
       .digest('base64');
     sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     sock.on('data', (b: Buffer) => {
-      if ((b[0]! & 15) !== 1) return sock.end();
+      if ((b[0]! & 15) !== 1) {
+        sock.end();
+        return;
+      }
       const len = b[1]! & 127;
       const mask = b.subarray(2, 6);
       const out = Buffer.from('echo:' + Buffer.from(b.subarray(6, 6 + len).map((x, i) => x ^ mask[i % 4]!)).toString());

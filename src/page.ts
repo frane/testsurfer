@@ -9,7 +9,7 @@ import type { BrowserContext } from './context.ts';
 import type { WireResponse } from './wire.ts';
 
 import { WireError } from './errors.ts';
-import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
+import { applyDelta, isDeltaBody, parseFullTree, type Snapshot } from './tree.ts';
 import { FrameLocator } from './frame-locator.ts';
 import { JSHandle } from './handle.ts';
 import { ElementHandle, Locator, type BoundingBox, type ClickOptions, type InputFile, type SelectOptionValue } from './locator.ts';
@@ -61,6 +61,22 @@ interface EngineReply {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Frame rate for page.video() and screencast recordings, as Playwright records. */
+const RECORD_FPS = '25';
+/** Poll interval while waiting for the URL to change (waitForURL, back/forward). */
+const URL_POLL_MS = 50;
+/** Poll interval for waitForNavigation's document check. */
+const NAV_POLL_MS = 20;
+/** Poll interval while a popup's first document loads. */
+const POPUP_LOAD_POLL_MS = 30;
+/** How long goBack/goForward wait for the URL to change before treating the move as a no-op. */
+const HISTORY_SETTLE_MS = 2_000;
+/** How long a failed call waits for a popup's own window.close() to land. */
+const SELF_CLOSE_GRACE_MS = 1_000;
+
+/** Backoff between polls for a pending engine result: fast first, then easing off. */
+const takeDelay = (attempt: number) => (attempt < 5 ? 2 : attempt < 20 ? 10 : 25);
 
 
 /** What every page gets at document start: the event shim and the WebSocket hook. */
@@ -117,8 +133,7 @@ export class Page {
   set testIdAttribute(name: string) {
     this.testIdOption = name;
   }
-  /** Document-start scripts, replayed into the web view when it is created. */
-  /** Document-start scripts, in order; the event shim and the WebSocket hook are always the first. */
+  /** Document-start scripts, replayed into the web view when it is created, in order; the event shim and the WebSocket hook are always the first. */
   private initScripts: string[] = [EAGER_SHIM];
   /** PAGE_SHIM is in initScripts from the start (EAGER_SHIM). */
   private shimInstalled = true;
@@ -433,10 +448,7 @@ export class Page {
     viewportSize: () => this.viewportSize(),
     recordTo: async (width) => {
       await this.ensureOpen();
-      const flags: Record<string, string> = { session: this.sessionId, fps: '25' };
-      if (this.webm) flags['format'] = 'webm';
-      if (width) flags['width'] = String(width);
-      await this.client.call('vs_record', ['start', this.id], flags);
+      await this.client.call('vs_record', ['start', this.id], this.recordFlags(width));
       return async () => {
         const r = await this.client.call('vs_record', ['stop', this.id], { session: this.sessionId }).catch(() => null);
         const line = r?.body.find((l) => l.startsWith('path\t'));
@@ -459,10 +471,18 @@ export class Page {
     this.videoValue = new Video(dir);
     this.videoSize = size ? { width: size.width } : null;
     await this.ensureOpen();
-    const flags: Record<string, string> = { session: this.sessionId, fps: '25' };
+    await this.client.call('vs_record', ['start', this.id], this.recordFlags(this.videoSize?.width));
+  }
+
+  /**
+   * vs_record start flags: WebM where the daemon has it. (Not async:
+   * the tracer wraps the page's async methods as actions.)
+   */
+  private recordFlags(width: number | undefined): Record<string, string> {
+    const flags: Record<string, string> = { session: this.sessionId, fps: RECORD_FPS };
     if (this.webm) flags['format'] = 'webm';
-    if (this.videoSize) flags['width'] = String(this.videoSize.width);
-    await this.client.call('vs_record', ['start', this.id], flags);
+    if (width) flags['width'] = String(width);
+    return flags;
   }
 
   /** @internal HARs being written (routeFromHAR update, recordHar), saved on close. */
@@ -567,7 +587,7 @@ export class Page {
       const now = await this.currentURL().catch(() => '');
       if (now && urlMatches(url, now, this.baseURL)) return;
       if (Date.now() >= deadline) throw new Error(`waitForURL(${String(url)}) timed out after ${budget}ms; URL is ${now}`);
-      await new Promise((r) => setTimeout(r, 50));
+      await sleep(URL_POLL_MS);
     }
   }
 
@@ -596,7 +616,7 @@ export class Page {
         }
       }
       if (Date.now() >= deadline) throw new Error(`page.waitForNavigation: Timeout ${budget}ms exceeded.`);
-      await sleep(20);
+      await sleep(NAV_POLL_MS);
     }
   }
 
@@ -620,7 +640,7 @@ export class Page {
           break;
         }
         if (Date.now() >= deadline) throw new Error(`page.waitForLoadState: Timeout ${budget}ms exceeded.`);
-        await new Promise((res) => setTimeout(res, 30));
+        await sleep(POPUP_LOAD_POLL_MS);
       }
       this.popupURL = '';
     }
@@ -681,10 +701,10 @@ export class Page {
   private async historyMove(delta: number): Promise<void> {
     const before = await this.currentURL();
     await this.evaluate(`(history.go(${delta}), 'ok')`);
-    // No history entry means no change; give up on the URL after 2s.
-    const deadline = Date.now() + 2_000;
+    // No history entry means no change; give up on the URL after a while.
+    const deadline = Date.now() + HISTORY_SETTLE_MS;
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 50));
+      await sleep(URL_POLL_MS);
       const now = await this.currentURL().catch(() => before);
       if (now !== before) break;
     }
@@ -724,10 +744,7 @@ export class Page {
     return this.pageId;
   }
 
-  /**
-   * A new page starts at about:blank, as in Playwright: the first call
-   * that needs a document opens one (with the init scripts installed).
-   */
+  /** setDefaultNavigationTimeout() was called, so setDefaultTimeout() leaves navigations alone. */
   private navTimeoutSet = false;
 
   /** @internal The shim and the WebSocket hook are in this page's documents already (a spare opened with them). */
@@ -902,6 +919,10 @@ export class Page {
     return this.id;
   }
 
+  /**
+   * A new page starts at about:blank, as in Playwright: the first call
+   * that needs a document opens one (with the init scripts installed).
+   */
   private async ensureOpen(): Promise<void> {
     if (this.pageId) return;
     if (this.closedFlag) throw new Error('Target page, context or browser has been closed');
@@ -1163,8 +1184,8 @@ export class Page {
   private async closedByItself(e: unknown): Promise<boolean> {
     if (!(e instanceof WireError) || e.code !== 'NOT_FOUND' || !String(e.args[0] ?? '').startsWith('page=')) return false;
     if (this.openerPage === undefined) return false;
-    const deadline = Date.now() + 1000;
-    while (!this.closedFlag && Date.now() < deadline) await sleep(20);
+    const deadline = Date.now() + SELF_CLOSE_GRACE_MS;
+    while (!this.closedFlag && Date.now() < deadline) await sleep(NAV_POLL_MS);
     return this.closedFlag;
   }
 
@@ -1333,7 +1354,7 @@ export class Page {
     let r = await this.rawEval<EngineReply | null>(call(false), frame);
     if (r && r.noengine) r = await this.rawEval<EngineReply | null>(call(true), frame);
     for (let i = 0; r && r.p !== undefined; i++) {
-      await sleep(i < 5 ? 2 : i < 20 ? 10 : 25);
+      await sleep(takeDelay(i));
       r = await this.rawEval<EngineReply | null>(`(function(){var E=window.__tse;return E?E.take(${r.p}):{gone:1};})()`, frame);
     }
     if (!r || r.gone || r.noengine) {

@@ -154,14 +154,6 @@ function rolePart(body: string): BasePart {
   return { kind: 'role', role, options };
 }
 
-const PSEUDO = /:(has-text|text-is|text-matches|text|visible)(?:\(((?:[^()"']|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*)\))?$/;
-
-/**
- * Peel Playwright's text and visibility pseudos off the end of a CSS
- * selector. Only trailing ones are understood; one in the middle of a
- * selector (`div:has-text("x") > span`) is left for the browser to
- * reject.
- */
 /** CSS, passed through whole: the engine handles Playwright's pseudos in any position. */
 function cssPart(selector: string): ParsedPart {
   return { kind: 'css', selector: selector.trim(), extras: {} };
