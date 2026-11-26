@@ -27,6 +27,33 @@ export interface RequestOptions {
   maxRedirects?: number;
 }
 
+/** Playwright's defaults for APIRequestContext.fetch. */
+const DEFAULT_MAX_REDIRECTS = 20;
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** The request URL: `url` against the base URL, with `params` set on its query. */
+function requestURL(url: string, baseURL: string | undefined, params: RequestOptions['params']): URL {
+  const out = new URL(url, baseURL);
+  if (params) {
+    const p = typeof params === 'string' ? new URLSearchParams(params) : params;
+    const entries = p instanceof URLSearchParams ? [...p.entries()] : Object.entries(p);
+    for (const [k, v] of entries) out.searchParams.set(k, String(v));
+  }
+  return out;
+}
+
+/** The body for `form` or `data`, setting a content-type in `headers` unless one is given. */
+function encodeBody(options: RequestOptions, headers: Record<string, string>): string | Buffer | undefined {
+  if (options.form) {
+    headers['content-type'] ??= 'application/x-www-form-urlencoded';
+    return new URLSearchParams(Object.entries(options.form).map(([k, v]): [string, string] => [k, String(v)])).toString();
+  }
+  if (options.data === undefined) return undefined;
+  if (typeof options.data === 'string' || Buffer.isBuffer(options.data)) return options.data;
+  headers['content-type'] ??= 'application/json';
+  return JSON.stringify(options.data);
+}
+
 export class APIRequestContext {
   private readonly baseURL: string | undefined;
   private readonly jar: CookieJar | null;
@@ -39,43 +66,15 @@ export class APIRequestContext {
   }
 
   async fetch(urlOrRequest: string, options: RequestOptions = {}): Promise<APIResponse> {
-    const url = new URL(urlOrRequest, this.baseURL);
-    if (options.params) {
-      const p = typeof options.params === 'string' ? new URLSearchParams(options.params) : options.params;
-      const entries = p instanceof URLSearchParams ? [...p.entries()] : Object.entries(p);
-      for (const [k, v] of entries) url.searchParams.set(k, String(v));
-    }
+    let current = requestURL(urlOrRequest, this.baseURL, options.params).href;
     const headers: Record<string, string> = { ...options.headers };
-    let body: string | Buffer | undefined;
-    if (options.form) {
-      body = new URLSearchParams(Object.entries(options.form).map(([k, v]): [string, string] => [k, String(v)])).toString();
-      headers['content-type'] ??= 'application/x-www-form-urlencoded';
-    } else if (options.data !== undefined) {
-      if (typeof options.data === 'string' || Buffer.isBuffer(options.data)) body = options.data;
-      else {
-        body = JSON.stringify(options.data);
-        headers['content-type'] ??= 'application/json';
-      }
-    }
+    let body = encodeBody(options, headers);
     let method = options.method ?? (body !== undefined ? 'POST' : 'GET');
-    const maxRedirects = options.maxRedirects ?? 20;
-    const deadline = AbortSignal.timeout(options.timeout ?? 30_000);
-    let current = url.href;
+    const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+    const signal = AbortSignal.timeout(options.timeout ?? DEFAULT_TIMEOUT_MS);
     let res: Response;
     for (let hop = 0; ; hop++) {
-      const h: Record<string, string> = { ...this.extraHeaders(), ...headers };
-      const hasCookie = Object.keys(h).some((k) => k.toLowerCase() === 'cookie');
-      if (this.jar && !hasCookie) {
-        const c = cookieHeader(await this.jar.cookies(), current);
-        if (c) h['cookie'] = c;
-      }
-      const init: RequestInit = { method, headers: h, redirect: 'manual', signal: deadline };
-      if (body !== undefined) init.body = body;
-      res = await fetch(current, init);
-      if (this.jar) {
-        const set = res.headers.getSetCookie().map((v) => parseSetCookie(v, current)).filter((c): c is WireCookie => c !== null);
-        if (set.length) await this.jar.store(set);
-      }
+      res = await this.hop(current, method, headers, body, signal);
       const location = res.headers.get('location');
       const redirect = !!location && res.status >= 300 && res.status < 400 && res.status !== 304;
       if (!redirect || maxRedirects === 0) break;
@@ -100,6 +99,24 @@ export class APIRequestContext {
       throw new Error(`apiRequestContext.fetch: ${out.status()} ${out.statusText()}`);
     }
     return out;
+  }
+
+  /** One request, without following redirects; cookies come from and go back to the jar. */
+  private async hop(url: string, method: string, headers: Record<string, string>, body: string | Buffer | undefined, signal: AbortSignal): Promise<Response> {
+    const h: Record<string, string> = { ...this.extraHeaders(), ...headers };
+    const hasCookie = Object.keys(h).some((k) => k.toLowerCase() === 'cookie');
+    if (this.jar && !hasCookie) {
+      const c = cookieHeader(await this.jar.cookies(), url);
+      if (c) h['cookie'] = c;
+    }
+    const init: RequestInit = { method, headers: h, redirect: 'manual', signal };
+    if (body !== undefined) init.body = body;
+    const res = await fetch(url, init);
+    if (this.jar) {
+      const set = res.headers.getSetCookie().map((v) => parseSetCookie(v, url)).filter((c): c is WireCookie => c !== null);
+      if (set.length) await this.jar.store(set);
+    }
+    return res;
   }
 
   get(url: string, options: RequestOptions = {}): Promise<APIResponse> {

@@ -173,74 +173,81 @@ function detach(snap: Snapshot, ref: number): void {
 export function applyDelta(snap: Snapshot, lines: string[]): void {
   let i = 0;
   while (i < lines.length) {
-    const raw = lines[i] ?? '';
-    if (raw.trim() === '') {
-      i++;
-      continue;
-    }
+    const raw = lines[i++] ?? '';
+    if (raw.trim() === '') continue;
     const line = raw.trimStart();
-    const sigil = line[0];
-    if (sigil === '+') {
-      const sp = line.search(/[ \t]/);
-      const head = sp < 0 ? line.slice(1) : line.slice(1, sp);
-      const rest = sp < 0 ? '' : line.slice(sp + 1);
-      const target = parseRefAt(head);
-      if (target) {
-        const node = parseTreeLine(`${target.ref} ${rest}`, 0);
-        if (node) {
-          snap.nodes.set(node.ref, node);
-          attach(snap, node.ref, target.parent, target.pos);
-        }
+    switch (line[0]) {
+      case '+':
+        deltaAdd(snap, line);
+        break;
+      case '-':
+        removeSubtree(snap, Number(line.slice(1).trim()));
+        break;
+      case '~':
+        deltaAttrs(snap, line);
+        break;
+      case '>':
+        deltaMove(snap, line);
+        break;
+      case '*': {
+        // The replacement subtree is the indented lines that follow.
+        const subLines: string[] = [];
+        while (i < lines.length && /^[ \t]/.test(lines[i] ?? '')) subLines.push(lines[i++] ?? '');
+        deltaReplace(snap, Number(line.slice(1).trim()), subLines);
+        break;
       }
-      i++;
-    } else if (sigil === '-') {
-      removeSubtree(snap, Number(line.slice(1).trim()));
-      i++;
-    } else if (sigil === '~') {
-      const tokens = tokenizeTreeLine(line);
-      const ref = Number(tokens[0]?.slice(1));
-      const node = snap.nodes.get(ref);
-      if (node) {
-        const attrs: Record<string, string> = {};
-        for (const tok of tokens.slice(1)) {
-          const eq = tok.indexOf('=');
-          if (eq > 0) attrs[tok.slice(0, eq)] = stripQuotes(tok.slice(eq + 1));
-        }
-        node.attrs = attrs;
-      }
-      i++;
-    } else if (sigil === '>') {
-      const target = parseRefAt(line.slice(1));
-      if (target && snap.nodes.has(target.ref)) {
-        detach(snap, target.ref);
-        attach(snap, target.ref, target.parent, target.pos);
-      }
-      i++;
-    } else if (sigil === '*') {
-      const ref = Number(line.slice(1).trim());
-      const subLines: string[] = [];
-      i++;
-      while (i < lines.length && /^[ \t]/.test(lines[i] ?? '')) {
-        subLines.push(lines[i] ?? '');
-        i++;
-      }
-      const old = snap.nodes.get(ref);
-      if (!old) continue;
-      const parent = old.parent;
-      const siblings = parent === null ? snap.roots : (snap.nodes.get(parent)?.children ?? []);
-      const position = siblings.indexOf(ref);
-      removeSubtree(snap, ref);
-      const indent = (subLines[0] ?? '').length - (subLines[0] ?? '').trimStart().length;
-      const sub = parseFullTree(subLines.map((l) => l.slice(indent)));
-      for (const node of sub.nodes.values()) snap.nodes.set(node.ref, node);
-      for (const root of sub.roots) {
-        attach(snap, root, parent ?? 0, position < 0 ? null : position);
-      }
-    } else {
+      default:
       // Unknown line in a delta body; skip rather than corrupt state.
-      i++;
     }
   }
+}
+
+/** `+<ref>@<parent>[:<pos>] role ...`: a new node. */
+function deltaAdd(snap: Snapshot, line: string): void {
+  const sp = line.search(/[ \t]/);
+  const head = sp < 0 ? line.slice(1) : line.slice(1, sp);
+  const rest = sp < 0 ? '' : line.slice(sp + 1);
+  const target = parseRefAt(head);
+  if (!target) return;
+  const node = parseTreeLine(`${target.ref} ${rest}`, 0);
+  if (!node) return;
+  snap.nodes.set(node.ref, node);
+  attach(snap, node.ref, target.parent, target.pos);
+}
+
+/** `~<ref> k=v ...`: the node's attributes, replaced as a whole. */
+function deltaAttrs(snap: Snapshot, line: string): void {
+  const tokens = tokenizeTreeLine(line);
+  const node = snap.nodes.get(Number(tokens[0]?.slice(1)));
+  if (!node) return;
+  const attrs: Record<string, string> = {};
+  for (const tok of tokens.slice(1)) {
+    const eq = tok.indexOf('=');
+    if (eq > 0) attrs[tok.slice(0, eq)] = stripQuotes(tok.slice(eq + 1));
+  }
+  node.attrs = attrs;
+}
+
+/** `><ref>@<parent>[:<pos>]`: the node moves. */
+function deltaMove(snap: Snapshot, line: string): void {
+  const target = parseRefAt(line.slice(1));
+  if (!target || !snap.nodes.has(target.ref)) return;
+  detach(snap, target.ref);
+  attach(snap, target.ref, target.parent, target.pos);
+}
+
+/** `*<ref>` and an indented subtree: the node and its subtree, replaced in place. */
+function deltaReplace(snap: Snapshot, ref: number, subLines: string[]): void {
+  const old = snap.nodes.get(ref);
+  if (!old) return;
+  const parent = old.parent;
+  const siblings = parent === null ? snap.roots : (snap.nodes.get(parent)?.children ?? []);
+  const position = siblings.indexOf(ref);
+  removeSubtree(snap, ref);
+  const indent = (subLines[0] ?? '').length - (subLines[0] ?? '').trimStart().length;
+  const sub = parseFullTree(subLines.map((l) => l.slice(indent)));
+  for (const node of sub.nodes.values()) snap.nodes.set(node.ref, node);
+  for (const root of sub.roots) attach(snap, root, parent ?? 0, position < 0 ? null : position);
 }
 
 /** Depth-first iteration over a snapshot's nodes. */

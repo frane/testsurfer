@@ -60,10 +60,8 @@ export function localeScript(locale: string): string {
  * getters, setters, constructor and string forms, getTimezoneOffset,
  * and the default time zone of Intl.DateTimeFormat.
  */
-export function timezoneScript(zone: string): string {
-  return `(() => {
-    const Z = ${JSON.stringify(zone)};
-    const OD = Date;
+/** timezoneScript: Minutes ahead of UTC in the zone at an instant, and the instant for local wall-clock fields. */
+const TZ_ZONE_MATH = `    const OD = Date;
     const fmt = new Intl.DateTimeFormat('en-US', { timeZone: Z, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', era: 'short' });
     // Minutes the zone is ahead of UTC at instant t.
     const ahead = (t) => {
@@ -82,7 +80,10 @@ export function timezoneScript(zone: string): string {
       t = guess - ahead(t) * 60000;
       return t;
     };
-    const DP = OD.prototype;
+`;
+
+/** timezoneScript: Date's local getters and getTimezoneOffset read the zone's wall clock. */
+const TZ_LOCAL_GETTERS = `    const DP = OD.prototype;
     const utc = {
       FullYear: DP.getUTCFullYear, Month: DP.getUTCMonth, Date: DP.getUTCDate, Day: DP.getUTCDay,
       Hours: DP.getUTCHours, Minutes: DP.getUTCMinutes, Seconds: DP.getUTCSeconds, Milliseconds: DP.getUTCMilliseconds,
@@ -92,7 +93,10 @@ export function timezoneScript(zone: string): string {
       Object.defineProperty(DP, 'get' + k, { value: function () { const t = DP.getTime.call(this); return isNaN(t) ? NaN : g.call(shifted(this)); }, writable: true, configurable: true });
     }
     Object.defineProperty(DP, 'getTimezoneOffset', { value: function () { return -ahead(DP.getTime.call(this)); }, writable: true, configurable: true });
-    const fields = (d) => { const s = shifted(d); return [utc.FullYear.call(s), utc.Month.call(s), utc.Date.call(s), utc.Hours.call(s), utc.Minutes.call(s), utc.Seconds.call(s), utc.Milliseconds.call(s)]; };
+`;
+
+/** timezoneScript: Date's local setters write the zone's wall clock. */
+const TZ_LOCAL_SETTERS = `    const fields = (d) => { const s = shifted(d); return [utc.FullYear.call(s), utc.Month.call(s), utc.Date.call(s), utc.Hours.call(s), utc.Minutes.call(s), utc.Seconds.call(s), utc.Milliseconds.call(s)]; };
     const setter = (name, idx, n) => function (...args) {
       const f = fields(this);
       for (let i = 0; i < n && i < args.length; i++) f[idx + i] = +args[i];
@@ -100,7 +104,10 @@ export function timezoneScript(zone: string): string {
     };
     const set = { FullYear: [0, 3], Month: [1, 2], Date: [2, 1], Hours: [3, 4], Minutes: [4, 3], Seconds: [5, 2], Milliseconds: [6, 1] };
     for (const [k, [i, n]] of Object.entries(set)) Object.defineProperty(DP, 'set' + k, { value: setter(k, i, n), writable: true, configurable: true });
-    const pad = (n, w = 2) => String(n).padStart(w, '0');
+`;
+
+/** timezoneScript: toString, toDateString, toTimeString and the toLocale forms in the zone. */
+const TZ_STRING_FORMS = `    const pad = (n, w = 2) => String(n).padStart(w, '0');
     const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const zoneName = (d) => { try { return new Intl.DateTimeFormat('en-US', { timeZone: Z, timeZoneName: 'long' }).formatToParts(d).find((p) => p.type === 'timeZoneName').value; } catch (e) { return Z; } };
@@ -115,7 +122,10 @@ export function timezoneScript(zone: string): string {
       const f = DP[k];
       Object.defineProperty(DP, k, { value: function (locales, options) { return f.call(this, locales, Object.assign({ timeZone: Z }, options)); }, writable: true, configurable: true });
     }
-    // new Date(y, m, ...) and Date.parse of a string without a zone mean local time.
+`;
+
+/** timezoneScript: new Date(...) and Date.parse read zone-less local times in the zone; Intl.DateTimeFormat defaults to it. */
+const TZ_LOCAL_CONSTRUCTOR = `    // new Date(y, m, ...) and Date.parse of a string without a zone mean local time.
     const localString = (s) => typeof s === 'string' && !/(Z|[+-]\\d\\d:?\\d\\d|GMT|UTC)\\s*$/i.test(s.trim()) && !/^\\d{4}-\\d{2}-\\d{2}$/.test(s.trim());
     const sysOffset = (t) => OD.prototype.getTimezoneOffset.call(new OD(t));
     const reparse = (s) => {
@@ -144,7 +154,12 @@ export function timezoneScript(zone: string): string {
     W.prototype = DTF.prototype;
     W.supportedLocalesOf = DTF.supportedLocalesOf;
     Object.defineProperty(Intl, 'DateTimeFormat', { value: W, writable: true, configurable: true });
-  })();`;
+`;
+
+export function timezoneScript(zone: string): string {
+  return `(() => {
+    const Z = ${JSON.stringify(zone)};
+${TZ_ZONE_MATH}${TZ_LOCAL_GETTERS}${TZ_LOCAL_SETTERS}${TZ_STRING_FORMS}${TZ_LOCAL_CONSTRUCTOR}  })();`;
 }
 
 /** navigator.geolocation answering with `geo` while the geolocation permission is granted. */

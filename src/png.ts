@@ -25,39 +25,57 @@ function paeth(a: number, b: number, c: number): number {
   return pb <= pc ? b : c;
 }
 
+/** The chunks decoding needs. */
+interface Chunks {
+  width: number;
+  height: number;
+  depth: number;
+  colorType: number;
+  interlace: number;
+  palette: Buffer | null;
+  trns: Buffer | null;
+  idat: Buffer[];
+}
+
+/** Bytes per pixel by PNG color type (gray, RGB, palette, gray+alpha, RGBA). */
+const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+
 export function decodePng(buf: Buffer): Image {
   if (!buf.subarray(0, 8).equals(SIGNATURE)) throw new Error('not a PNG');
+  const png = readChunks(buf);
+  if (png.depth !== 8 || png.interlace !== 0) {
+    throw new Error(`unsupported PNG (bit depth ${png.depth}, interlace ${png.interlace}); 8-bit non-interlaced only`);
+  }
+  const channels = CHANNELS[png.colorType];
+  if (!channels) throw new Error(`unsupported PNG color type ${png.colorType}`);
+  const rows = unfilter(inflateSync(Buffer.concat(png.idat)), png.width, png.height, channels);
+  return { width: png.width, height: png.height, data: toRgba(rows, png, channels) };
+}
+
+function readChunks(buf: Buffer): Chunks {
+  const png: Chunks = { width: 0, height: 0, depth: 0, colorType: 0, interlace: 0, palette: null, trns: null, idat: [] };
   let off = 8;
-  let width = 0;
-  let height = 0;
-  let depth = 0;
-  let colorType = 0;
-  let interlace = 0;
-  let palette: Buffer | null = null;
-  let trns: Buffer | null = null;
-  const idat: Buffer[] = [];
   while (off < buf.length) {
     const len = buf.readUInt32BE(off);
     const type = buf.toString('latin1', off + 4, off + 8);
     const data = buf.subarray(off + 8, off + 8 + len);
     off += 12 + len;
     if (type === 'IHDR') {
-      width = data.readUInt32BE(0);
-      height = data.readUInt32BE(4);
-      depth = data[8]!;
-      colorType = data[9]!;
-      interlace = data[12]!;
-    } else if (type === 'PLTE') palette = data;
-    else if (type === 'tRNS') trns = data;
-    else if (type === 'IDAT') idat.push(data);
+      png.width = data.readUInt32BE(0);
+      png.height = data.readUInt32BE(4);
+      png.depth = data[8]!;
+      png.colorType = data[9]!;
+      png.interlace = data[12]!;
+    } else if (type === 'PLTE') png.palette = data;
+    else if (type === 'tRNS') png.trns = data;
+    else if (type === 'IDAT') png.idat.push(data);
     else if (type === 'IEND') break;
   }
-  if (depth !== 8 || interlace !== 0) {
-    throw new Error(`unsupported PNG (bit depth ${depth}, interlace ${interlace}); 8-bit non-interlaced only`);
-  }
-  const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[colorType];
-  if (!channels) throw new Error(`unsupported PNG color type ${colorType}`);
-  const raw = inflateSync(Buffer.concat(idat));
+  return png;
+}
+
+/** Undo each scanline's filter (none, sub, up, average, Paeth). */
+function unfilter(raw: Buffer, width: number, height: number, channels: number): Uint8Array {
   const stride = width * channels;
   const rows = new Uint8Array(stride * height);
   let prev = new Uint8Array(stride);
@@ -79,6 +97,12 @@ export function decodePng(buf: Buffer): Image {
     }
     prev = out;
   }
+  return rows;
+}
+
+/** Expand unfiltered pixels of any supported color type to RGBA. */
+function toRgba(rows: Uint8Array, png: Chunks, channels: number): Uint8Array {
+  const { width, height, colorType, palette, trns } = png;
   const data = new Uint8Array(width * height * 4);
   for (let i = 0; i < width * height; i++) {
     const s = i * channels;
@@ -101,7 +125,7 @@ export function decodePng(buf: Buffer): Image {
       data[d + 3] = trns?.[idx] ?? 255;
     }
   }
-  return { width, height, data };
+  return data;
 }
 
 const CRC_TABLE = (() => {
