@@ -4,6 +4,7 @@
  */
 
 import { after, before } from 'node:test';
+import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { configure, expect, test } from '../src/index.ts';
@@ -67,6 +68,22 @@ before(async () => {
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(APP);
+  });
+  // WebSocket echo of short text frames (RFC 6455): `echo:<text>`.
+  server.on('upgrade', (req, sock) => {
+    const accept = crypto
+      .createHash('sha1')
+      .update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest('base64');
+    sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    sock.on('data', (b: Buffer) => {
+      if ((b[0]! & 15) !== 1) return sock.end();
+      const len = b[1]! & 127;
+      const mask = b.subarray(2, 6);
+      const out = Buffer.from('echo:' + Buffer.from(b.subarray(6, 6 + len).map((x, i) => x ^ mask[i % 4]!)).toString());
+      sock.write(Buffer.concat([Buffer.from([0x81, out.length]), out]));
+    });
+    sock.on('error', () => {});
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   configure({ baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}` });
@@ -143,5 +160,28 @@ test.describe('network', () => {
     }, 'from init');
     await page.goto('/');
     await expect(page.locator('#init-out')).toHaveText('from init');
+  });
+
+  // A context with its own user agent continues every request with changed
+  // headers; a WebSocket handshake must stay an upgrade through that.
+  test('a WebSocket connects in a context with a custom user agent', async ({ browser }) => {
+    const ctx = await browser.newContext({ userAgent: 'testsurfer-ws-check' });
+    const page = await ctx.newPage();
+    await page.goto('/');
+    const wsP = page.waitForEvent<{ url(): string }>('websocket');
+    const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
+    const got = await page.evaluate(
+      (u: string) =>
+        new Promise<string>((resolve) => {
+          const s = new WebSocket(u);
+          s.onopen = () => s.send('hi');
+          s.onmessage = (e) => resolve(String(e.data));
+          s.onclose = (e) => resolve(`closed ${e.code}`);
+        }),
+      url,
+    );
+    if (got !== 'echo:hi') throw new Error(`websocket: ${got}`);
+    if (!(await wsP).url().endsWith('/ws')) throw new Error('no websocket event');
+    await ctx.close();
   });
 });

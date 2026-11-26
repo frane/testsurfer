@@ -352,9 +352,14 @@ export class NetHub {
       // The proxy cannot tell an EventSource from fetch; its Accept header can.
       if (type === 'fetch' && (p.headers['accept'] ?? '').includes('text/event-stream')) type = 'eventsource';
       // The proxy forwards one request per connection, so the server sees
-      // `Connection: close`; report the headers as they reached it.
-      if (p.headers['connection'] !== undefined) p.headers['connection'] = 'close';
-      for (const h of p.raw) if (h.name.toLowerCase() === 'connection') h.value = 'close';
+      // `Connection: close`; report the headers as they reached it. A
+      // WebSocket handshake keeps `Connection: Upgrade`: continuing it with
+      // `close` (a route, a user agent, extra headers) would turn it into a
+      // plain GET.
+      if (type !== 'websocket') {
+        if (p.headers['connection'] !== undefined) p.headers['connection'] = 'close';
+        for (const h of p.raw) if (h.name.toLowerCase() === 'connection') h.value = 'close';
+      }
       const bytes = p.body ? Buffer.from(p.body, 'base64') : null;
       const req = new Request({
         id: p.id,
