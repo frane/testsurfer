@@ -34,21 +34,10 @@ function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
 }
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
-import {
-  byAttr,
-  ElementHandle,
-  FrameLocator,
-  JSHandle,
-  selectorSteps,
-  Locator,
-  type BoundingBox,
-  type ByRoleOptions,
-  type ByTextOptions,
-  type ClickOptions,
-  type InputFile,
-  type LocatorOptions,
-  type SelectOptionValue,
-} from './locator.ts';
+import { FrameLocator } from './frame-locator.ts';
+import { JSHandle } from './handle.ts';
+import { ElementHandle, Locator, type BoundingBox, type ClickOptions, type InputFile, type SelectOptionValue } from './locator.ts';
+import { byAttr, selectorSteps, type ByRoleOptions, type ByTextOptions, type LocatorOptions } from './query.ts';
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
 import { Download, parseDownloadList } from './download.ts';

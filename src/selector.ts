@@ -6,7 +6,7 @@
  * `:visible` at the end of a CSS selector.
  */
 
-import type { ByRoleOptions } from './locator.ts';
+import type { ByRoleOptions } from './query.ts';
 
 /** Element-level checks applied page-side after querySelectorAll. */
 export interface CssExtras {

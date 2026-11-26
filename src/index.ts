@@ -20,7 +20,10 @@ export const webkit = makeType('webkit');
 export const chromium = makeType('chromium');
 export const firefox = makeType('firefox');
 export { Page, type ClickVia, type InputMode, type LayoutRect, type ProtocolOptions, type Timeouts } from './page.ts';
-export { ElementHandle, FrameLocator, JSHandle, Locator, type ByRoleOptions, type ByTextOptions, type FilterOptions, type LocatorOptions } from './locator.ts';
+export { ElementHandle, Locator } from './locator.ts';
+export { FrameLocator } from './frame-locator.ts';
+export { JSHandle } from './handle.ts';
+export type { ByRoleOptions, ByTextOptions, FilterOptions, LocatorOptions } from './query.ts';
 export { expect, LocatorAssertions, PageAssertions, type ExpectOptions } from './expect.ts';
 export { ValueAssertions, AssertionError } from './values.ts';
 export {
