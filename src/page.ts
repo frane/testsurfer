@@ -40,6 +40,7 @@ import type { Dialog } from './dialog.ts';
 import { PageEvents } from './events.ts';
 import { PageHooks } from './page-hooks.ts';
 import { PageSession, type Button } from './page-session.ts';
+import { PageNavigation } from './page-navigation.ts';
 import { FRAMES_CALL, FrameTree, type FrameMatch } from './page-frames.ts';
 import { LocatorHandlers } from './locator-handlers.ts';
 import { Keyboard, Mouse, Touchscreen, type InputHost } from './input.ts';
@@ -65,14 +66,8 @@ interface EngineReply {
 
 /** Frame rate for page.video() and screencast recordings, as Playwright records. */
 const RECORD_FPS = '25';
-/** Poll interval while waiting for the URL to change (waitForURL, back/forward). */
-const URL_POLL_MS = 50;
-/** Poll interval for waitForNavigation's document check. */
-const NAV_POLL_MS = 20;
-/** Poll interval while a popup's first document loads. */
-const POPUP_LOAD_POLL_MS = 30;
-/** How long goBack/goForward wait for the URL to change before treating the move as a no-op. */
-const HISTORY_SETTLE_MS = 2_000;
+/** Poll interval while waiting for a popup's own window.close() to land. */
+const SELF_CLOSE_POLL_MS = 20;
 /** How long a failed call waits for a popup's own window.close() to land. */
 const SELF_CLOSE_GRACE_MS = 1_000;
 
@@ -223,12 +218,12 @@ export class Page {
       isPopup: () => this.openerPage !== undefined,
       page: () => this,
       noteURL: (url: string) => {
-        this.lastHref = url;
+        this.navigation.lastHref = url;
       },
       wsEvent: (e) => void this.hooks.onEvent(e).catch(() => {}),
       workerFor: (id) => this.hooks.worker(id),
-      swControlled: () => this.swControlled,
-      pageURL: () => this.lastHref,
+      swControlled: () => this.navigation.swControlled,
+      pageURL: () => this.navigation.lastHref,
     });
     this.hooks = new PageHooks({
       page: this,
@@ -240,13 +235,92 @@ export class Page {
       evaluate: (fn, arg) => this.evaluate(fn, arg),
       evaluateHandle: (fn) => this.evaluateHandle(fn),
     });
+    this.navigation = new PageNavigation({
+      client,
+      sessionId,
+      session: this.session,
+      events: this.events,
+      baseURL,
+      timeouts: this.timeouts,
+      navInPlace: this.navInPlace,
+      initScripts: () => this.initScripts,
+      applyViewport: () => this.applyViewport(),
+      updateZoom: () => this.mobileZoom.update(),
+      refreshFrames: () => this.refreshFrames(),
+      mainFrame: () => this.mainFrame(),
+      evaluate: (fn, arg) => this.evaluate(fn, arg),
+      rawEval: (src) => this.rawEval(src),
+      waitForFunction: (fn, arg, options) => this.waitForFunction(fn, arg, options),
+    });
   }
 
   /** The page that opened this one; undefined when not a popup. */
   private openerPage: Page | null | undefined = undefined;
   private closedFlag = false;
-  /** The URL a popup was opened with, until waitForLoadState() sees it loaded. */
-  private popupURL = '';
+
+  /** goto, setContent, history, the load and URL waits, and the URL this page reports. */
+  private readonly navigation: PageNavigation;
+
+  /** Poll until the URL matches. */
+  async waitForURL(url: UrlMatcher, options: { timeout?: number } = {}): Promise<void> {
+    await this.navigation.waitForURL(url, options);
+  }
+
+  /**
+   * Resolve when the page has loaded a new document (and, with `url`,
+   * one whose URL matches). Start it before the action that navigates:
+   * `await Promise.all([page.waitForNavigation(), link.click()])`.
+   */
+  async waitForNavigation(options: { url?: UrlMatcher; timeout?: number; waitUntil?: string } = {}): Promise<null> {
+    return this.navigation.waitForNavigation(options);
+  }
+
+  /**
+   * goto() already waits for the load. A popup loads on its own, so
+   * for one this waits until its document is there and loaded.
+   */
+  async waitForLoadState(state?: 'load' | 'domcontentloaded' | 'networkidle', options: { timeout?: number } = {}): Promise<void> {
+    await this.navigation.waitForLoadState(state, options);
+  }
+
+  /**
+   * Replace the document with `html`; its scripts run. On an http(s)
+   * page the document is rewritten in place, so it keeps that origin
+   * and relative URLs resolve against it. Otherwise the page loads the
+   * HTML as a data: URL (an opaque origin, no storage): WebKit drops
+   * native clicks on a rewritten about:blank.
+   */
+  async setContent(html: string): Promise<void> {
+    await this.navigation.setContent(html);
+  }
+
+  /** Load the current URL again. */
+  async reload(): Promise<Response | null> {
+    return this.navigation.reload();
+  }
+
+  /** History back; resolves once the URL changed (or immediately when there is no history). */
+  async goBack(): Promise<void> {
+    await this.navigation.goBack();
+  }
+
+  async goForward(): Promise<void> {
+    await this.navigation.goForward();
+  }
+
+  /**
+   * Navigate to a URL, relative to the baseURL launch option when set.
+   * Navigates in place on protocol-v1 daemons; older ones close the
+   * page and open a new one.
+   */
+  async goto(target: string, options: { waitUntil?: string; timeout?: number; referer?: string } = {}): Promise<Response | null> {
+    return this.navigation.goto(target, options);
+  }
+
+  /** The page's URL as of the last call into the page (actions, reads and navigations all refresh it). */
+  url(): string {
+    return this.navigation.url();
+  }
 
   /**
    * @internal Take over a page vibesurfer opened as a popup of `opener`
@@ -256,8 +330,8 @@ export class Page {
   adoptPopup(pageId: string, url: string, opener: Page | null): PageEvents {
     this.session.pageId = pageId;
     this.openerPage = opener;
-    this.popupURL = url || 'about:blank';
-    this.lastHref = url || 'about:blank';
+    this.navigation.popupURL = url || 'about:blank';
+    this.navigation.lastHref = url || 'about:blank';
     this.events.documentChanged();
     this.events.attachHub();
     return this.events;
@@ -621,102 +695,6 @@ export class Page {
     await new Promise((r) => setTimeout(r, ms));
   }
 
-  /** Poll until the URL matches. */
-  async waitForURL(url: UrlMatcher, options: { timeout?: number } = {}): Promise<void> {
-    const budget = options.timeout ?? this.timeouts.navigation;
-    const deadline = Date.now() + budget;
-    for (;;) {
-      const now = await this.currentURL().catch(() => '');
-      if (now && urlMatches(url, now, this.baseURL)) return;
-      if (Date.now() >= deadline) throw new Error(`waitForURL(${String(url)}) timed out after ${budget}ms; URL is ${now}`);
-      await sleep(URL_POLL_MS);
-    }
-  }
-
-  /**
-   * Resolve when the page has loaded a new document (and, with `url`,
-   * one whose URL matches). Start it before the action that navigates:
-   * `await Promise.all([page.waitForNavigation(), link.click()])`.
-   */
-  async waitForNavigation(options: { url?: UrlMatcher; timeout?: number; waitUntil?: string } = {}): Promise<null> {
-    const budget = options.timeout ?? this.timeouts.navigation;
-    const deadline = Date.now() + budget;
-    // Mark the current document; a new one will not carry the mark.
-    const mark = `nav${Date.now()}${Math.random().toString(36).slice(2)}`;
-    await this.rawEval(`(window.__tsNavMark = ${JSON.stringify(mark)}, 0)`).catch(() => {});
-    for (;;) {
-      const state = await this.rawEval<{ m: string | null; r: string; u: string } | null>(
-        `({ m: window.__tsNavMark || null, r: document.readyState, u: location.href })`,
-      ).catch(() => null);
-      if (state && state.m !== mark && state.r !== 'loading') {
-        if (!options.url || urlMatches(options.url, state.u, this.baseURL)) {
-          this.session.snapshot = null;
-          this.session.synced = false;
-          this.session.fresh = false;
-          this.events.documentChanged();
-          return null;
-        }
-      }
-      if (Date.now() >= deadline) throw new Error(`page.waitForNavigation: Timeout ${budget}ms exceeded.`);
-      await sleep(NAV_POLL_MS);
-    }
-  }
-
-  /**
-   * goto() already waits for the load. A popup loads on its own, so
-   * for one this waits until its document is there and loaded.
-   */
-  async waitForLoadState(state?: 'load' | 'domcontentloaded' | 'networkidle', options: { timeout?: number } = {}): Promise<void> {
-    if (this.popupURL) {
-      const want = this.popupURL;
-      const budget = options.timeout ?? this.timeouts.navigation;
-      const deadline = Date.now() + budget;
-      for (;;) {
-        const r = await this.rawEval<string>(`location.href + ' ' + document.readyState`).catch(() => '');
-        const cut = r.lastIndexOf(' ');
-        const href = r.slice(0, cut);
-        const ready = r.slice(cut + 1);
-        const loaded = state === 'domcontentloaded' ? ready === 'interactive' || ready === 'complete' : ready === 'complete';
-        if (loaded && (href !== 'about:blank' || want === 'about:blank')) {
-          this.lastHref = href;
-          break;
-        }
-        if (Date.now() >= deadline) throw new Error(`page.waitForLoadState: Timeout ${budget}ms exceeded.`);
-        await sleep(POPUP_LOAD_POLL_MS);
-      }
-      this.popupURL = '';
-    }
-    await this.refreshFrames();
-  }
-
-  /**
-   * Replace the document with `html`; its scripts run. On an http(s)
-   * page the document is rewritten in place, so it keeps that origin
-   * and relative URLs resolve against it. Otherwise the page loads the
-   * HTML as a data: URL (an opaque origin, no storage): WebKit drops
-   * native clicks on a rewritten about:blank.
-   */
-  async setContent(html: string): Promise<void> {
-    const here = this.session.pageId ? await this.currentURL().catch(() => '') : '';
-    if (!/^https?:/.test(here)) {
-      const shown = here.startsWith('data:') ? here : 'about:blank';
-      const data = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-      await this.navigate(data);
-      await this.rememberNav(shown, data);
-      await this.refreshFrames();
-      await this.mobileZoom.update().catch(() => {});
-      return;
-    }
-    await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
-    // Like Playwright, return once the new document (stylesheets, images) has loaded.
-    await this.waitForFunction("document.readyState === 'complete'", undefined, { timeout: this.timeouts.navigation }).catch(() => {});
-    await this.mobileZoom.update().catch(() => {});
-    await this.refreshFrames();
-    this.session.snapshot = null;
-    this.session.synced = false;
-    this.session.fresh = false;
-  }
-
   /** The document's HTML, without the ref markers vibesurfer adds. */
   async content(): Promise<string> {
     return this.evaluate<string>(
@@ -724,36 +702,6 @@ export class Page {
         `c.querySelectorAll('[data-vs-ref]').forEach(function(e){e.removeAttribute('data-vs-ref');});` +
         `return '<!DOCTYPE html>'+c.outerHTML;})()`,
     );
-  }
-
-  /** Load the current URL again. */
-  async reload(): Promise<Response | null> {
-    return this.goto(await this.currentURL());
-  }
-
-  /** History back; resolves once the URL changed (or immediately when there is no history). */
-  async goBack(): Promise<void> {
-    await this.historyMove(-1);
-  }
-
-  async goForward(): Promise<void> {
-    await this.historyMove(1);
-  }
-
-  private async historyMove(delta: number): Promise<void> {
-    const before = await this.currentURL();
-    await this.evaluate(`(history.go(${delta}), 'ok')`);
-    // No history entry means no change; give up on the URL after a while.
-    const deadline = Date.now() + HISTORY_SETTLE_MS;
-    while (Date.now() < deadline) {
-      await sleep(URL_POLL_MS);
-      const now = await this.currentURL().catch(() => before);
-      if (now !== before) break;
-    }
-    this.session.snapshot = null;
-    this.session.synced = false;
-    this.session.fresh = false;
-    this.events.documentChanged();
   }
 
   /** setDefaultNavigationTimeout() was called, so setDefaultTimeout() leaves navigations alone. */
@@ -952,143 +900,6 @@ export class Page {
   }
 
   /**
-   * Navigate to a URL, relative to the baseURL launch option when set.
-   * Navigates in place on protocol-v1 daemons; older ones close the
-   * page and open a new one.
-   */
-  async goto(target: string, _options: { waitUntil?: string; timeout?: number; referer?: string } = {}): Promise<Response | null> {
-    try {
-      await this.events.beforeNavigation();
-      // Shim mode: the in-page shim cannot see a document request, so
-      // the page's routes decide it here.
-      const url = this.baseURL ? new URL(target, this.baseURL).href : target;
-      const routed = /^https?:/.test(url) ? await this.events.routeDocument(url) : null;
-      if (routed?.kind === 'abort') this.events.netNavAborted();
-      if (routed?.kind === 'abort') throw new Error('aborted by route');
-      if (routed?.kind === 'fulfill') {
-        await this.navigate(url, routed.body);
-        const res = new Response(routed.req, { url, status: routed.status, statusText: '', headers: routed.headers });
-        res.bodyLoader = async () => routed.body;
-        routed.req.responseValue = res;
-        return res;
-      }
-      await this.navigate(routed?.kind === 'continue' ? routed.url : target);
-    } catch (e) {
-      // A route that aborted the document fails the navigation the way WebKit reports it.
-      if (this.events.abortedNavigation()) throw new Error(`page.goto: Blocked by Web Inspector`);
-      throw e;
-    }
-    const viaProxy = await this.events.proxiedNavResponse();
-    const res = viaProxy ?? (await this.mainResponse());
-    if (res || !target.startsWith('file:')) return res;
-    // A file: page has a response too, with status 0, as in WebKit under Playwright.
-    const req = new Request({ id: 0, url: target, method: 'GET', headers: {}, body: null, type: 'document', navigation: true });
-    req.frameValue = this.mainFrame();
-    const fileRes = new Response(req, { url: target, status: 0, statusText: '', headers: {} });
-    req.responseValue = fileRes;
-    return fileRes;
-  }
-
-  /**
-   * The main document's response after a navigation (vibesurfer 0.2.16+
-   * `vs_inspect response`), or null for data:, about: and file: URLs or
-   * on older daemons.
-   */
-  private async mainResponse(): Promise<Response | null> {
-    if (!this.session.pageId) return null;
-    let body: string[];
-    try {
-      body = (await this.client.call('vs_inspect', ['response', this.session.pageId], { session: this.sessionId })).body;
-    } catch {
-      return null;
-    }
-    if (body.length === 0 || body[0] === 'none') return null;
-    let url = '';
-    let status = 0;
-    let statusText = '';
-    const headers: Record<string, string> = {};
-    for (const line of body) {
-      if (line.startsWith('url=')) url = line.slice(4);
-      else if (line.startsWith('status=')) status = Number(line.slice(7));
-      else if (line.startsWith('status_text=')) statusText = line.slice(12);
-      else if (line.startsWith('h ')) {
-        const i = line.indexOf(': ');
-        if (i > 2) {
-          const k = line.slice(2, i);
-          const v = line.slice(i + 2);
-          headers[k] = headers[k] === undefined ? v : `${headers[k]}, ${v}`;
-        }
-      }
-    }
-    // Responses do not carry the fragment.
-    url = url.replace(/#.*$/, '');
-    const req = new Request({ id: 0, url, method: 'GET', headers: {}, body: null, type: 'document' });
-    req.frameValue = this.mainFrame();
-    const res = new Response(req, { url, status, statusText, headers });
-    req.responseValue = res;
-    res.bodyLoader = async () => {
-      const b64 = await this.evaluate<string>(
-        `fetch(${JSON.stringify(url)}, { credentials: 'include' }).then((r) => r.arrayBuffer()).then((b) => { let s = ''; const a = new Uint8Array(b); for (let i = 0; i < a.length; i += 32768) s += String.fromCharCode.apply(null, a.subarray(i, i + 32768)); return btoa(s); })`,
-      );
-      return Buffer.from(b64, 'base64');
-    };
-    return res;
-  }
-
-  /** `html`: load that document under the URL instead of fetching it (a routed document). */
-  private async navigate(target: string, html?: Buffer): Promise<void> {
-    const url = this.baseURL ? new URL(target, this.baseURL).href : target;
-    const gotoFlags: Record<string, string> = { session: this.sessionId };
-    if (html) gotoFlags['html'] = html.toString('base64');
-    if (this.session.pageId && this.navInPlace) {
-      try {
-        const resp = await this.client.call('vs_goto', [this.session.pageId, url], gotoFlags);
-        this.session.token = resp.token;
-        this.session.snapshot = null;
-        this.session.synced = false;
-        this.session.fresh = false;
-        this.events.documentChanged();
-        await this.rememberNav(url, url);
-        await this.refreshFrames();
-        return;
-      } catch {
-        // Old daemon or dead page; fall through to close+open.
-      }
-    }
-    if (this.session.pageId) {
-      await this.client
-        .call('vs_close', [this.session.pageId], { session: this.sessionId })
-        .catch(() => {});
-      this.session.pageId = null;
-    }
-    this.session.token = null;
-    this.session.snapshot = null;
-    this.session.synced = false;
-    this.session.fresh = false;
-    // Init scripts have to be in place before the first document, so
-    // a page that has them opens blank, installs them, then loads.
-    const first = this.initScripts.length > 0 || html ? 'about:blank' : url;
-    const resp = await this.client.call('vs_open', [first], { session: this.sessionId });
-    const id = resp.body[0];
-    if (!id) throw new Error(`vs_open returned no page id for ${url}`);
-    this.session.pageId = id;
-    await this.applyViewport();
-    this.session.token = resp.token;
-    if (first !== url) {
-      for (const src of this.initScripts) {
-        await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
-      }
-      const nav = await this.client.call('vs_goto', [id, url], gotoFlags);
-      this.session.token = nav.token;
-    }
-    this.events.documentChanged();
-    await this.rememberNav(url, url);
-    await this.refreshFrames();
-    // No settle wait here: locators auto-wait and assertions poll, so
-    // a still-loading tree just resolves a poll tick later.
-  }
-
-  /**
    * The action made the page close itself (a popup's "Close" button):
    * vibesurfer released the page under the action, which then finds
    * nothing. The action did its work; the close event follows on the
@@ -1098,7 +909,7 @@ export class Page {
     if (!(e instanceof WireError) || e.code !== 'NOT_FOUND' || !String(e.args[0] ?? '').startsWith('page=')) return false;
     if (this.openerPage === undefined) return false;
     const deadline = Date.now() + SELF_CLOSE_GRACE_MS;
-    while (!this.closedFlag && Date.now() < deadline) await sleep(NAV_POLL_MS);
+    while (!this.closedFlag && Date.now() < deadline) await sleep(SELF_CLOSE_POLL_MS);
     return this.closedFlag;
   }
 
@@ -1150,8 +961,8 @@ export class Page {
       throw new Error('Execution context was destroyed, most likely because of a navigation');
     }
     if (frame === null) {
-      if (typeof (r as { u?: unknown }).u === 'string') this.lastHref = (r as { u: string }).u;
-      if (typeof (r as { sw?: unknown }).sw === 'boolean') this.swControlled = (r as { sw: boolean }).sw;
+      if (typeof (r as { u?: unknown }).u === 'string') this.navigation.lastHref = (r as { u: string }).u;
+      if (typeof (r as { sw?: unknown }).sw === 'boolean') this.navigation.swControlled = (r as { sw: boolean }).sw;
       // Keep frames() current: re-read the frame tree when the page's iframe count changed.
       const fc = (r as { fc?: number } | null)?.fc;
       if (typeof fc === 'number' && body !== FRAMES_CALL) await this.frameTree.noteCount(fc);
@@ -1539,53 +1350,6 @@ export class Page {
       await fs.writeFile(path, out);
     }
     return out;
-  }
-
-  /** The page's current URL. */
-  /** The location every engine call reports; Playwright's page.url() is synchronous. */
-  private lastHref = 'about:blank';
-  /** A service worker controlled the page as of the last engine call. */
-  private swControlled = false;
-
-  /** The page's URL as of the last call into the page (actions, reads and navigations all refresh it). */
-  url(): string {
-    return this.shownURL(this.lastHref);
-  }
-
-  /** Read location.href now. */
-  private async currentURL(): Promise<string> {
-    this.lastHref = await this.evaluate<string>('location.href');
-    return this.url();
-  }
-
-  private shownURL(href: string): string {
-    const nav = this.navURL;
-    if (!nav || href !== nav.actual) {
-      // WebKit percent-encodes data: URLs; show them as written.
-      if (href.startsWith('data:')) {
-        try {
-          return decodeURI(href);
-        } catch {
-          return href;
-        }
-      }
-      return href;
-    }
-    // The engine percent-encodes a data: URL; report it as given, and a
-    // setContent() page as the about:blank Playwright would show.
-    return nav.shown;
-  }
-
-  /** What goto() was asked for, and what the engine then reports. */
-  private navURL: { shown: string; actual: string } | null = null;
-
-  private async rememberNav(shown: string, requested: string): Promise<void> {
-    if (!requested.startsWith('data:')) {
-      this.navURL = null;
-      return;
-    }
-    const actual = await this.evaluate<string>('location.href').catch(() => '');
-    this.navURL = actual ? { shown, actual } : null;
   }
 
   /**
