@@ -6,10 +6,9 @@
 
 import type { WireClient } from './client.ts';
 import type { BrowserContext } from './context.ts';
-import type { WireResponse } from './wire.ts';
 
 import { WireError } from './errors.ts';
-import { applyDelta, isDeltaBody, parseFullTree, type Snapshot } from './tree.ts';
+import type { Snapshot } from './tree.ts';
 import { FrameLocator } from './frame-locator.ts';
 import { JSHandle } from './handle.ts';
 import { ElementHandle } from './element-handle.ts';
@@ -40,13 +39,14 @@ import { ConsoleMessage } from './console.ts';
 import type { Dialog } from './dialog.ts';
 import { PageEvents } from './events.ts';
 import { PageHooks } from './page-hooks.ts';
+import { PageSession, type Button } from './page-session.ts';
 import { FRAMES_CALL, FrameTree, type FrameMatch } from './page-frames.ts';
 import { LocatorHandlers } from './locator-handlers.ts';
 import { Keyboard, Mouse, Touchscreen, type InputHost } from './input.ts';
 import { Request, Response } from './http.ts';
 import type { RouteHandler } from './route.ts';
 import { urlMatches, type UrlMatcher } from './url.ts';
-import { parseLayoutLines, type LayoutRect } from './layout.ts';
+import type { LayoutRect } from './layout.ts';
 import type { ClickVia, InputMode, ProtocolOptions, Timeouts } from './page-options.ts';
 import { sleep } from './retry.ts';
 
@@ -62,7 +62,6 @@ interface EngineReply {
   gone?: boolean;
   noengine?: boolean;
 }
-
 
 /** Frame rate for page.video() and screencast recordings, as Playwright records. */
 const RECORD_FPS = '25';
@@ -80,32 +79,63 @@ const SELF_CLOSE_GRACE_MS = 1_000;
 /** Backoff between polls for a pending engine result: fast first, then easing off. */
 const takeDelay = (attempt: number) => (attempt < 5 ? 2 : attempt < 20 ? 10 : 25);
 
-
 /** What every page gets at document start: the event shim and the WebSocket hook. */
 export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}\n${FILECHOOSER_SHIM}`;
 
 export class Page {
-  private pageId: string | null = null;
-  private token: string | null = null;
-  /** Last known tree, kept in sync via full views and deltas. */
-  private snapshot: Snapshot | null = null;
-  /**
-   * True while `snapshot` equals the daemon's delta baseline (our last
-   * applied view, with no act in between). The daemon advances its
-   * baseline on every act and discards that delta, so after an act the
-   * next view must be requested `--full`; between plain views, deltas
-   * are sound. Cursor ops (click-at) do not touch the baseline, so
-   * they leave this flag alone.
-   */
-  private synced = false;
-  /**
-   * True while `snapshot` also reflects current page reality, so an
-   * action can resolve against it without a read. Any mutation clears
-   * it. Distinct from `synced`: a click-at leaves the baseline (and
-   * the daemon's last token) untouched, so the token check would not
-   * catch acting on the pre-click tree; this flag forces the re-read.
-   */
-  private fresh = false;
+
+  /** The vibesurfer page this Page drives: id, state token, tree snapshot. */
+  private readonly session: PageSession;
+
+  /** @internal The accessibility tree, refreshed from the daemon (a delta when possible). */
+  async view(): Promise<Snapshot> {
+    return this.session.view();
+  }
+
+  /** @internal view() plus bounding rects for `refs`, in one round trip. */
+  async viewWithLayout(refs: number[]): Promise<{ snap: Snapshot; rects: Map<number, LayoutRect> }> {
+    return this.session.viewWithLayout(refs);
+  }
+
+  /** @internal The cached tree while it is current, else a fresh view. */
+  async actionSnapshot(): Promise<Snapshot> {
+    return this.session.actionSnapshot();
+  }
+
+  /** @internal One vs_act primitive against a ref, with the cached state token. */
+  async act(ref: number, op: string, value?: string, extraFlags?: Record<string, string>): Promise<void> {
+    await this.session.act(ref, op, value, extraFlags);
+  }
+
+  /** @internal Trusted native click at viewport coordinates (CSS px). */
+  async clickAt(
+    x: number,
+    y: number,
+    mode?: InputMode,
+    opts: { count?: number | undefined; button?: Button | undefined; modifiers?: string[] | undefined } = {},
+  ): Promise<void> {
+    await this.session.clickAt(x, y, mode, opts);
+  }
+
+  /** @internal Text of one ref and its subtree. */
+  async readRef(ref: number): Promise<string> {
+    return this.session.readRef(ref);
+  }
+
+  /** Trusted per-character typing into the focused element. */
+  async typeTrusted(text: string, options?: { secret?: boolean; mode?: InputMode }): Promise<void> {
+    await this.session.typeTrusted(text, options);
+  }
+
+  /** @internal Block until a daemon-side wait condition holds. */
+  async waitFor(cond: 'stable' | 'net-idle' | 'token-change' | 'text' | 'ref' | 'gone', value?: string, timeoutMs?: number): Promise<void> {
+    await this.session.waitFor(cond, value, timeoutMs);
+  }
+
+  /** @internal Bounding rects for refs. */
+  async layout(refs: number[]): Promise<Map<number, LayoutRect>> {
+    return this.session.layout(refs);
+  }
 
   private readonly client: WireClient;
   private readonly sessionId: string;
@@ -166,9 +196,19 @@ export class Page {
     this.nativeClickOptions = protocol.clickOptions ?? false;
     this.webm = protocol.webm ?? false;
     this.dropNative = protocol.drop ?? false;
+    this.session = new PageSession({
+      client,
+      sessionId,
+      actDeltas: this.actDeltas,
+      inputMode: () => this.inputMode,
+      navigationTimeout: () => this.timeouts.navigation,
+      ensureOpen: () => this.ensureOpen(),
+      zoom: () => this.mobileZoom.ready(),
+      closedByItself: (e) => this.closedByItself(e),
+    });
     this.events = new PageEvents({
       openPoller: () => this.client.sibling(),
-      target: () => ({ pageId: this.pageId, sessionId: this.sessionId }),
+      target: () => ({ pageId: this.session.pageId, sessionId: this.sessionId }),
       baseURL,
       ensureShim: () => this.ensureShim(),
       addInitScript: (src) => this.addInitSource(src),
@@ -194,7 +234,7 @@ export class Page {
       page: this,
       events: this.events,
       baseURL: () => this.baseURL,
-      hasDocument: () => this.pageId !== null,
+      hasDocument: () => this.session.pageId !== null,
       ensureShim: () => this.ensureShim(),
       addInitSource: (src) => this.addInitSource(src),
       evaluate: (fn, arg) => this.evaluate(fn, arg),
@@ -214,7 +254,7 @@ export class Page {
    * request is reported to it.
    */
   adoptPopup(pageId: string, url: string, opener: Page | null): PageEvents {
-    this.pageId = pageId;
+    this.session.pageId = pageId;
     this.openerPage = opener;
     this.popupURL = url || 'about:blank';
     this.lastHref = url || 'about:blank';
@@ -233,7 +273,7 @@ export class Page {
     await this.ensureOpen();
     const payload = Buffer.from(JSON.stringify({ files, data: Object.entries(data) })).toString('base64');
     try {
-      const r = await this.client.call('vs_drop', [this.id, String(x), String(y), payload], { session: this.sessionId });
+      const r = await this.client.call('vs_drop', [this.session.id, String(x), String(y), payload], { session: this.sessionId });
       return r.body[0] === 'accepted';
     } catch (e) {
       if (/unsupported/i.test(String(e))) return null;
@@ -243,7 +283,7 @@ export class Page {
 
   /** @internal The vibesurfer page id, once the page has one. */
   wireId(): string | null {
-    return this.pageId;
+    return this.session.pageId;
   }
 
   /** The page that opened this one (window.open, target=_blank), or null. */
@@ -258,7 +298,7 @@ export class Page {
   /** @internal The page closed itself (window.close()); vibesurfer already released it. */
   closedByPage(): void {
     if (this.closedFlag) return;
-    this.pageId = null;
+    this.session.pageId = null;
     this.markClosed();
   }
 
@@ -299,14 +339,14 @@ export class Page {
 
   private async addInitSource(source: string): Promise<void> {
     this.initScripts.push(source);
-    if (this.pageId) await this.client.call('vs_init_script', [this.pageId, source], { session: this.sessionId });
+    if (this.session.pageId) await this.client.call('vs_init_script', [this.session.pageId, source], { session: this.sessionId });
   }
 
   private async ensureShim(): Promise<void> {
     if (this.shimInstalled) return;
     this.shimInstalled = true;
     await this.addInitSource(PAGE_SHIM);
-    if (this.pageId) await this.evaluate(PAGE_SHIM.replace(/;\s*$/, ''));
+    if (this.session.pageId) await this.evaluate(PAGE_SHIM.replace(/;\s*$/, ''));
   }
 
   /**
@@ -338,7 +378,7 @@ export class Page {
   }
 
   private readonly mediaEmulation = new MediaEmulation({
-    hasDocument: () => this.pageId !== null,
+    hasDocument: () => this.session.pageId !== null,
     addInitSource: (src) => this.addInitSource(src),
     rawEval: (expr) => this.rawEval(expr),
     evaluate: (fn, arg) => this.evaluate(fn, arg),
@@ -450,9 +490,9 @@ export class Page {
     viewportSize: () => this.viewportSize(),
     recordTo: async (width) => {
       await this.ensureOpen();
-      await this.client.call('vs_record', ['start', this.id], this.recordFlags(width));
+      await this.client.call('vs_record', ['start', this.session.id], this.recordFlags(width));
       return async () => {
-        const r = await this.client.call('vs_record', ['stop', this.id], { session: this.sessionId }).catch(() => null);
+        const r = await this.client.call('vs_record', ['stop', this.session.id], { session: this.sessionId }).catch(() => null);
         const line = r?.body.find((l) => l.startsWith('path\t'));
         return line ? line.slice(5) : null;
       };
@@ -473,7 +513,7 @@ export class Page {
     this.videoValue = new Video(dir);
     this.videoSize = size ? { width: size.width } : null;
     await this.ensureOpen();
-    await this.client.call('vs_record', ['start', this.id], this.recordFlags(this.videoSize?.width));
+    await this.client.call('vs_record', ['start', this.session.id], this.recordFlags(this.videoSize?.width));
   }
 
   /**
@@ -610,9 +650,9 @@ export class Page {
       ).catch(() => null);
       if (state && state.m !== mark && state.r !== 'loading') {
         if (!options.url || urlMatches(options.url, state.u, this.baseURL)) {
-          this.snapshot = null;
-          this.synced = false;
-          this.fresh = false;
+          this.session.snapshot = null;
+          this.session.synced = false;
+          this.session.fresh = false;
           this.events.documentChanged();
           return null;
         }
@@ -657,7 +697,7 @@ export class Page {
    * native clicks on a rewritten about:blank.
    */
   async setContent(html: string): Promise<void> {
-    const here = this.pageId ? await this.currentURL().catch(() => '') : '';
+    const here = this.session.pageId ? await this.currentURL().catch(() => '') : '';
     if (!/^https?:/.test(here)) {
       const shown = here.startsWith('data:') ? here : 'about:blank';
       const data = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
@@ -672,9 +712,9 @@ export class Page {
     await this.waitForFunction("document.readyState === 'complete'", undefined, { timeout: this.timeouts.navigation }).catch(() => {});
     await this.mobileZoom.update().catch(() => {});
     await this.refreshFrames();
-    this.snapshot = null;
-    this.synced = false;
-    this.fresh = false;
+    this.session.snapshot = null;
+    this.session.synced = false;
+    this.session.fresh = false;
   }
 
   /** The document's HTML, without the ref markers vibesurfer adds. */
@@ -710,40 +750,10 @@ export class Page {
       const now = await this.currentURL().catch(() => before);
       if (now !== before) break;
     }
-    this.snapshot = null;
-    this.synced = false;
-    this.fresh = false;
+    this.session.snapshot = null;
+    this.session.synced = false;
+    this.session.fresh = false;
     this.events.documentChanged();
-  }
-
-  /**
-   * Fold a 0.2 mutation response body (the ViewForm the daemon emitted
-   * while advancing its baseline) into the snapshot. Empty body means
-   * NoChange; a full tree replaces; a delta applies when we hold the
-   * pre-mutation baseline, otherwise the snapshot is unusable until
-   * the next full view.
-   */
-  private applyMutationBody(resp: WireResponse): void {
-    const first = resp.body[0];
-    if (first === undefined) return;
-    if (!isDeltaBody(first)) {
-      this.snapshot = parseFullTree(resp.body);
-      this.synced = true;
-      this.fresh = true;
-      return;
-    }
-    if (this.synced && this.snapshot) {
-      applyDelta(this.snapshot, resp.body);
-      this.fresh = true;
-    } else {
-      this.synced = false;
-      this.fresh = false;
-    }
-  }
-
-  private get id(): string {
-    if (!this.pageId) throw new Error('page has no URL yet; call page.goto(url) first');
-    return this.pageId;
   }
 
   /** setDefaultNavigationTimeout() was called, so setDefaultTimeout() leaves navigations alone. */
@@ -857,11 +867,11 @@ export class Page {
   }
 
   private readonly mobileZoom = new MobileZoom({
-    hasDocument: () => this.pageId !== null,
+    hasDocument: () => this.session.pageId !== null,
     screenWidth: () => this.viewport?.width,
     evaluate: (fn, arg) => this.evaluate(fn, arg),
     setZoom: async (zoom) => {
-      await this.client.call('vs_viewport', [this.id, 'keep'], { session: this.sessionId, zoom: String(zoom) });
+      await this.client.call('vs_viewport', [this.session.id, 'keep'], { session: this.sessionId, zoom: String(zoom) });
     },
     onDomContentLoaded: (listener) => {
       this.on('domcontentloaded', listener);
@@ -903,12 +913,12 @@ export class Page {
   private readonly downloads = new DownloadWatcher({
     page: this,
     list: async () => {
-      if (!this.pageId) return null;
-      const r = await this.client.call('vs_download', [this.pageId], { session: this.sessionId, list: true });
+      if (!this.session.pageId) return null;
+      const r = await this.client.call('vs_download', [this.session.pageId], { session: this.sessionId, list: true });
       return r.body;
     },
     save: async (id, dest) => {
-      const got = await this.client.call('vs_download', [this.id], { session: this.sessionId, id: String(id), dest });
+      const got = await this.client.call('vs_download', [this.session.id], { session: this.sessionId, id: String(id), dest });
       const line = got.body.find((l) => l.startsWith('path\t'));
       return line ? line.slice(5) : dest;
     },
@@ -918,7 +928,7 @@ export class Page {
   /** @internal The page's wire id, opening its web view first if it has none yet. */
   async openedId(): Promise<string> {
     await this.ensureOpen();
-    return this.id;
+    return this.session.id;
   }
 
   /**
@@ -926,14 +936,14 @@ export class Page {
    * that needs a document opens one (with the init scripts installed).
    */
   private async ensureOpen(): Promise<void> {
-    if (this.pageId) return;
+    if (this.session.pageId) return;
     if (this.closedFlag) throw new Error('Target page, context or browser has been closed');
     const resp = await this.client.call('vs_open', ['about:blank'], { session: this.sessionId });
     const id = resp.body[0];
     if (!id) throw new Error('vs_open returned no page id for about:blank');
-    this.pageId = id;
+    this.session.pageId = id;
     await this.applyViewport();
-    this.token = resp.token;
+    this.session.token = resp.token;
     this.shimInstalled = true;
     for (const src of this.initScripts) {
       await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
@@ -985,10 +995,10 @@ export class Page {
    * on older daemons.
    */
   private async mainResponse(): Promise<Response | null> {
-    if (!this.pageId) return null;
+    if (!this.session.pageId) return null;
     let body: string[];
     try {
-      body = (await this.client.call('vs_inspect', ['response', this.pageId], { session: this.sessionId })).body;
+      body = (await this.client.call('vs_inspect', ['response', this.session.pageId], { session: this.sessionId })).body;
     } catch {
       return null;
     }
@@ -1030,13 +1040,13 @@ export class Page {
     const url = this.baseURL ? new URL(target, this.baseURL).href : target;
     const gotoFlags: Record<string, string> = { session: this.sessionId };
     if (html) gotoFlags['html'] = html.toString('base64');
-    if (this.pageId && this.navInPlace) {
+    if (this.session.pageId && this.navInPlace) {
       try {
-        const resp = await this.client.call('vs_goto', [this.pageId, url], gotoFlags);
-        this.token = resp.token;
-        this.snapshot = null;
-        this.synced = false;
-        this.fresh = false;
+        const resp = await this.client.call('vs_goto', [this.session.pageId, url], gotoFlags);
+        this.session.token = resp.token;
+        this.session.snapshot = null;
+        this.session.synced = false;
+        this.session.fresh = false;
         this.events.documentChanged();
         await this.rememberNav(url, url);
         await this.refreshFrames();
@@ -1045,136 +1055,37 @@ export class Page {
         // Old daemon or dead page; fall through to close+open.
       }
     }
-    if (this.pageId) {
+    if (this.session.pageId) {
       await this.client
-        .call('vs_close', [this.pageId], { session: this.sessionId })
+        .call('vs_close', [this.session.pageId], { session: this.sessionId })
         .catch(() => {});
-      this.pageId = null;
+      this.session.pageId = null;
     }
-    this.token = null;
-    this.snapshot = null;
-    this.synced = false;
-    this.fresh = false;
+    this.session.token = null;
+    this.session.snapshot = null;
+    this.session.synced = false;
+    this.session.fresh = false;
     // Init scripts have to be in place before the first document, so
     // a page that has them opens blank, installs them, then loads.
     const first = this.initScripts.length > 0 || html ? 'about:blank' : url;
     const resp = await this.client.call('vs_open', [first], { session: this.sessionId });
     const id = resp.body[0];
     if (!id) throw new Error(`vs_open returned no page id for ${url}`);
-    this.pageId = id;
+    this.session.pageId = id;
     await this.applyViewport();
-    this.token = resp.token;
+    this.session.token = resp.token;
     if (first !== url) {
       for (const src of this.initScripts) {
         await this.client.call('vs_init_script', [id, src], { session: this.sessionId });
       }
       const nav = await this.client.call('vs_goto', [id, url], gotoFlags);
-      this.token = nav.token;
+      this.session.token = nav.token;
     }
     this.events.documentChanged();
     await this.rememberNav(url, url);
     await this.refreshFrames();
     // No settle wait here: locators auto-wait and assertions poll, so
     // a still-loading tree just resolves a poll tick later.
-  }
-
-  /**
-   * Refresh the snapshot from the daemon and return it. Sends a plain
-   * (delta) view when our snapshot matches the daemon's baseline and a
-   * `--full` view otherwise; the body shape decides how it is applied,
-   * so a surprise full tree (navigation, daemon restart) is handled
-   * either way.
-   */
-  async view(): Promise<Snapshot> {
-    await this.ensureOpen();
-    const canDelta = this.synced && this.snapshot !== null;
-    const flags: Record<string, string | true> = { session: this.sessionId };
-    if (!canDelta) flags['full'] = true;
-    const resp = await this.client.call('vs_view', [this.id], flags);
-    return this.applyViewResponse(resp, canDelta);
-  }
-
-  /**
-   * One round trip for view + layout via the `--layout=` composite:
-   * the daemon appends rect lines for the requested refs as an extra
-   * body section. Refs no longer in the tree come back as inline
-   * NOT_FOUND lines and are simply absent from the map.
-   */
-  async viewWithLayout(refs: number[]): Promise<{ snap: Snapshot; rects: Map<number, LayoutRect> }> {
-    if (refs.length === 0) {
-      return { snap: await this.view(), rects: new Map() };
-    }
-    const canDelta = this.synced && this.snapshot !== null;
-    const flags: Record<string, string | true> = {
-      session: this.sessionId,
-      layout: refs.join(','),
-    };
-    if (!canDelta) flags['full'] = true;
-    const resp = await this.client.call('vs_view', [this.id], flags, { extraSections: 1 });
-    const snap = this.applyViewResponse(resp, canDelta);
-    return { snap, rects: parseLayoutLines(resp.sections[0] ?? []) };
-  }
-
-  private applyViewResponse(resp: WireResponse, canDelta: boolean): Snapshot {
-    this.token = resp.token;
-    const first = resp.body[0];
-    if (first === undefined) {
-      // No change since our baseline (or a genuinely empty page).
-      this.snapshot ??= { nodes: new Map(), roots: [] };
-    } else if (canDelta && this.snapshot && isDeltaBody(first)) {
-      applyDelta(this.snapshot, resp.body);
-    } else {
-      this.snapshot = parseFullTree(resp.body);
-    }
-    this.synced = true;
-    this.fresh = true;
-    return this.snapshot;
-  }
-
-  /**
-   * Snapshot for resolving an action target: the cached tree when it
-   * is still baseline-synced, otherwise a fresh view. Acting on a
-   * cached tree is safe because every mutation carries our token; if
-   * the page moved on, the daemon answers STALE_TOKEN and the action
-   * loop re-resolves against a fresh view.
-   */
-  async actionSnapshot(): Promise<Snapshot> {
-    if (this.fresh && this.snapshot) return this.snapshot;
-    return this.view();
-  }
-
-  /**
-   * Run one act primitive against a ref with the cached token. On
-   * STALE_TOKEN the cached token is refreshed before rethrowing, so
-   * the caller can re-resolve and retry.
-   */
-  async act(ref: number, op: string, value?: string, extraFlags?: Record<string, string>): Promise<void> {
-    if (this.token === null) await this.view();
-    const args = value === undefined ? [this.id, String(ref), op] : [this.id, String(ref), op, value];
-    try {
-      const resp = await this.client.call('vs_act', args, {
-        ...extraFlags,
-        session: this.sessionId,
-        token: this.token ?? '',
-      });
-      this.token = resp.token;
-      if (this.actDeltas) {
-        this.applyMutationBody(resp);
-      } else {
-        // 0.1.x: the act advanced the daemon's delta baseline without
-        // showing us the delta; the cached tree cannot be patched.
-        this.synced = false;
-        this.fresh = false;
-      }
-    } catch (e) {
-      if (await this.closedByItself(e)) return;
-      if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
-        this.token = e.args[0];
-      }
-      this.synced = false;
-      this.fresh = false;
-      throw e;
-    }
   }
 
   /**
@@ -1189,130 +1100,6 @@ export class Page {
     const deadline = Date.now() + SELF_CLOSE_GRACE_MS;
     while (!this.closedFlag && Date.now() < deadline) await sleep(NAV_POLL_MS);
     return this.closedFlag;
-  }
-
-  /**
-   * Trusted native click at viewport coordinates via vs_click_at. The
-   * cursor op leaves the daemon's delta baseline and last token
-   * untouched, so `synced` survives (the next delta view picks up the
-   * click's effects) but `fresh` does not.
-   */
-  async clickAt(
-    x: number,
-    y: number,
-    mode?: InputMode,
-    opts: { count?: number | undefined; button?: 'left' | 'right' | 'middle' | undefined; modifiers?: string[] | undefined } = {},
-  ): Promise<void> {
-    await this.ensureOpen();
-    const z = await this.mobileZoom.ready();
-    x *= z;
-    y *= z;
-    const flags: Record<string, string> = { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode };
-    if (opts.button && opts.button !== 'left') flags['button'] = opts.button;
-    if (opts.count && opts.count > 1) flags['count'] = String(Math.min(3, opts.count));
-    const mods = (opts.modifiers ?? []).map((m) => (m === 'ControlOrMeta' ? (process.platform === 'darwin' ? 'meta' : 'ctrl') : m === 'Control' ? 'ctrl' : m.toLowerCase()));
-    if (mods.length) flags['modifiers'] = mods.join(',');
-    try {
-      const resp = await this.client.call(
-        'vs_click_at',
-        [this.id, String(Math.round(x * 100) / 100), String(Math.round(y * 100) / 100)],
-        flags,
-      );
-      this.token = resp.token;
-      if (this.actDeltas) {
-        this.applyMutationBody(resp);
-      } else {
-        // 0.1.x cursor ops leave the baseline (and token) untouched;
-        // the snapshot just needs a re-read before the next action.
-        this.fresh = false;
-      }
-    } catch (e) {
-      if (await this.closedByItself(e)) return;
-      if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
-        this.token = e.args[0];
-      }
-      this.synced = false;
-      this.fresh = false;
-      throw e;
-    }
-  }
-
-  /**
-   * Text of one ref and its subtree via vs_read. The body renders each
-   * node as `[ref] role: label`, indented; the labels are the text.
-   */
-  async readRef(ref: number): Promise<string> {
-    const resp = await this.client.call('vs_read', [this.id, String(ref)], {
-      session: this.sessionId,
-    });
-    this.token = resp.token;
-    return resp.body
-      .map((l) => l.replace(/^\s*\[\d+\] [^:]*: ?/, ''))
-      .filter((l) => l.trim() !== '')
-      .join(' ');
-  }
-
-  /** Trusted per-character typing into the focused element. */
-  async typeTrusted(text: string, options?: { secret?: boolean; mode?: InputMode }): Promise<void> {
-    await this.ensureOpen();
-    const flags: Record<string, string | true> = {
-      session: this.sessionId,
-      token: this.token ?? '',
-      mode: options?.mode ?? this.inputMode,
-    };
-    if (options?.secret) flags['secret'] = true;
-    try {
-      const resp = await this.client.call('vs_type', [this.id, text], flags);
-      this.token = resp.token;
-      // vs_type advances neither baseline nor token on any released
-      // engine; the snapshot stays delta-patchable but not fresh.
-      this.fresh = false;
-    } catch (e) {
-      this.synced = false;
-      this.fresh = false;
-      throw e;
-    }
-  }
-
-  /**
-   * Block until a daemon-side wait condition holds. The returned wait
-   * token is deliberately not cached: vs_wait computes it from a raw
-   * engine snapshot without advancing the page's last-emitted token,
-   * so it is not valid as an act pre-image.
-   */
-  async waitFor(
-    cond: 'stable' | 'net-idle' | 'token-change' | 'text' | 'ref' | 'gone',
-    value?: string,
-    timeoutMs?: number,
-  ): Promise<void> {
-    const args = value === undefined ? [this.id, cond] : [this.id, cond, value];
-    const budget = timeoutMs ?? this.timeouts.navigation;
-    const resp = await this.client.call(
-      'vs_wait',
-      args,
-      { session: this.sessionId, timeout: String(budget) },
-      { timeoutMs: budget + 10_000 },
-    );
-    if (this.actDeltas) {
-      // 0.2 wait advances the baseline without emitting the tree; the
-      // token is a valid pre-image but the snapshot must be re-read.
-      this.token = resp.token;
-      this.synced = false;
-      this.fresh = false;
-    }
-  }
-
-  /**
-   * Bounding rects for refs via vs_layout. Body lines look like
-   * `<ref> x=0 y=0 w=0 h=0 visible=false z=0`.
-   */
-  async layout(refs: number[]): Promise<Map<number, LayoutRect>> {
-    if (refs.length === 0) return new Map();
-    const resp = await this.client.call('vs_layout', [this.id, ...refs.map(String)], {
-      session: this.sessionId,
-    });
-    this.token = resp.token;
-    return parseLayoutLines(resp.body);
   }
 
   /**
@@ -1336,7 +1123,7 @@ export class Page {
     const flags: Record<string, string | true> = { session: this.sessionId, full: true };
     // A subframe by URL, cross-origin ones included (vibesurfer 0.2.16+).
     if (frame !== null) flags['frame'] = frame;
-    const resp = await this.client.call('vs_inspect', ['eval', this.id, `JSON.stringify(${src}) ?? "null"`], flags);
+    const resp = await this.client.call('vs_inspect', ['eval', this.session.id, `JSON.stringify(${src}) ?? "null"`], flags);
     const line = resp.body.find((l) => l.startsWith('result='));
     if (line === undefined) {
       throw new Error(`evaluate failed: ${resp.body.join(' ').slice(0, 300)}`);
@@ -1553,7 +1340,7 @@ export class Page {
     await this.ensureShim();
     await this.addInitSource(script);
     await this.events.sync();
-    if (this.pageId) await this.rawEval(`(${script.replace(/;\s*$/, '')}, 0)`).catch(() => {});
+    if (this.session.pageId) await this.rawEval(`(${script.replace(/;\s*$/, '')}, 0)`).catch(() => {});
   }
 
   private extraHeaders: Record<string, string> = {};
@@ -1697,22 +1484,22 @@ export class Page {
    * then navigates it in place instead of opening a web view.
    */
   async adoptBlank(pageId: string, token: string, sized: { width: number; height: number; dpr: number } | null): Promise<void> {
-    this.pageId = pageId;
-    this.token = token;
+    this.session.pageId = pageId;
+    this.session.token = token;
     const same = sized && this.viewport && sized.width === this.viewport.width && sized.height === this.viewport.height && sized.dpr === this.dpr;
     if (!same) await this.applyViewport();
     this.events.documentChanged();
   }
 
   private async applyViewport(): Promise<void> {
-    if (!this.viewport || !this.pageId) return;
-    await this.client.call('vs_viewport', [this.pageId, `${this.viewport.width}x${this.viewport.height}`], {
+    if (!this.viewport || !this.session.pageId) return;
+    await this.client.call('vs_viewport', [this.session.pageId, `${this.viewport.width}x${this.viewport.height}`], {
       session: this.sessionId,
       dpr: String(this.dpr),
     });
-    this.snapshot = null;
-    this.synced = false;
-    this.fresh = false;
+    this.session.snapshot = null;
+    this.session.synced = false;
+    this.session.fresh = false;
   }
 
   /** Resize the page (CSS px). */
@@ -1827,7 +1614,7 @@ export class Page {
     await this.ensureOpen();
     const flags: Record<string, string | true> = { session: this.sessionId };
     if (options.fullPage) flags['full-page'] = true;
-    const args = ref === null ? [this.id] : [this.id, String(ref)];
+    const args = ref === null ? [this.session.id] : [this.session.id, String(ref)];
     const resp = await this.client.call('vs_capture', args, flags);
     const saved = (resp.body[0] ?? '').trim();
     if (!saved) throw new Error('vs_capture returned no path');
@@ -1847,12 +1634,12 @@ export class Page {
   /** @internal Load an imported cookie blob into this page's jar (the session's). */
   async loadCookieBlob(name: string): Promise<void> {
     await this.ensureOpen();
-    await this.client.call('vs_auth', ['load', this.id, name], { session: this.sessionId });
+    await this.client.call('vs_auth', ['load', this.session.id, name], { session: this.sessionId });
     await this.client.call('vs_auth', ['clear', name], { session: this.sessionId }).catch(() => {});
   }
 
   async saveAuth(name: string): Promise<void> {
-    await this.client.call('vs_auth', ['save', this.id, name], { session: this.sessionId });
+    await this.client.call('vs_auth', ['save', this.session.id, name], { session: this.sessionId });
   }
 
   /**
@@ -1862,10 +1649,10 @@ export class Page {
    */
   async loadAuth(name: string): Promise<void> {
     // The reply carries the zero token, not a page state; re-read later.
-    await this.client.call('vs_auth', ['load', this.id, name], { session: this.sessionId });
-    this.token = null;
-    this.synced = false;
-    this.fresh = false;
+    await this.client.call('vs_auth', ['load', this.session.id, name], { session: this.sessionId });
+    this.session.token = null;
+    this.session.synced = false;
+    this.session.fresh = false;
   }
 
   /** Delete login state saved under `name`. */
@@ -1879,35 +1666,13 @@ export class Page {
   /** What page.mouse, page.keyboard and page.touchscreen drive. */
   private inputHost(): InputHost {
     return {
-      cursorOp: (op, coords, mode, mutates) => this.cursorOp(op, coords, mode, mutates),
+      cursorOp: (op, coords, mode, mutates) => this.session.cursorOp(op, coords, mode, mutates),
       clickAt: (x, y, mode, opts) => this.clickAt(x, y, mode, opts),
       nativeWheel: () => this.nativeWheel,
       evaluate: (fn, arg) => this.evaluate(fn, arg),
       engineCall: (body) => this.engineCall(body),
       typeTrusted: (text) => this.typeTrusted(text),
     };
-  }
-
-  private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
-    await this.ensureOpen();
-    const z = await this.mobileZoom.ready();
-    // A wheel's deltas are CSS px of scrolling, not points on the screen.
-    if (z !== 1) coords = coords.map((c, i) => (op === 'vs_wheel' && i >= 2 ? c : c * z));
-    const flags: Record<string, string> = { session: this.sessionId, mode: mode ?? this.inputMode };
-    if (mutates) flags['token'] = this.token ?? '0';
-    try {
-      const resp = await this.client.call(op, [this.id, ...coords.map((c) => String(Math.round(c)))], flags);
-      if (resp.token && !/^0+$/.test(resp.token)) this.token = resp.token;
-      if (mutates && this.actDeltas) this.applyMutationBody(resp);
-      else this.fresh = false;
-    } catch (e) {
-      if (e instanceof WireError && e.code === 'STALE_TOKEN' && e.args[0]) {
-        this.token = e.args[0];
-      }
-      this.synced = false;
-      this.fresh = false;
-      throw e;
-    }
   }
 
   /** The whole page as template text (see toMatchAriaSnapshot). */
@@ -1967,19 +1732,19 @@ export class Page {
   async close(): Promise<void> {
     if (this.closedFlag) return;
     for (const h of this.harWriters.splice(0)) await h.save().catch(() => {});
-    if (this.videoValue && this.pageId) {
-      const r = await this.client.call('vs_record', ['stop', this.pageId], { session: this.sessionId }).catch(() => null);
+    if (this.videoValue && this.session.pageId) {
+      const r = await this.client.call('vs_record', ['stop', this.session.pageId], { session: this.sessionId }).catch(() => null);
       const line = r?.body.find((l) => l.startsWith('path\t'));
       if (line) await this.videoValue.finish(line.slice(5)).catch(() => {});
     }
     this.downloads.stop();
-    const id = this.pageId;
-    this.pageId = null;
+    const id = this.session.pageId;
+    this.session.pageId = null;
     this.markClosed();
     if (id) await this.client.call('vs_close', [id], { session: this.sessionId }).catch(() => {});
-    this.token = null;
-    this.snapshot = null;
-    this.synced = false;
-    this.fresh = false;
+    this.session.token = null;
+    this.session.snapshot = null;
+    this.session.synced = false;
+    this.session.fresh = false;
   }
 }
