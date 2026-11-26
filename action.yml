@@ -1,5 +1,5 @@
 name: Set up testsurfer
-description: Prepare a GitHub runner to run testsurfer suites. On Linux, installs WebKitGTK 6 and starts a virtual display; on macOS there is nothing to install.
+description: "Prepare a runner for testsurfer: installs WebKitGTK 6 and a virtual display on Linux; nothing to install on macOS."
 branding:
   icon: check-circle
   color: blue
