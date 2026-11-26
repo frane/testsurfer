@@ -13,7 +13,8 @@
 
 import { readFileSync } from 'node:fs';
 
-export { Browser, BrowserContext, browserType, type LaunchOptions } from './browser.ts';
+export { Browser, browserType, type LaunchOptions } from './browser.ts';
+export { BrowserContext } from './context.ts';
 import { browserType as makeType } from './browser.ts';
 /** Playwright's browser types; all of them run on the OS web view. */
 export const webkit = makeType('webkit');
@@ -54,7 +55,7 @@ export { Worker } from './worker.ts';
 export { Video } from './video.ts';
 export { FileChooser } from './filechooser.ts';
 export type { Cookie, StorageState } from './cookies.ts';
-export type { ContextOptions } from './browser.ts';
+export type { ContextOptions } from './context.ts';
 
 /**
  * Playwright's device descriptors (user agent, viewport, scale,
@@ -69,7 +70,7 @@ export { selectors } from './selectors.ts';
 
 // Record API calls for context.tracing (see src/tracing.ts).
 import { instrument, Tracing } from './tracing.ts';
-import { BrowserContext as TracedCtx } from './browser.ts';
+import { BrowserContext as TracedCtx } from './context.ts';
 import { Page as TracedPage } from './page.ts';
 import { Locator as TracedLocator } from './locator.ts';
 import { Frame as TracedFrame } from './frame.ts';

@@ -5,7 +5,7 @@
  */
 
 import type { WireClient } from './client.ts';
-import type { BrowserContext } from './browser.ts';
+import type { BrowserContext } from './context.ts';
 import type { WireResponse } from './wire.ts';
 
 /** Parse `<ref> x=.. y=.. w=.. h=.. visible=.. z=..` lines; `!` error lines are skipped. */

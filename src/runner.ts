@@ -14,7 +14,8 @@ import { test as nodeTest, describe as nodeDescribe, after, before } from 'node:
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Browser, CONTEXT_OPTION_KEYS, type BrowserContext, type ContextOptions, type LaunchOptions } from './browser.ts';
+import { Browser, type LaunchOptions } from './browser.ts';
+import { CONTEXT_OPTION_KEYS, type BrowserContext, type ContextOptions } from './context.ts';
 import type { StorageState } from './cookies.ts';
 import { currentTestInfo, testInfoStore, updateSnapshotsFromEnv, type TestInfo, type UpdateSnapshots } from './testinfo.ts';
 import type { Page } from './page.ts';
