@@ -519,6 +519,7 @@ export class PageEvents {
         break;
       default:
         if (e.t.startsWith('ws') || e.t.startsWith('worker') || e.t === 'filechooser') this.host.wsEvent?.(e as unknown as Record<string, unknown>);
+        break;
       case 'pageerror': {
         const err = new Error(e.message ?? '');
         if (e.name) err.name = e.name;

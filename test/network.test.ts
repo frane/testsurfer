@@ -182,6 +182,9 @@ test.describe('network', () => {
     );
     if (got !== 'echo:hi') throw new Error(`websocket: ${got}`);
     if (!(await wsP).url().endsWith('/ws')) throw new Error('no websocket event');
+    // WebSocket shim events are not page errors.
+    const errors = await page.pageErrors();
+    if (errors.length) throw new Error(`pageErrors after a WebSocket: ${errors.length}`);
     await ctx.close();
   });
 });
