@@ -114,7 +114,6 @@ function connectOnce(socketPath: string): Promise<net.Socket> {
   });
 }
 
-
 /** TESTSURFER_PROFILE=1: count and time every wire call, printed per process at exit. */
 const PROFILE = !!process.env['TESTSURFER_PROFILE'];
 const profile = new Map<string, { n: number; ms: number }>();
