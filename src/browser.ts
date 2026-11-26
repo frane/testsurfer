@@ -5,15 +5,8 @@
 
 import { WireClient, type ClientOptions } from './client.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
-import {
-  Page,
-  EAGER_SHIM,
-  DEFAULT_TIMEOUTS,
-  type ClickVia,
-  type InputMode,
-  type ProtocolOptions,
-  type Timeouts,
-} from './page.ts';
+import { Page, EAGER_SHIM } from './page.ts';
+import { DEFAULT_TIMEOUTS, type ClickVia, type InputMode, type ProtocolOptions, type Timeouts } from './page-options.ts';
 
 /** Parse the vs_status daemon line into negotiated capabilities. */
 async function negotiate(client: WireClient): Promise<{ proto: number; flags: Set<string>; version: string }> {

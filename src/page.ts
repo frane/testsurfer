@@ -8,30 +8,6 @@ import type { WireClient } from './client.ts';
 import type { BrowserContext } from './context.ts';
 import type { WireResponse } from './wire.ts';
 
-/** Parse `<ref> x=.. y=.. w=.. h=.. visible=.. z=..` lines; `!` error lines are skipped. */
-function parseLayoutLines(lines: string[]): Map<number, LayoutRect> {
-  const out = new Map<number, LayoutRect>();
-  for (const line of lines) {
-    if (line.startsWith('!')) continue;
-    const tokens = line.trim().split(/\s+/);
-    const ref = Number(tokens[0]);
-    if (!Number.isInteger(ref)) continue;
-    const rect: LayoutRect = { x: 0, y: 0, w: 0, h: 0, visible: false };
-    for (const tok of tokens.slice(1)) {
-      const eq = tok.indexOf('=');
-      if (eq <= 0) continue;
-      const k = tok.slice(0, eq);
-      const v = tok.slice(eq + 1);
-      if (k === 'visible') rect.visible = v === 'true';
-      else if (k === 'x') rect.x = Number(v);
-      else if (k === 'y') rect.y = Number(v);
-      else if (k === 'w') rect.w = Number(v);
-      else if (k === 'h') rect.h = Number(v);
-    }
-    out.set(ref, rect);
-  }
-  return out;
-}
 import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, walk, type Snapshot } from './tree.ts';
 import { FrameLocator } from './frame-locator.ts';
@@ -53,6 +29,16 @@ import { Frame } from './frame.ts';
 import { absolutizeCss, cssImports, mediaScript, type MediaOptions } from './media.ts';
 import { deserializeValue, serializeValue, SERIALIZE_JS } from './serialize.ts';
 import { decodePng, downscale, encodePng } from './png.ts';
+import { renderSnapshot } from './aria.ts';
+import { PAGE_SHIM } from './shim.ts';
+import { ConsoleMessage } from './console.ts';
+import type { Dialog } from './dialog.ts';
+import { PageEvents } from './events.ts';
+import { Request, Response } from './http.ts';
+import type { RouteHandler } from './route.ts';
+import { urlMatches, type UrlMatcher } from './url.ts';
+import { parseLayoutLines, type LayoutRect } from './layout.ts';
+import type { ClickVia, InputMode, ProtocolOptions, Timeouts } from './page-options.ts';
 
 /** The engine install expression: defines window.__tse and yields it. */
 const ENGINE_JS = `(${installEngine.toString()})(${SERIALIZE_JS})`;
@@ -71,85 +57,9 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** The frame-tree listing; its own reply never starts another refresh. */
 const FRAMES_CALL = 'E.frames()';
-import { renderSnapshot } from './aria.ts';
-import { PAGE_SHIM } from './shim.ts';
-import { ConsoleMessage } from './console.ts';
-import type { Dialog } from './dialog.ts';
-import { PageEvents } from './events.ts';
-import { Request, Response } from './http.ts';
-import type { RouteHandler } from './route.ts';
-import { urlMatches, type UrlMatcher } from './url.ts';
 
-export interface Timeouts {
-  /** Budget for actions (click, fill, ...) including auto-waiting. */
-  action: number;
-  /** Budget for expect() assertions. */
-  expect: number;
-  /** Budget for goto(). */
-  navigation: number;
-}
-
-/**
- * Cursor and keyboard cadence for trusted input. `robotic` teleports
- * (fast, right for tests); `human` synthesizes a Bezier path with
- * human arrival timing (slow, right for anti-bot flows); `careful` is
- * a single-shot move in between.
- */
-export type InputMode = 'human' | 'careful' | 'robotic';
-
-/**
- * How Locator.click reaches a visible target. `act` sends vs_act click
- * --mode directly (vibesurfer 0.2+, negotiated from the clickVia
- * flag). `click-at` resolves the rect and issues a coordinate click,
- * for 0.1.x daemons whose vs_act ignores --mode and always takes the
- * slow humanized path.
- */
-export type ClickVia = 'click-at' | 'act';
-
-/** Options for how the page tracks daemon state across mutations. */
 /** What every page gets at document start: the event shim and the WebSocket hook. */
 export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}\n${FILECHOOSER_SHIM}`;
-
-export interface ProtocolOptions {
-  /**
-   * vibesurfer 0.2+ returns each mutation's tree delta inline (act and
-   * cursor ops advance the delta baseline and emit their ViewForm).
-   * When enabled the page applies those bodies and skips the re-read
-   * after actions. Negotiated from the actDeltas flag; 0.1.x daemons
-   * advance the baseline silently and must leave it off.
-   */
-  actDeltas?: boolean;
-  /**
-   * Navigate an existing page in place via vs_goto (protocol v1),
-   * reusing the engine web view instead of paying page creation on
-   * every goto. Falls back to close+open when the daemon rejects it.
-   */
-  navInPlace?: boolean;
-  /** vibesurfer 0.2.19+: `vs_wheel`, a trusted native wheel turn. Negotiated from the wheel flag. */
-  nativeWheel?: boolean;
-  /** vibesurfer 0.2.19+: `vs_cookies`, the jar read and written host-side. Negotiated from the cookies flag. */
-  cookies?: boolean;
-  /** vibesurfer 0.2.19+: click-at takes a button, a click count and modifiers. Negotiated from the clickOptions flag. */
-  clickOptions?: boolean;
-  /** vibesurfer 0.2.19+: recordings in WebM (VP8), Playwright's video format. Negotiated from the webm flag. */
-  webm?: boolean;
-  /** vibesurfer 0.2.19+: `vs_drop`, a drop from another application as native OS input. Negotiated from the drop flag. */
-  drop?: boolean;
-}
-
-export interface LayoutRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  visible: boolean;
-}
-
-export const DEFAULT_TIMEOUTS: Timeouts = {
-  action: 10_000,
-  expect: 5_000,
-  navigation: 30_000,
-};
 
 export class Page {
   private pageId: string | null = null;
