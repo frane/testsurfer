@@ -16,7 +16,9 @@ import { ElementHandle, Locator, type BoundingBox, type ClickOptions, type Input
 import { byAttr, selectorSteps, type ByRoleOptions, type ByTextOptions, type LocatorOptions } from './query.ts';
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
-import { Download, parseDownloadList } from './download.ts';
+import type { Download } from './download.ts';
+import { DownloadWatcher } from './page-downloads.ts';
+import { MobileZoom } from './page-zoom.ts';
 import { Clock } from './clock.ts';
 import { WS_SHIM, type WebSocketRoute } from './websocket.ts';
 import { WORKER_SHIM, type Worker } from './worker.ts';
@@ -490,7 +492,7 @@ export class Page {
   on(event: 'download', listener: (download: Download) => void): this;
   on(event: string, listener: (arg: never) => void): this;
   on(event: string, listener: (arg: never) => void): this {
-    if (event === 'download') this.watchDownloads();
+    if (event === 'download') this.downloads.start();
     if (event === 'websocket' || event === 'worker') void this.hooks.ensureWsShim().catch(() => {});
     if (event === 'filechooser') void this.hooks.interceptFileChooser().catch(() => {});
     this.events.on(event, listener);
@@ -522,7 +524,7 @@ export class Page {
     optionsOrPredicate?: ((arg: T) => boolean | Promise<boolean>) | { predicate?: (arg: T) => boolean | Promise<boolean>; timeout?: number },
   ): Promise<T> {
     const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
-    if (event === 'download') this.watchDownloads();
+    if (event === 'download') this.downloads.start();
     if (event === 'websocket' || event === 'worker') await this.hooks.ensureWsShim();
     if (event === 'filechooser') await this.hooks.interceptFileChooser();
     return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
@@ -639,13 +641,13 @@ export class Page {
       await this.navigate(data);
       await this.rememberNav(shown, data);
       await this.refreshFrames();
-      if (this.mobile) await this.mobileZoom().catch(() => {});
+      await this.mobileZoom.update().catch(() => {});
       return;
     }
     await this.evaluate(`(document.open(), document.write(${JSON.stringify(html)}), document.close(), 'ok')`);
     // Like Playwright, return once the new document (stylesheets, images) has loaded.
     await this.waitForFunction("document.readyState === 'complete'", undefined, { timeout: this.timeouts.navigation }).catch(() => {});
-    if (this.mobile) await this.mobileZoom().catch(() => {});
+    await this.mobileZoom.update().catch(() => {});
     await this.refreshFrames();
     this.snapshot = null;
     this.synced = false;
@@ -834,51 +836,21 @@ export class Page {
     return this.hooks.workers();
   }
 
-  /** isMobile: the viewport meta tag decides the layout width (see mobileZoom). */
-  private mobile = false;
-  /** View px per CSS px: 1, or below 1 for a mobile page laid out wider than the screen. */
-  private zoom = 1;
-  /** The document the zoom was worked out for. */
-  private zoomFor = '';
+  private readonly mobileZoom = new MobileZoom({
+    hasDocument: () => this.pageId !== null,
+    screenWidth: () => this.viewport?.width,
+    evaluate: (fn, arg) => this.evaluate(fn, arg),
+    setZoom: async (zoom) => {
+      await this.client.call('vs_viewport', [this.id, 'keep'], { session: this.sessionId, zoom: String(zoom) });
+    },
+    onDomContentLoaded: (listener) => {
+      this.on('domcontentloaded', listener);
+    },
+  });
 
   /** @internal Honor the viewport meta tag, as a mobile browser does (Playwright's isMobile). */
   enableMobile(): void {
-    if (this.mobile) return;
-    this.mobile = true;
-    this.on('domcontentloaded', () => void this.mobileZoom().catch(() => {}));
-  }
-
-  /**
-   * Lay the page out as wide as its viewport meta tag asks (980 CSS px
-   * without one), scaled to fit the screen: a page zoom of
-   * screen width / layout width.
-   */
-  private async mobileZoom(): Promise<void> {
-    if (!this.mobile || !this.pageId) return;
-    const screen = this.viewport?.width ?? 980;
-    const got = (await this.evaluate(`(screen) => {
-      const m = document.querySelector('meta[name="viewport" i]');
-      const c = m ? (m.getAttribute('content') || '') : null;
-      const v = {};
-      if (c !== null) for (const part of c.split(/[,;]/)) { const [k, val] = part.split('=').map((x) => (x || '').trim().toLowerCase()); if (k) v[k] = val; }
-      let width = c === null ? 980 : v.width === 'device-width' || v.width === undefined ? screen : Number(v.width) || screen;
-      const scale = Number(v['initial-scale']);
-      if (c !== null && isFinite(scale) && scale > 0 && v.width === undefined) width = screen / scale;
-      return { width: Math.max(1, width), href: location.href + '#' + performance.timeOrigin + '#' + ((document.querySelector('meta[name="viewport" i]') || {}).content || '') };
-    }`, screen)) as { width: number; href: string };
-    this.zoomFor = got.href;
-    const zoom = Math.min(10, Math.max(0.1, screen / got.width));
-    if (Math.abs(zoom - this.zoom) < 1e-6) return;
-    this.zoom = zoom;
-    await this.client.call('vs_viewport', [this.id, 'keep'], { session: this.sessionId, zoom: String(zoom) });
-  }
-
-  /** Before an input at CSS coordinates: the zoom for the current document. */
-  private async zoomReady(): Promise<number> {
-    if (!this.mobile) return 1;
-    const href = await this.evaluate<string>(`() => location.href + '#' + performance.timeOrigin + '#' + ((document.querySelector('meta[name="viewport" i]') || {}).content || '')`).catch(() => '');
-    if (href !== this.zoomFor) await this.mobileZoom().catch(() => {});
-    return this.zoom;
+    this.mobileZoom.enable();
   }
 
   /** Fake time for this page (Playwright's page.clock). */
@@ -926,39 +898,21 @@ export class Page {
     },
   };
 
-  private downloadTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly seenDownloads = new Set<number>();
-
-  /** Report each file the page saves as a `download` event (vibesurfer's capture list, polled). */
-  private watchDownloads(): void {
-    if (this.downloadTimer) return;
-    const poll = async () => {
-      if (!this.pageId) return;
-      try {
-        const r = await this.client.call('vs_download', [this.pageId], { session: this.sessionId, list: true });
-        for (const e of parseDownloadList(r.body)) {
-          if (this.seenDownloads.has(e.id)) continue;
-          this.seenDownloads.add(e.id);
-          this.events.emitPageEvent(
-            'download',
-            new Download(this, e, async (id, dest) => {
-              const got = await this.client.call('vs_download', [this.id], { session: this.sessionId, id: String(id), dest });
-              const line = got.body.find((l) => l.startsWith('path\t'));
-              return line ? line.slice(5) : dest;
-            }),
-          );
-        }
-      } catch (e) {
-        void e;
-      }
-    };
-    // Every captured download is reported once, from the first time
-    // anyone watches: one that came just before the watcher started
-    // (an action raced with waitForEvent) still counts.
-    this.downloadTimer = setInterval(() => void poll(), 100);
-    this.downloadTimer.unref();
-    void poll();
-  }
+  /** Reports each file the page saves as a `download` event. */
+  private readonly downloads = new DownloadWatcher({
+    page: this,
+    list: async () => {
+      if (!this.pageId) return null;
+      const r = await this.client.call('vs_download', [this.pageId], { session: this.sessionId, list: true });
+      return r.body;
+    },
+    save: async (id, dest) => {
+      const got = await this.client.call('vs_download', [this.id], { session: this.sessionId, id: String(id), dest });
+      const line = got.body.find((l) => l.startsWith('path\t'));
+      return line ? line.slice(5) : dest;
+    },
+    emit: (download) => this.events.emitPageEvent('download', download),
+  });
 
   /** @internal The page's wire id, opening its web view first if it has none yet. */
   async openedId(): Promise<string> {
@@ -1245,7 +1199,7 @@ export class Page {
     opts: { count?: number | undefined; button?: 'left' | 'right' | 'middle' | undefined; modifiers?: string[] | undefined } = {},
   ): Promise<void> {
     await this.ensureOpen();
-    const z = await this.zoomReady();
+    const z = await this.mobileZoom.ready();
     x *= z;
     y *= z;
     const flags: Record<string, string> = { session: this.sessionId, token: this.token ?? '0', mode: mode ?? this.inputMode };
@@ -2087,7 +2041,7 @@ export class Page {
 
   private async cursorOp(op: string, coords: number[], mode: InputMode | undefined, mutates: boolean): Promise<void> {
     await this.ensureOpen();
-    const z = await this.zoomReady();
+    const z = await this.mobileZoom.ready();
     // A wheel's deltas are CSS px of scrolling, not points on the screen.
     if (z !== 1) coords = coords.map((c, i) => (op === 'vs_wheel' && i >= 2 ? c : c * z));
     const flags: Record<string, string> = { session: this.sessionId, mode: mode ?? this.inputMode };
@@ -2169,7 +2123,7 @@ export class Page {
       const line = r?.body.find((l) => l.startsWith('path\t'));
       if (line) await this.videoValue.finish(line.slice(5)).catch(() => {});
     }
-    if (this.downloadTimer) clearInterval(this.downloadTimer);
+    this.downloads.stop();
     const id = this.pageId;
     this.pageId = null;
     this.markClosed();
