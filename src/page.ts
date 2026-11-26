@@ -38,6 +38,8 @@ import { ConsoleMessage } from './console.ts';
 import type { Dialog } from './dialog.ts';
 import { PageEvents } from './events.ts';
 import { PageHooks } from './page-hooks.ts';
+import { FRAMES_CALL, FrameTree, type FrameMatch } from './page-frames.ts';
+import { LocatorHandlers } from './locator-handlers.ts';
 import { Keyboard, Mouse, Touchscreen, type InputHost } from './input.ts';
 import { Request, Response } from './http.ts';
 import type { RouteHandler } from './route.ts';
@@ -60,8 +62,6 @@ interface EngineReply {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** The frame-tree listing; its own reply never starts another refresh. */
-const FRAMES_CALL = 'E.frames()';
 
 /** What every page gets at document start: the event shim and the WebSocket hook. */
 export const EAGER_SHIM = `${PAGE_SHIM}\n${WS_SHIM}\n${WORKER_SHIM}\n${FILECHOOSER_SHIM}`;
@@ -1344,10 +1344,7 @@ export class Page {
       if (typeof (r as { sw?: unknown }).sw === 'boolean') this.swControlled = (r as { sw: boolean }).sw;
       // Keep frames() current: re-read the frame tree when the page's iframe count changed.
       const fc = (r as { fc?: number } | null)?.fc;
-      if (typeof fc === 'number' && fc !== this.lastFrameCount && body !== FRAMES_CALL) {
-        this.lastFrameCount = fc;
-        await this.refreshFrames();
-      }
+      if (typeof fc === 'number' && body !== FRAMES_CALL) await this.frameTree.noteCount(fc);
     }
     // Bindings, console messages and page errors a call caused are
     // delivered before it returns, as Playwright's protocol events are.
@@ -1399,16 +1396,12 @@ export class Page {
     return (await this.engineCall(body, frame)) as T;
   }
 
-  /** Log lines from the last locator-handler run that blocked a wait. */
-  handlerLog: string[] = [];
+  private readonly locatorHandlers = new LocatorHandlers();
 
-  private locatorHandlers: {
-    locator: Locator;
-    handler: (l: Locator) => unknown;
-    times: number | null;
-    noWaitAfter: boolean;
-  }[] = [];
-  private handlingLocators = false;
+  /** Log lines from the last locator-handler run that blocked a wait. */
+  get handlerLog(): string[] {
+    return this.locatorHandlers.log;
+  }
 
   /**
    * Run `handler` whenever `locator` becomes visible while an action or
@@ -1420,40 +1413,20 @@ export class Page {
     handler: (locator: Locator) => unknown,
     options: { times?: number; noWaitAfter?: boolean } = {},
   ): Promise<void> {
-    this.locatorHandlers.push({ locator, handler, times: options.times ?? null, noWaitAfter: options.noWaitAfter ?? false });
+    this.locatorHandlers.add(locator, handler, options);
   }
 
   async removeLocatorHandler(locator: Locator): Promise<void> {
-    this.locatorHandlers = this.locatorHandlers.filter((h) => h.locator.toString() !== locator.toString());
+    this.locatorHandlers.remove(locator);
   }
 
   /**
    * @internal Run the handlers whose locator is visible now. Called on
    * each action and assertion retry. Returns false while a handled
-   * locator has not gone away yet: the caller keeps waiting, as
-   * Playwright does, until it hides or the caller's time runs out.
+   * locator has not gone away yet.
    */
   async runLocatorHandlers(deadline = Date.now() + this.timeouts.action): Promise<boolean> {
-    if (this.handlingLocators || this.locatorHandlers.length === 0) return true;
-    this.handlingLocators = true;
-    try {
-      for (const h of [...this.locatorHandlers]) {
-        const seen = await h.locator.peek<boolean>('locatorHandler', 'visible').catch(() => ({ found: false, v: false, preview: '' }));
-        if (!seen.found || seen.v !== true) continue;
-        this.handlerLog = [`found ${h.locator.toString()}, intercepting action to run the handler`, `locator resolved to visible ${seen.preview ?? ''}`];
-        await h.handler(h.locator);
-        if (h.times !== null && --h.times <= 0) this.locatorHandlers = this.locatorHandlers.filter((x) => x !== h);
-        if (h.noWaitAfter) continue;
-        this.handlerLog.push(`locator handler has finished, waiting for ${h.locator.toString()} to be hidden`);
-        const left = Math.max(1, deadline - Date.now());
-        const hidden = await h.locator.waitFor({ state: 'hidden', timeout: left }).then(() => true, () => false);
-        if (!hidden) return false;
-        this.handlerLog = [];
-      }
-      return true;
-    } finally {
-      this.handlingLocators = false;
-    }
+    return this.locatorHandlers.run(deadline);
   }
 
   /** Poll `fn(arg)` in the page until it returns a truthy value, and return that value. */
@@ -1510,18 +1483,16 @@ export class Page {
     return this.locator(selector).elementHandles();
   }
 
-  private main: Frame | null = null;
+  private readonly frameTree = new FrameTree({
+    page: this,
+    baseURL: () => this.baseURL,
+    engineCall: (body) => this.engineCall(body),
+  });
 
   /** The page's top frame. */
   mainFrame(): Frame {
-    this.main ??= new Frame(this, null, null);
-    return this.main;
+    return this.frameTree.mainFrame();
   }
-
-  private frameCache: Frame[] = [];
-  private lastFrameCount = 0;
-  /** Refreshes run one after another, so an older listing never overwrites a newer one. */
-  private frameChain: Promise<unknown> = Promise.resolve();
 
   /**
    * The main frame, then every iframe, depth first, as of the last
@@ -1529,55 +1500,17 @@ export class Page {
    * synchronous; testsurfer reads the frame tree after each load).
    */
   frames(): Frame[] {
-    return [this.mainFrame(), ...this.frameCache];
+    return this.frameTree.all();
   }
 
   /** Re-read the frame tree, for iframes added after the page loaded. */
   async refreshFrames(): Promise<Frame[]> {
-    const next = this.frameChain.then(() => this.readFrames(), () => this.readFrames());
-    this.frameChain = next;
-    return next;
-  }
-
-  private async readFrames(): Promise<Frame[]> {
-    let rows: [number, number | null, string, string, number?][] = [];
-    try {
-      rows = (await this.engineCall(FRAMES_CALL)) as [number, number | null, string, string, number?][];
-    } catch {
-      rows = [];
-    }
-    const byId = new Map<number, Frame>();
-    const known = new Map(this.frameCache.map((f) => [(f as unknown as { elementId(): number }).elementId(), f]));
-    const out: Frame[] = [];
-    for (const [id, parent, name, url, xo] of rows) {
-      // An iframe already listed keeps its Frame object (Playwright compares them by identity).
-      const f = known.get(id) ?? new Frame(this, new ElementHandle(this, id), parent === null ? this.mainFrame() : (byId.get(parent) ?? this.mainFrame()));
-      f.frameName = name;
-      f.frameUrl = url;
-      f.crossOrigin = xo === 1;
-      byId.set(id, f);
-      out.push(f);
-    }
-    this.frameCache = out;
-    return this.frames();
+    return this.frameTree.refresh();
   }
 
   /** A frame by name, or by URL (string, RegExp or predicate). */
-  frame(match: string | { name?: string; url?: string | RegExp | ((u: URL) => boolean) }): Frame | null {
-    const all = this.frames();
-    const m = typeof match === 'string' ? { name: match } : match;
-    return (
-      all.find((f) => {
-        if (m.name !== undefined && f.name() !== m.name) return false;
-        if (m.url !== undefined) {
-          const u = f === this.main ? '' : f.frameUrl;
-          if (typeof m.url === 'string' && !urlMatches(m.url, u, this.baseURL)) return false;
-          if (m.url instanceof RegExp && !m.url.test(u)) return false;
-          if (typeof m.url === 'function' && !(u && m.url(new URL(u)))) return false;
-        }
-        return true;
-      }) ?? null
-    );
+  frame(match: FrameMatch): Frame | null {
+    return this.frameTree.find(match);
   }
 
   /**
