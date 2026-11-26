@@ -12,7 +12,9 @@ import { WireError } from './errors.ts';
 import { applyDelta, isDeltaBody, parseFullTree, type Snapshot } from './tree.ts';
 import { FrameLocator } from './frame-locator.ts';
 import { JSHandle } from './handle.ts';
-import { ElementHandle, Locator, type BoundingBox, type ClickOptions, type InputFile, type SelectOptionValue } from './locator.ts';
+import { ElementHandle } from './element-handle.ts';
+import { Locator } from './locator.ts';
+import type { BoundingBox, ClickOptions, InputFile, SelectOptionValue } from './locator-options.ts';
 import { byAttr, selectorSteps, type ByRoleOptions, type ByTextOptions, type LocatorOptions } from './query.ts';
 import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
@@ -46,6 +48,7 @@ import type { RouteHandler } from './route.ts';
 import { urlMatches, type UrlMatcher } from './url.ts';
 import { parseLayoutLines, type LayoutRect } from './layout.ts';
 import type { ClickVia, InputMode, ProtocolOptions, Timeouts } from './page-options.ts';
+import { sleep } from './retry.ts';
 
 /** The engine install expression: defines window.__tse and yields it. */
 const ENGINE_JS = `(${installEngine.toString()})(${SERIALIZE_JS})`;
@@ -60,7 +63,6 @@ interface EngineReply {
   noengine?: boolean;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Frame rate for page.video() and screencast recordings, as Playwright records. */
 const RECORD_FPS = '25';

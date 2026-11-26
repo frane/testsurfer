@@ -1,6 +1,7 @@
 /** JSHandle: a reference to a value that lives in the page. */
 
-import { ElementHandle } from './locator.ts';
+import { newElementHandle } from './element-factory.ts';
+import type { ElementHandle } from './element-handle.ts';
 import type { Page } from './page.ts';
 import { serializeValue } from './serialize.ts';
 
@@ -41,7 +42,7 @@ export class JSHandle {
   async getProperties(): Promise<Map<string, JSHandle>> {
     const rows = (await this.ownerPage.engineCall(`E.props(${this.handleId})`)) as [string, number, boolean][];
     return new Map(
-      rows.map(([k, id, el]) => [k, el ? new ElementHandle(this.ownerPage, id) : new JSHandle(this.ownerPage, id)]),
+      rows.map(([k, id, el]) => [k, el ? newElementHandle(this.ownerPage, id) : new JSHandle(this.ownerPage, id)]),
     );
   }
 

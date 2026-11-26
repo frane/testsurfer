@@ -6,7 +6,7 @@
 
 import type { PageEvents } from './events.ts';
 import { FileChooser } from './filechooser.ts';
-import type { ElementHandle } from './locator.ts';
+import type { ElementHandle } from './element-handle.ts';
 import type { Page } from './page.ts';
 import { urlMatches, type UrlMatcher } from './url.ts';
 import { WebSocket, WebSocketRoute, type WireFrame } from './websocket.ts';

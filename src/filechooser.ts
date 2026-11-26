@@ -5,7 +5,7 @@
  * `filechooser` event; setFiles() fills it.
  */
 
-import type { ElementHandle } from './locator.ts';
+import type { ElementHandle } from './element-handle.ts';
 import type { Page } from './page.ts';
 
 export const FILECHOOSER_SHIM = String.raw`(function () {

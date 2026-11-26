@@ -8,7 +8,8 @@
 
 import { FrameLocator } from './frame-locator.ts';
 import { JSHandle } from './handle.ts';
-import { ElementHandle, type Locator } from './locator.ts';
+import { ElementHandle } from './element-handle.ts';
+import type { Locator } from './locator.ts';
 import type { ByRoleOptions, ByTextOptions, LocatorOptions } from './query.ts';
 import { serializeValue } from './serialize.ts';
 import type { Page } from './page.ts';

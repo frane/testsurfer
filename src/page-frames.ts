@@ -5,7 +5,7 @@
  */
 
 import { Frame } from './frame.ts';
-import { ElementHandle } from './locator.ts';
+import { ElementHandle } from './element-handle.ts';
 import type { Page } from './page.ts';
 import { urlMatches } from './url.ts';
 

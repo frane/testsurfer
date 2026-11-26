@@ -14,6 +14,7 @@ import { Page } from './page.ts';
 import { asymmetric, pollAssertions, ValueAssertions } from './values.ts';
 import { assertScreenshot, type ScreenshotOptions } from './screenshot.ts';
 import { currentTestInfo } from './testinfo.ts';
+import { backoff } from './retry.ts';
 
 export interface ExpectOptions {
   timeout?: number;
@@ -23,9 +24,6 @@ interface TextOptions extends ExpectOptions {
   ignoreCase?: boolean;
   useInnerText?: boolean;
 }
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const BACKOFF = [0, 20, 50, 100, 100, 250];
 
 const normalize = (s: string) => s.replace(/[\u200b\u00ad]/g, '').trim().replace(/\s+/g, ' ');
 const show = (v: unknown): string =>
@@ -181,7 +179,7 @@ async function poll(
       }
     }
     if (Date.now() >= deadline) break;
-    await sleep(BACKOFF[Math.min(i, BACKOFF.length - 1)]!);
+    await backoff(i);
   }
   const { message, log } = render(subject, locator, spec, negated, timeout, last, error, custom);
   throw new ExpectError(message, spec.name, !negated, log, timeout, frame);

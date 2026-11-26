@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import { TimeoutError } from './errors.ts';
 import { decodePng, diffImages, encodePng, type Image } from './png.ts';
 import { currentTestInfo } from './testinfo.ts';
+import { sleep } from './retry.ts';
 
 export interface ScreenshotOptions {
   timeout?: number;
@@ -27,7 +28,6 @@ export interface ScreenshotOptions {
   fullPage?: boolean;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-|-$/g, '').slice(0, 100) || 'screenshot';
 
 function baselinePath(name: string | undefined): { file: string; label: string; outputDir: string } {

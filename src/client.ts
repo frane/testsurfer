@@ -25,6 +25,7 @@ import {
   type Warning,
   type WireResponse,
 } from './wire.ts';
+import { sleep } from './retry.ts';
 
 /** The vibesurfer release testsurfer is built and tested against. */
 export const PINNED_VIBESURFER = '0.2.21';
@@ -113,7 +114,6 @@ function connectOnce(socketPath: string): Promise<net.Socket> {
   });
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** TESTSURFER_PROFILE=1: count and time every wire call, printed per process at exit. */
 const PROFILE = !!process.env['TESTSURFER_PROFILE'];
