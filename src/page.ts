@@ -18,11 +18,11 @@ import { installEngine } from './injected.ts';
 import { APIRequestContext } from './request.ts';
 import { Download, parseDownloadList } from './download.ts';
 import { Clock } from './clock.ts';
-import { WS_SHIM, WebSocket, WebSocketRoute, type WireFrame } from './websocket.ts';
-import { WORKER_SHIM, Worker } from './worker.ts';
+import { WS_SHIM, type WebSocketRoute } from './websocket.ts';
+import { WORKER_SHIM, type Worker } from './worker.ts';
 import { HarRecorder, findEntry, fulfillFromEntry, readHar } from './har.ts';
 import { Video } from './video.ts';
-import { FILECHOOSER_SHIM, FileChooser } from './filechooser.ts';
+import { FILECHOOSER_SHIM } from './filechooser.ts';
 import { Screencast } from './screencast.ts';
 import { selectorSettings } from './selectors.ts';
 import { Frame } from './frame.ts';
@@ -34,6 +34,7 @@ import { PAGE_SHIM } from './shim.ts';
 import { ConsoleMessage } from './console.ts';
 import type { Dialog } from './dialog.ts';
 import { PageEvents } from './events.ts';
+import { PageHooks } from './page-hooks.ts';
 import { Request, Response } from './http.ts';
 import type { RouteHandler } from './route.ts';
 import { urlMatches, type UrlMatcher } from './url.ts';
@@ -118,6 +119,8 @@ export class Page {
   /** PAGE_SHIM is in initScripts from the start (EAGER_SHIM). */
   private shimInstalled = true;
   private readonly events: PageEvents;
+  /** WebSockets, workers and file choosers the shim reports. */
+  private readonly hooks: PageHooks;
   private ctx: BrowserContext | null = null;
 
   constructor(
@@ -161,10 +164,20 @@ export class Page {
       noteURL: (url: string) => {
         this.lastHref = url;
       },
-      wsEvent: (e) => void this.onWsEvent(e).catch(() => {}),
-      workerFor: (id) => this.workerList.get(id) ?? null,
+      wsEvent: (e) => void this.hooks.onEvent(e).catch(() => {}),
+      workerFor: (id) => this.hooks.worker(id),
       swControlled: () => this.swControlled,
       pageURL: () => this.lastHref,
+    });
+    this.hooks = new PageHooks({
+      page: this,
+      events: this.events,
+      baseURL: () => this.baseURL,
+      hasDocument: () => this.pageId !== null,
+      ensureShim: () => this.ensureShim(),
+      addInitSource: (src) => this.addInitSource(src),
+      evaluate: (fn, arg) => this.evaluate(fn, arg),
+      evaluateHandle: (fn) => this.evaluateHandle(fn),
     });
   }
 
@@ -543,8 +556,8 @@ export class Page {
   on(event: string, listener: (arg: never) => void): this;
   on(event: string, listener: (arg: never) => void): this {
     if (event === 'download') this.watchDownloads();
-    if (event === 'websocket' || event === 'worker') void this.ensureWsShim().catch(() => {});
-    if (event === 'filechooser') void this.interceptFileChooser().catch(() => {});
+    if (event === 'websocket' || event === 'worker') void this.hooks.ensureWsShim().catch(() => {});
+    if (event === 'filechooser') void this.hooks.interceptFileChooser().catch(() => {});
     this.events.on(event, listener);
     void this.events.sync().catch(() => {});
     return this;
@@ -575,8 +588,8 @@ export class Page {
   ): Promise<T> {
     const opts = typeof optionsOrPredicate === 'function' ? { predicate: optionsOrPredicate } : (optionsOrPredicate ?? {});
     if (event === 'download') this.watchDownloads();
-    if (event === 'websocket' || event === 'worker') await this.ensureWsShim();
-    if (event === 'filechooser') await this.interceptFileChooser();
+    if (event === 'websocket' || event === 'worker') await this.hooks.ensureWsShim();
+    if (event === 'filechooser') await this.hooks.interceptFileChooser();
     return this.events.waitFor<T>(event, opts.predicate ?? (() => true), opts.timeout ?? this.timeouts.action);
   }
 
@@ -779,24 +792,6 @@ export class Page {
    */
   private navTimeoutSet = false;
 
-  private wsShim = false;
-  private readonly wsRoutes: { url: UrlMatcher; handler: (ws: WebSocketRoute) => unknown }[] = [];
-  private readonly sockets = new Map<number, WebSocket>();
-  private readonly wsRouted = new Map<number, WebSocketRoute>();
-
-  /**
-   * Watch or route WebSockets. The hook itself is in every page from
-   * its first document (EAGER_SHIM), so a socket opened before anyone
-   * listened is still reported; this keeps the shim queue polled.
-   */
-  private async ensureWsShim(): Promise<void> {
-    if (this.wsShim) return;
-    this.wsShim = true;
-    this.events.on('__ws', () => {});
-    await this.ensureShim();
-    await this.events.sync();
-  }
-
   /** @internal The shim and the WebSocket hook are in this page's documents already (a spare opened with them). */
   markShimmed(): void {
     this.shimInstalled = true;
@@ -804,17 +799,12 @@ export class Page {
 
   /** Answer the page's WebSockets matching `url` with `handler` instead of the server (see WebSocketRoute). */
   async routeWebSocket(url: UrlMatcher, handler: (ws: WebSocketRoute) => unknown): Promise<void> {
-    this.wsRoutes.unshift({ url, handler });
-    await this.ensureWsShim();
-    const on = 'window.__ts && (window.__ts.wsRouting = true);';
-    await this.addInitSource(on);
-    if (this.pageId) await this.evaluate(`() => { ${on} }`).catch(() => {});
+    await this.hooks.routeWebSocket(url, handler);
   }
 
   /** @internal Run one window.__ts WebSocket call in the page. */
   async wsCall(fn: string, ...args: unknown[]): Promise<void> {
-    if (fn === 'wsDeliver') this.sockets.get(Number(args[0]))?.frame('framereceived', args[1] as WireFrame);
-    await this.evaluate(`(a) => window.__ts && window.__ts.${fn} && window.__ts.${fn}(...a)`, args);
+    await this.hooks.wsCall(fn, ...args);
   }
 
   /** @internal The web content process died: Playwright's `crash` event. */
@@ -904,91 +894,9 @@ export class Page {
   /** Every page has its own window here; nothing is in front of another. */
   async bringToFront(): Promise<void> {}
 
-  private fileChooserOn = false;
-
-  /** Report file inputs as `filechooser` events instead of opening a dialog. */
-  private async interceptFileChooser(): Promise<void> {
-    if (this.fileChooserOn) return;
-    this.fileChooserOn = true;
-    await this.ensureWsShim();
-    const on = 'window.__ts && (window.__ts.fc = true);';
-    await this.addInitSource(on);
-    if (this.pageId) await this.evaluate(`() => { ${on} }`).catch(() => {});
-  }
-
-  private readonly workerList = new Map<number, Worker>();
-
   /** The page's dedicated workers. */
   workers(): Worker[] {
-    return [...this.workerList.values()];
-  }
-
-  private async onWsEvent(e: Record<string, unknown>): Promise<void> {
-    const id = Number(e['id']);
-    if (e['t'] === 'worker') {
-      const w = new Worker(this, id, String(e['url']));
-      this.workerList.set(id, w);
-      this.events.emitPageEvent('worker', w);
-      return;
-    }
-    if (e['t'] === 'filechooser') {
-      const h = await this.evaluateHandle(`() => window.__ts.fcEls[${id}]`);
-      this.events.emitPageEvent('filechooser', new FileChooser(this, h as unknown as import('./locator.ts').ElementHandle, !!e['multiple']));
-      return;
-    }
-    if (e['t'] === 'workerClose') {
-      this.workerList.get(id)?.closed();
-      this.workerList.delete(id);
-      return;
-    }
-    const d = e['d'] as WireFrame | undefined;
-    const code = e['code'] as number | undefined;
-    const reason = e['reason'] as string | undefined;
-    switch (e['t']) {
-      case 'ws': {
-        const ws = new WebSocket(String(e['url']));
-        this.sockets.set(id, ws);
-        this.events.emitPageEvent('websocket', ws);
-        break;
-      }
-      case 'wsSent':
-        this.sockets.get(id)?.frame('framesent', d);
-        break;
-      case 'wsRecv':
-        this.sockets.get(id)?.frame('framereceived', d);
-        break;
-      case 'wsClose':
-      case 'wsError':
-        this.sockets.get(id)?.ended(e['t'] === 'wsError');
-        break;
-      case 'wsRouted': {
-        const url = String(e['url']);
-        const route = new WebSocketRoute(this, id, url, false);
-        this.wsRouted.set(id, route);
-        const ws = new WebSocket(url);
-        this.sockets.set(id, ws);
-        this.events.emitPageEvent('websocket', ws);
-        const match = this.wsRoutes.find((r) => urlMatches(r.url, url, this.baseURL));
-        await this.wsCall('wsOpen', id);
-        if (match) await match.handler(route);
-        else route.connectToServer();
-        break;
-      }
-      case 'wsPageSend':
-        this.sockets.get(id)?.frame('framesent', d);
-        await this.wsRouted.get(id)?.fromPage(d);
-        break;
-      case 'wsPageClose':
-        await this.wsRouted.get(id)?.pageClosed(code, reason);
-        this.sockets.get(id)?.ended(false);
-        break;
-      case 'wsServerMsg':
-        await this.wsRouted.get(id)?.fromServer(d);
-        break;
-      case 'wsServerClose':
-        await this.wsRouted.get(id)?.serverClosed(code, reason);
-        break;
-    }
+    return this.hooks.workers();
   }
 
   /** isMobile: the viewport meta tag decides the layout width (see mobileZoom). */
