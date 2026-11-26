@@ -23,7 +23,7 @@ import { Clock } from './clock.ts';
 import { WS_SHIM, type WebSocketRoute } from './websocket.ts';
 import { WORKER_SHIM, type Worker } from './worker.ts';
 import { harRoute, HarRecorder, type RouteFromHarOptions } from './har.ts';
-import { Video } from './video.ts';
+import type { Video } from './video.ts';
 import { FILECHOOSER_SHIM } from './filechooser.ts';
 import { Screencast } from './screencast.ts';
 import { selectorSettings } from './selectors.ts';
@@ -42,6 +42,7 @@ import { PageHooks } from './page-hooks.ts';
 import { PageSession, type Button } from './page-session.ts';
 import { PageNavigation } from './page-navigation.ts';
 import { PageEngine } from './page-engine.ts';
+import { PageRecorder } from './page-recording.ts';
 import { SelectorShortcuts } from './page-selectors.ts';
 import { ADD_SCRIPT_TAG_JS, ADD_STYLE_TAG_JS, CONTENT_JS, coverageApi, GC_PRESSURE_JS, webStorage } from './page-scripts.ts';
 import { FrameTree, type FrameMatch } from './page-frames.ts';
@@ -54,8 +55,6 @@ import type { LayoutRect } from './layout.ts';
 import type { ClickVia, InputMode, ProtocolOptions, Timeouts } from './page-options.ts';
 import { sleep } from './retry.ts';
 
-/** Frame rate for page.video() and screencast recordings, as Playwright records. */
-const RECORD_FPS = '25';
 /** Poll interval while waiting for a popup's own window.close() to land. */
 const SELF_CLOSE_POLL_MS = 20;
 /** How long a failed call waits for a popup's own window.close() to land. */
@@ -72,6 +71,8 @@ export class Page {
 
   /** The vibesurfer page this Page drives: id, state token, tree snapshot. */
   private readonly session: PageSession;
+  /** The page's video and screencast recordings. */
+  private readonly recorder: PageRecorder;
 
   /** @internal The accessibility tree, refreshed from the daemon (a delta when possible). */
   async view(): Promise<Snapshot> {
@@ -240,6 +241,7 @@ export class Page {
       },
       noteFrameCount: (count) => this.frameTree.noteCount(count),
     });
+    this.recorder = new PageRecorder({ client, sessionId, session: this.session, webm: this.webm, ensureOpen: () => this.ensureOpen() });
     this.navigation = new PageNavigation({
       client,
       sessionId,
@@ -519,42 +521,19 @@ export class Page {
     screenshot: () => this.screenshot(),
     viewportSize: () => this.viewportSize(),
     recordTo: async (width) => {
-      await this.ensureOpen();
-      await this.client.call('vs_record', ['start', this.session.id], this.recordFlags(width));
-      return async () => {
-        const r = await this.client.call('vs_record', ['stop', this.session.id], { session: this.sessionId }).catch(() => null);
-        const line = r?.body.find((l) => l.startsWith('path\t'));
-        return line ? line.slice(5) : null;
-      };
+      await this.recorder.start(width);
+      return () => this.recorder.stop();
     },
   });
 
-  private videoValue: Video | null = null;
-  private videoSize: { width: number } | null = null;
-
   /** The page's video, when its context records them (recordVideo); null otherwise. */
   video(): Video | null {
-    return this.videoValue;
+    return this.recorder.video();
   }
 
   /** @internal Record this page from now on into `dir` (recordVideo). */
   async recordVideo(dir: string, size?: { width: number; height: number }): Promise<void> {
-    if (this.videoValue) return;
-    this.videoValue = new Video(dir);
-    this.videoSize = size ? { width: size.width } : null;
-    await this.ensureOpen();
-    await this.client.call('vs_record', ['start', this.session.id], this.recordFlags(this.videoSize?.width));
-  }
-
-  /**
-   * vs_record start flags: WebM where the daemon has it. (Not async:
-   * the tracer wraps the page's async methods as actions.)
-   */
-  private recordFlags(width: number | undefined): Record<string, string> {
-    const flags: Record<string, string> = { session: this.sessionId, fps: RECORD_FPS };
-    if (this.webm) flags['format'] = 'webm';
-    if (width) flags['width'] = String(width);
-    return flags;
+    await this.recorder.recordVideo(dir, size);
   }
 
   /** @internal HARs being written (routeFromHAR update, recordHar), saved on close. */
@@ -1205,11 +1184,7 @@ export class Page {
   async close(): Promise<void> {
     if (this.closedFlag) return;
     for (const h of this.harWriters.splice(0)) await h.save().catch(() => {});
-    if (this.videoValue && this.session.pageId) {
-      const r = await this.client.call('vs_record', ['stop', this.session.pageId], { session: this.sessionId }).catch(() => null);
-      const line = r?.body.find((l) => l.startsWith('path\t'));
-      if (line) await this.videoValue.finish(line.slice(5)).catch(() => {});
-    }
+    await this.recorder.finishVideo();
     this.downloads.stop();
     const id = this.session.pageId;
     this.session.pageId = null;
