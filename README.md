@@ -46,12 +46,12 @@ Locators, auto-waiting, web-first assertions, fixtures, projects, routes, HAR, W
 |---|---|---|
 | Install | ~10 MB | ~300 MB per browser |
 | Browser download | none | required |
-| Launch | 3-11 ms | 0.4-1.3 s |
+| Launch | 3-11 ms | 0.4-2 s |
 | Engines | the OS web view | bundled Chromium, Firefox, WebKit |
 | Input | native OS events | events sent over a browser protocol |
 | `navigator.webdriver` | `undefined` | `true` |
 | API | Playwright's | Playwright's |
-| Bench suite (CI runners) | 364-405 ms | 576-600 ms |
+| Bench suite (CI runners) | 336-534 ms | 480-790 ms (WebKit) |
 
 Playwright's own page specs pass 488 of 488 on testsurfer. An unedited open-source suite (docsify, 105 tests) passes 105 of 105, as on Playwright's WebKit. Numbers and how to reproduce them: [compatibility and evidence](docs/compatibility.md).
 

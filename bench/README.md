@@ -14,6 +14,36 @@ npm run bench
 
 Current numbers come from the `bench` workflow (`.github/workflows/bench.yml`), run by hand on a clean GitHub runner so anyone can reproduce them.
 
+Run [45810400217](https://github.com/frane/testsurfer/actions/runs/45810400217) on 2026-11-26, vibesurfer 0.2.21 (the release, fetched with `npx`), playwright 1.61.1. Median of 5 iterations, a fresh context and page per iteration. The daemon was already running, so testsurfer's launch row is a launch against it.
+
+GitHub `macos-15-arm64` runner:
+
+| scenario           | testsurfer | playwright-webkit | playwright-chromium |
+| ------------------ | ---------- | ----------------- | ------------------- |
+| launch             | 3ms        | 1522ms            | 585ms               |
+| first paint        | 62ms       | 121ms             | 70ms                |
+| add two todos      | 137ms      | 194ms             | 157ms               |
+| complete and clear | 205ms      | 297ms             | 219ms               |
+| delete a todo      | 130ms      | 178ms             | 144ms               |
+| suite total        | 534ms      | 790ms             | 590ms               |
+
+GitHub `ubuntu-24.04` x86_64 runner (WebKitGTK 6 under Xvfb):
+
+| scenario           | testsurfer | playwright-webkit | playwright-chromium |
+| ------------------ | ---------- | ----------------- | ------------------- |
+| launch             | 5ms        | 572ms             | 2000ms              |
+| first paint        | 40ms       | 37ms              | 23ms                |
+| add two todos      | 91ms       | 122ms             | 96ms                |
+| complete and clear | 136ms      | 201ms             | 163ms               |
+| delete a todo      | 69ms       | 120ms             | 97ms                |
+| suite total        | 336ms      | 480ms             | 379ms               |
+
+testsurfer runs the suite in about two thirds of Playwright-WebKit's time on both runners and ahead of Playwright-Chromium on both. In the same run the lab (122 cases, files in parallel) passed 122 of 122 on testsurfer on both runners, in 61.9 s against 83.5 s for Playwright-WebKit (118 of 122) on macOS and 28.8 s against 42.5 s (121 of 122) on Linux.
+
+Runner times vary from run to run: an earlier run the same day, on the same versions, had 558 ms against 1003 ms on macOS and 427 ms against 474 ms on Linux.
+
+### November 2026: vibesurfer 0.2.18
+
 Run [45259755466](https://github.com/frane/testsurfer/actions/runs/45259755466) on 2026-11-23, vibesurfer 0.2.18 (built from `de81230`), playwright 1.61.1. Median of 5 iterations, a fresh context and page per iteration. The workflow builds vibesurfer from source, which restarts the daemon, so testsurfer's launch row includes the daemon's start; against a running daemon a launch takes 1-11 ms.
 
 GitHub `macos-15-arm64` runner:
