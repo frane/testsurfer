@@ -91,7 +91,9 @@ const count = (r) => (r ? cases.filter((c) => r.rows.get(c.name) === true).lengt
 
 const vs = (process.env.TESTSURFER_VS ?? 'vs').split(' ').filter(Boolean);
 const vsVersion = process.env.LAB_VS_LABEL ?? spawnSync(vs[0], [...vs.slice(1), '--version'], { encoding: 'utf8' }).stdout?.trim() ?? '';
-const vsBin = spawnSync('which', [vs[0]], { encoding: 'utf8' }).stdout?.trim() || vs[0];
+// Measure the binary, not a package manager's symlink to it.
+const vsWhich = spawnSync('which', [vs[0]], { encoding: 'utf8' }).stdout?.trim() || vs[0];
+const vsBin = fs.existsSync(vsWhich) ? fs.realpathSync(vsWhich) : vsWhich;
 const tsSize = du(path.join(repo, 'src')) + du(path.join(repo, 'package.json'));
 const pwRoot = path.join(here, 'node_modules');
 const pwBrowsers = browsers;

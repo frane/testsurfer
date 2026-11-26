@@ -5,8 +5,8 @@
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
 | cases passed | 122 of 122 | 122 of 122 |
-| wall time, whole lab | 18.9 s | 19.1 s |
-| install | 0.7 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
+| wall time, whole lab | 20.2 s | 15.7 s |
+| install | 11.5 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
 
