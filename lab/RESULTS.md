@@ -1,12 +1,12 @@
 # testsurfer lab
 
-120 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-24, darwin arm64, vs 0.2.18, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
+122 cases, each a small page in `fixtures/` and a test in `tests/` written against `@playwright/test`. The same files run on Playwright's WebKit and on testsurfer (`testsurfer test` reads `playwright.config.ts`). 2026-11-26, darwin arm64, vs 0.2.21, Playwright 1.61.1. Reproduce with `node lab/run.mjs`.
 
 | | testsurfer | Playwright WebKit |
 | --- | --- | --- |
-| cases passed | 120 of 120 | 118 of 120 |
-| wall time, whole lab | 28.5 s | 40.8 s |
-| install | 10.9 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
+| cases passed | 122 of 122 | 122 of 122 |
+| wall time, whole lab | 18.9 s | 19.1 s |
+| install | 0.7 MB (testsurfer source and the vs binary) | 308.4 MB (Playwright packages and its WebKit build) |
 
 Wall time includes starting the fixture server and, for testsurfer, the vibesurfer daemon if it was not running. The config sets `fullyParallel`: Playwright spreads the tests over its default workers; testsurfer runs one process per file and up to four tests of a file at a time.
 
@@ -18,8 +18,8 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | actions | click with modifiers | pass | pass |
 | actions | hover reveals a CSS :hover menu | pass | pass |
 | actions | fill fires input events | pass | pass |
-| actions | fill and type into contenteditable | pass | FAIL |
-| actions | Enter submits a form | pass | FAIL |
+| actions | fill and type into contenteditable | pass | pass |
+| actions | Enter submits a form | pass | pass |
 | actions | check, uncheck, radio, switch | pass | pass |
 | actions | selectOption by label, value, several | pass | pass |
 | actions | setInputFiles from disk and from a buffer | pass | pass |
@@ -100,6 +100,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 |  | request.newContext keeps its own cookies | pass | pass |
 |  | locator.normalize and locator.drop | pass | pass |
 |  | chromium-only APIs throw as on Playwright WebKit | pass | pass |
+|  | launchPersistentContext keeps cookies and storage in its directory | pass | pass |
 | keyboard | Tab and Shift+Tab move focus between fields | pass | pass |
 | keyboard | shortcuts with modifiers, Escape | pass | pass |
 | keyboard | Backspace and select-all editing | pass | pass |
@@ -126,6 +127,7 @@ Wall time includes starting the fixture server and, for testsurfer, the vibesurf
 | parity | emulateMedia reaches a cross-origin stylesheet | pass | pass |
 | parity | emulateMedia contrast | pass | pass |
 | parity | a response the service worker builds is reported | pass | pass |
+|  | screencast frames, a video and annotations | pass | pass |
 |  | tracing writes a trace with actions, screenshots and network | pass | pass |
 | websocket | page.on(websocket) reports frames both ways | pass | pass |
 | websocket | routeWebSocket answers without a server | pass | pass |
