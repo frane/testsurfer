@@ -84,16 +84,12 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const FRAMES_CALL = 'E.frames()';
 import { renderSnapshot } from './aria.ts';
 import { PAGE_SHIM } from './shim.ts';
-import {
-  ConsoleMessage,
-  type Dialog,
-  PageEvents,
-  Request,
-  Response,
-  urlMatches,
-  type RouteHandler,
-  type UrlMatcher,
-} from './events.ts';
+import { ConsoleMessage } from './console.ts';
+import type { Dialog } from './dialog.ts';
+import { PageEvents } from './events.ts';
+import { Request, Response } from './http.ts';
+import type { RouteHandler } from './route.ts';
+import { urlMatches, type UrlMatcher } from './url.ts';
 
 export interface Timeouts {
   /** Budget for actions (click, fill, ...) including auto-waiting. */

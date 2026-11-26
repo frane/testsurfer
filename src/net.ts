@@ -14,7 +14,8 @@
  */
 
 import type { WireClient } from './client.ts';
-import { APIResponse, Request, Response, type ContinueOptions } from './events.ts';
+import { APIResponse, Request, Response } from './http.ts';
+import type { ContinueOptions } from './route.ts';
 
 /** What a page's event state offers the hub. */
 export interface NetPage {

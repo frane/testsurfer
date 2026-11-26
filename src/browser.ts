@@ -27,7 +27,9 @@ async function negotiate(client: WireClient): Promise<{ proto: number; flags: Se
   return caps;
 }
 import { fromWire, matches, toWire, type Cookie, type CookieInput, type StorageState, type WireCookie } from './cookies.ts';
-import { Dialog, type RouteHandler, type UrlMatcher } from './events.ts';
+import { Dialog } from './dialog.ts';
+import type { RouteHandler } from './route.ts';
+import type { UrlMatcher } from './url.ts';
 import { APIRequestContext } from './request.ts';
 import { geolocationScript, localeScript, onlineScript, timezoneScript, touchScript, userAgentScript, type Geolocation } from './emulation.ts';
 import type { MediaOptions } from './media.ts';
@@ -509,8 +511,8 @@ export class BrowserContext {
         ...(o.recordHar.urlFilter ? { urlFilter: o.recordHar.urlFilter } : {}),
       });
       this.harWriters.push(rec);
-      this.on('requestfinished', ((req: import('./events.ts').Request) => rec.add(req, req.responseValue ?? null)) as (arg: never) => void);
-      this.on('requestfailed', ((req: import('./events.ts').Request) => rec.add(req, null)) as (arg: never) => void);
+      this.on('requestfinished', ((req: import('./http.ts').Request) => rec.add(req, req.responseValue ?? null)) as (arg: never) => void);
+      this.on('requestfailed', ((req: import('./http.ts').Request) => rec.add(req, null)) as (arg: never) => void);
     }
     if (o.bypassCSP) {
       this.cspBypass = true;

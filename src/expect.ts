@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { diffValues, isStructured } from './diff.ts';
 import { matchesTemplate, parseTemplate, renderSnapshot } from './aria.ts';
 import { StrictModeError } from './errors.ts';
-import { APIResponse } from './events.ts';
+import { APIResponse } from './http.ts';
 import { Locator } from './locator.ts';
 import { Page } from './page.ts';
 import { asymmetric, pollAssertions, ValueAssertions } from './values.ts';

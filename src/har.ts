@@ -8,7 +8,8 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
-import type { Request, Response, Route } from './events.ts';
+import type { Request, Response } from './http.ts';
+import type { Route } from './route.ts';
 
 interface HarHeader {
   name: string;

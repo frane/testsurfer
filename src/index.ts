@@ -36,18 +36,11 @@ export {
 } from './runner.ts';
 export { WireError, TimeoutError, StrictModeError } from './errors.ts';
 export { PINNED_VIBESURFER } from './client.ts';
-export {
-  APIResponse,
-  ConsoleMessage,
-  Dialog,
-  Request,
-  Response,
-  Route,
-  type ContinueOptions,
-  type FulfillOptions,
-  type RouteHandler,
-  type UrlMatcher,
-} from './events.ts';
+export { ConsoleMessage } from './console.ts';
+export { Dialog } from './dialog.ts';
+export { APIResponse, Request, Response } from './http.ts';
+export { Route, type ContinueOptions, type FulfillOptions, type RouteHandler } from './route.ts';
+export type { UrlMatcher } from './url.ts';
 export type { TestInfo } from './testinfo.ts';
 export { APIRequestContext, request, type RequestOptions } from './request.ts';
 export { Frame } from './frame.ts';

@@ -7,7 +7,7 @@
  */
 
 import { cookieHeader, fromWire, parseSetCookie, type Cookie, type StorageState, type WireCookie } from './cookies.ts';
-import { APIResponse } from './events.ts';
+import { APIResponse } from './http.ts';
 
 /** Where an APIRequestContext reads and stores cookies. */
 export interface CookieJar {
