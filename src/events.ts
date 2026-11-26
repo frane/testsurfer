@@ -496,79 +496,79 @@ export class PageEvents {
     await Promise.all(running);
   }
 
+  /** Dispatch one event row from the shim queue. */
   private onEvent(e: ShimEvent): void {
     switch (e.t) {
       case 'call':
         this.pendingBindings.push(this.runBinding(e));
-        break;
-      case 'console': {
-        const w = (e as { worker?: number }).worker;
-        const m = new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[], null, w === undefined ? null : (this.host.workerFor?.(w) ?? null));
-        this.keep(this.consoleLog, m);
-        this.emit('console', m);
-        break;
-      }
+        return;
+      case 'console':
+        return this.onConsole(e);
+      case 'pageerror':
+        return this.onPageError(e);
       case 'nav':
         this.navMark = { console: this.consoleLog.length, errors: this.errorLog.length };
         if (e.url) this.host.noteURL?.(e.url);
         this.emitPageEvent('framenavigated', this.host.mainFrame?.() ?? null);
-        break;
+        return;
       case 'domcontentloaded':
       case 'load':
         this.emitPageEvent(e.t, this.host.page?.() ?? null);
-        break;
+        return;
+      case 'request':
+      case 'response':
+      case 'requestfailed':
+        // In proxy mode the hub reports every request; the shim's copy would double it.
+        if (!this.proxied) this.onShimRequestEvent(e);
+        return;
       default:
         if (e.t.startsWith('ws') || e.t.startsWith('worker') || e.t === 'filechooser') this.host.wsEvent?.(e as unknown as Record<string, unknown>);
-        break;
-      case 'pageerror': {
-        const err = new Error(e.message ?? '');
-        if (e.name) err.name = e.name;
-        if (e.stack) err.stack = e.stack;
-        this.keep(this.errorLog, err);
-        this.emit('pageerror', err);
-        break;
-      }
-      case 'request': {
-        // In proxy mode the hub reports every request; the shim's copy would double it.
-        if (this.proxied) break;
-        const req = new Request({
-          id: Number(e.id ?? 0),
-          url: e.url ?? '',
-          method: e.method ?? 'GET',
-          headers: e.headers ?? {},
-          body: e.body ?? null,
-          type: (e.type as 'fetch' | 'xhr') ?? 'fetch',
-        });
-        this.requests.set(req.id, req);
-        this.emit('request', req);
-        break;
-      }
-      case 'response': {
-        if (this.proxied) break;
-        const req = this.requests.get(Number(e.id ?? -1));
-        if (!req) break;
-        const res = new Response(req, {
-          url: e.url ?? req.url(),
-          status: e.status ?? 0,
-          statusText: e.statusText ?? '',
-          headers: e.headers ?? {},
-        });
-        req.responseValue = res;
-        this.emit('response', res);
-        this.emit('requestfinished', req);
-        this.requests.delete(req.id);
-        break;
-      }
-      case 'requestfailed': {
-        if (this.proxied) break;
-        const req = this.requests.get(Number(e.id ?? -1));
-        if (!req) break;
-        req.failureText = e.failure ?? 'failed';
-        this.emit('requestfailed', req);
-        this.requests.delete(req.id);
-        break;
-      }
     }
+  }
+
+  private onConsole(e: ShimEvent): void {
+    const w = (e as { worker?: number }).worker;
+    const worker = w === undefined ? null : (this.host.workerFor?.(w) ?? null);
+    const m = new ConsoleMessage(e.type ?? 'log', e.text ?? '', (e.args ?? []) as { v?: unknown; u?: number }[], null, worker);
+    this.keep(this.consoleLog, m);
+    this.emit('console', m);
+  }
+
+  private onPageError(e: ShimEvent): void {
+    const err = new Error(e.message ?? '');
+    if (e.name) err.name = e.name;
+    if (e.stack) err.stack = e.stack;
+    this.keep(this.errorLog, err);
+    this.emit('pageerror', err);
+  }
+
+  /** A fetch or XHR the shim saw start, finish or fail (direct network mode). */
+  private onShimRequestEvent(e: ShimEvent): void {
+    if (e.t === 'request') {
+      const req = new Request({
+        id: Number(e.id ?? 0),
+        url: e.url ?? '',
+        method: e.method ?? 'GET',
+        headers: e.headers ?? {},
+        body: e.body ?? null,
+        type: (e.type as 'fetch' | 'xhr') ?? 'fetch',
+      });
+      this.requests.set(req.id, req);
+      this.emit('request', req);
+      return;
+    }
+    const req = this.requests.get(Number(e.id ?? -1));
+    if (!req) return;
+    if (e.t === 'response') {
+      const res = new Response(req, { url: e.url ?? req.url(), status: e.status ?? 0, statusText: e.statusText ?? '', headers: e.headers ?? {} });
+      req.responseValue = res;
+      this.emit('response', res);
+      this.emit('requestfinished', req);
+    } else {
+      req.failureText = e.failure ?? 'failed';
+      this.emit('requestfailed', req);
+    }
+    this.requests.delete(req.id);
   }
 
   private async settle(id: number, d: Decision): Promise<void> {
