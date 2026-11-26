@@ -1,3 +1,5 @@
+/** JSHandle: a reference to a value that lives in the page. */
+
 import { ElementHandle } from './locator.ts';
 import type { Page } from './page.ts';
 import { serializeValue } from './serialize.ts';

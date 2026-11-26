@@ -1,3 +1,5 @@
+/** frameLocator(): locators scoped to an iframe's document. */
+
 import { Locator } from './locator.ts';
 import { step, type ByRoleOptions, type ByTextOptions, type LocatorOptions } from './query.ts';
 

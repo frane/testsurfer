@@ -1,3 +1,5 @@
+/** Dialogs (alert, confirm, prompt) the page opened. */
+
 /**
  * An `alert`, `confirm` or `prompt` the page is blocked on (proxy
  * mode). A `dialog` listener must accept or dismiss it; with no
