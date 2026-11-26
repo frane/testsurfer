@@ -1,7 +1,7 @@
 /**
  * Locator queries: the option types, the chain of steps a locator stores,
  * how a chain reads in error messages (Playwright's notation) and the
- * wire form the page engine (src/injected.ts) resolves.
+ * wire form the page engine (src/injected/) resolves.
  */
 
 import { parseSelector, type CssExtras } from './selector.ts';

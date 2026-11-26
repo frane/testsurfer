@@ -3,7 +3,7 @@
  *
  * A locator stores a chain of queries, never an element. Every action
  * and read resolves the chain again, in the page, through the engine
- * in src/injected.ts, so locators survive re-renders and navigation.
+ * in src/injected/, so locators survive re-renders and navigation.
  * Single-element operations are strict: more than one match is an
  * error unless first(), last() or nth() picks one. Actions wait until
  * the element is attached, visible, enabled and not covered, then

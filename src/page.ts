@@ -16,7 +16,7 @@ import { ElementHandle } from './element-handle.ts';
 import { Locator } from './locator.ts';
 import type { BoundingBox, ClickOptions, InputFile, SelectOptionValue } from './locator-options.ts';
 import { byAttr, selectorSteps, type ByRoleOptions, type ByTextOptions, type LocatorOptions } from './query.ts';
-import { installEngine } from './injected.ts';
+import { ENGINE_SOURCE } from './injected.gen.ts';
 import { APIRequestContext } from './request.ts';
 import type { Download } from './download.ts';
 import { DownloadWatcher } from './page-downloads.ts';
@@ -51,7 +51,7 @@ import type { ClickVia, InputMode, ProtocolOptions, Timeouts } from './page-opti
 import { sleep } from './retry.ts';
 
 /** The engine install expression: defines window.__tse and yields it. */
-const ENGINE_JS = `(${installEngine.toString()})(${SERIALIZE_JS})`;
+const ENGINE_JS = `(${ENGINE_SOURCE})(${SERIALIZE_JS})`;
 
 interface EngineReply {
   v?: unknown;
@@ -1384,7 +1384,7 @@ export class Page {
     return deserializeValue(r.v);
   }
 
-  /** One locator-engine request (see src/injected.ts). `fn` is a function source passed alongside. */
+  /** One locator-engine request (see src/injected/). `fn` is a function source passed alongside. */
   async engineRun<T>(req: Record<string, unknown>, fn?: string): Promise<T> {
     return (await this.engineRunIn(null, req, fn, 0, 0)) as T;
   }

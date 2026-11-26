@@ -19,6 +19,8 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run typecheck
+      - name: the committed page engine is built from src/injected
+        run: node scripts/build-injected.mjs --check
       - run: npm run build
       - run: npm run test:unit
       # The same action users put in their own workflows.
