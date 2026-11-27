@@ -1,5 +1,5 @@
 name: Set up testsurfer
-description: "Prepare a runner for testsurfer: installs WebKitGTK 6 and a virtual display on Linux; nothing to install on macOS."
+description: "Prepare a runner for testsurfer: installs WebKitGTK 6 and Xvfb on Linux; nothing to install on macOS."
 branding:
   icon: check-circle
   color: blue
@@ -25,22 +25,8 @@ runs:
         # them through AppArmor, and the web view then crashes on its
         # first navigation.
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-    - name: Start a virtual display
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        # Trusted input goes through XTest, so the web view needs a
-        # real X display, not just an offscreen surface. Room for a
-        # 5x5 grid of 1600x1000 tiles: vibesurfer gives each page window
-        # its own, and each page its own pointer, so parallel tests never
-        # share clicks or hover.
-        Xvfb :99 -screen 0 8016x5016x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
-        for _ in $(seq 1 50); do
-          [ -e /tmp/.X11-unix/X99 ] && break
-          sleep 0.1
-        done
-        echo "DISPLAY=:99" >> "$GITHUB_ENV"
+        # No DISPLAY to set up: the vibesurfer daemon starts an Xvfb of
+        # its own for page windows.
 
     - name: Fetch and start vibesurfer (Windows)
       if: runner.os == 'Windows'
