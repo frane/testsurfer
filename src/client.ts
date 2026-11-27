@@ -30,6 +30,13 @@ import { sleep } from './retry.ts';
 /** The vibesurfer release testsurfer is built and tested against. */
 export const PINNED_VIBESURFER = '0.2.21';
 
+/** `vs status` on first connect: may include an npx download. */
+const FIRST_RUN_TIMEOUT_MS = 180_000;
+/** `vs status` when restarting a daemon that went away; vs itself waits up to 60s for it. */
+const RESPAWN_TIMEOUT_MS = 75_000;
+/** How long calls fail fast once the daemon stopped responding, before one probes again. */
+const DOWN_RETRY_MS = 10_000;
+
 export interface ClientOptions {
   /** Socket path. Default: `~/.vibesurfer/daemon.sock`. */
   socketPath?: string;
@@ -144,6 +151,15 @@ export class WireClient {
     sectionsWanted: number;
   } | null = null;
   private closed = false;
+  /** A connection was made once; a respawn after that needs no first-run download allowance. */
+  private everConnected = false;
+  /**
+   * Set when the daemon stopped answering or could not be reached or
+   * restarted. Calls fail at once with this cause until `retryAt`, when
+   * one goes through as a probe. Without it, each call of a teardown
+   * against a dead daemon waited out its own timeout or respawn.
+   */
+  private down: { cause: string; retryAt: number } | null = null;
 
   private readonly opts: ClientOptions;
 
@@ -221,8 +237,8 @@ export class WireClient {
     for (const cmd of candidateCommands(this.opts)) {
       try {
         // Any CLI call auto-spawns the daemon. `status` is the cheapest.
-        // The generous timeout covers a first-run npx download.
-        await runCommand(cmd, ['status'], 180_000);
+        // The first run's allowance covers an npx download.
+        await runCommand(cmd, ['status'], this.everConnected ? RESPAWN_TIMEOUT_MS : FIRST_RUN_TIMEOUT_MS);
         return;
       } catch (e) {
         lastErr = e;
@@ -251,6 +267,7 @@ export class WireClient {
 
   private attach(sock: net.Socket): void {
     this.sock = sock;
+    this.everConnected = true;
     this.buf = '';
     this.current = null;
     sock.setEncoding('utf8');
@@ -324,6 +341,8 @@ export class WireClient {
   }
 
   private finishResponse(): void {
+    // Any answer, success or error envelope, means the daemon is up.
+    this.down = null;
     const cur = this.current;
     this.current = null;
     const pending = this.queue.shift();
@@ -363,7 +382,15 @@ export class WireClient {
     flags: Flags = {},
     opts: CallOptions = {},
   ): Promise<WireResponse> {
-    await this.ensureConnected();
+    if (this.down && Date.now() < this.down.retryAt) {
+      throw new Error(`vibesurfer daemon is not responding: ${this.down.cause}`);
+    }
+    try {
+      await this.ensureConnected();
+    } catch (e) {
+      if (!this.closed) this.markDown(e);
+      throw e;
+    }
     const sock = this.sock;
     if (!sock) throw new Error('not connected');
     const line = encodeRequest(primitive, args, flags);
@@ -372,7 +399,9 @@ export class WireClient {
       const timer = setTimeout(() => {
         // A timed-out call desyncs the response order; drop the
         // connection so the next call starts clean.
-        this.failAll(new TimeoutError(`no response to ${primitive} within ${budget}ms`));
+        const err = new TimeoutError(`no response to ${primitive} within ${budget}ms`);
+        this.markDown(err);
+        this.failAll(err);
       }, budget);
       this.queue.push({ resolve, reject, timer, line, extraSections: opts.extraSections ?? 0 });
       sock.write(line);
@@ -381,6 +410,11 @@ export class WireClient {
     const t0 = performance.now();
     const key = primitive === 'vs_inspect' ? `vs_inspect ${args[0]}` : primitive;
     return p.finally(() => profileAdd(key, performance.now() - t0));
+  }
+
+  private markDown(e: unknown): void {
+    const cause = e instanceof Error ? e.message : String(e);
+    this.down = { cause, retryAt: Date.now() + DOWN_RETRY_MS };
   }
 
   /** A second connection to the same daemon, with the same options. */

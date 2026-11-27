@@ -26,7 +26,7 @@
     "build:injected": "node scripts/build-injected.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "node --test test/wire.test.ts test/tree.test.ts test/selector.test.ts test/aria.test.ts test/png.test.ts test/values.test.ts test/pwconfig.test.ts test/injected.test.ts",
+    "test:unit": "node --test test/client.test.ts test/wire.test.ts test/tree.test.ts test/selector.test.ts test/aria.test.ts test/png.test.ts test/values.test.ts test/pwconfig.test.ts test/injected.test.ts",
     "test:e2e": "node --test test/e2e.test.ts test/features.test.ts test/locators.test.ts test/config.test.ts test/network.test.ts test/screenshot.test.ts test/runner.test.ts && cd test/projects && node ../../src/cli.ts test",
     "prepublishOnly": "npm run typecheck && npm run build && npm run test:unit"
   },

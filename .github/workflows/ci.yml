@@ -32,3 +32,8 @@ jobs:
         run: |
           npm install
           npm test
+      # vibesurfer 0.2.22+ logs an auto-spawned daemon there.
+      - name: daemon log
+        if: failure()
+        shell: bash
+        run: cat ~/.vibesurfer/daemon.log 2>/dev/null || echo "no daemon log"

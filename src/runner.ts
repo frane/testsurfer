@@ -114,6 +114,9 @@ async function loadConfigFile(): Promise<RunnerOptions> {
   return base;
 }
 
+/** The whole session teardown at the end of a test file. */
+const TEARDOWN_TIMEOUT_MS = 60_000;
+
 /**
  * Register the session teardown as a root-level after() hook. This
  * must happen at test registration time (when the user's test file
@@ -124,11 +127,16 @@ async function loadConfigFile(): Promise<RunnerOptions> {
 function ensureTeardown(): void {
   if (teardownRegistered) return;
   teardownRegistered = true;
-  after(async () => {
-    // Worker fixtures tear down before the browser they may use closes.
-    for (const t of workerTeardowns.splice(0).reverse()) await t().catch(() => {});
-    if (shared) await (await shared).close();
-  });
+  after(
+    async () => {
+      // Worker fixtures tear down before the browser they may use closes.
+      for (const t of workerTeardowns.splice(0).reverse()) await t().catch(() => {});
+      if (shared) await (await shared).close();
+    },
+    // A teardown against a daemon that stopped answering must end the
+    // file, not hold it open until the CI job is cancelled.
+    { timeout: TEARDOWN_TIMEOUT_MS },
+  );
 }
 
 /** Worker-scoped fixture values, set up once per worker process (by definition) and torn down at its end. */
